@@ -3,3 +3,5 @@ contracts/lib/
 contracts/out/
 contracts/cache/
 .secrets/
+contracts/out-*/
+contracts/cache-*/

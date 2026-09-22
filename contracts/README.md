@@ -1,20 +1,20 @@
 # contracts/
 
-Foundry project. Currently contains the M0 verification spike (see `docs/07-BUILD-PLAN.md` M0 and `BUILD-STATE.md`); the real contract suite lands in M1 per `docs/02-CONTRACTS.md`.
+Foundry project. M1 contract suite per `docs/02-CONTRACTS.md` + `SPEC-M1.md` (binding implementation spec, includes review findings). M0 verification spike also lives here (`test/M0_RHTestnetV4.t.sol`).
 
 ## Setup
 
-```bash
-forge install uniswap/v4-core uniswap/v4-periphery
-forge test -vv   # runs fork tests against https://rpc.testnet.chain.robinhood.com
-```
-
-Dependency commits used for the M0 run (pin if reproducing):
+`lib/` is vendored as plain working trees (no `.git` — the workspace mount does not support git's lock semantics, so `forge install` fails there; clone elsewhere and copy, or just use the vendored copies). Pinned commits:
 
 - forge-std `bf647bd6046f2f7da30d0c2bf435e5c76a780c1b`
-- v4-core `e50237c43811bd9b526eff40f26772152a42daba`
-- v4-periphery `9969eec44cfdf07e24b41de47f40276a58401976`
+- v4-core `e50237c43811bd9b526eff40f26772152a42daba` (+ submodules)
+- v4-periphery `9969eec44cfdf07e24b41de47f40276a58401976` (+ submodules)
+- openzeppelin-contracts v5.1.0 `69c8def5f222ff96f2b5beff05dfba996368aa79`
 - Foundry 1.8.3 (solc 0.8.26, evm cancun)
+
+```bash
+forge test -vv   # includes fork tests against https://rpc.testnet.chain.robinhood.com
+```
 
 ## Known addresses (Robinhood Chain testnet, 46630)
 
