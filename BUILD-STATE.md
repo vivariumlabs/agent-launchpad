@@ -12,7 +12,7 @@
 
 ## In progress / next steps
 - **Start M2** (runtime core, local — per 03-AGENT-RUNTIME.md): `runtime/` skeleton, keyring (mock KMS), policy engine + its full test suite (the most important code in the project), pulse machine vs mock LLM + local chain fork, memory + snapshot/restore, treasury daemon.
-- Carry-over design follow-ups for M2 already queued in session-1 notes (TLS/cert flow for chat ingress, derive-server retry-at-boot, x402 allowlist curation, model-identity sanity checks).
+- Carry-over design follow-ups for M2/M3 (from M0 findings): (1) in-enclave TLS/cert flow for chat ingress on Oyster (03 §5); (2) derive-server retry-at-boot pattern (gotcha in `runtime/spikes/m0-marlin-kms/RESULTS.md`); (3) x402 endpoint allowlist curation process (06 §1); (4) runtime output sanity checks for model identity — M0 demo: OpenRelay's DeepSeek self-identified as Gemini, so self-ID is unreliable and 06 §4's degraded/wrong-model risk needs a runtime-side check.
 
 ## Blocked on Juan
 - Nothing for M2 start. Still queued for later: platform multisig (M6), dedicated RPC key (nice-to-have), legal/audit sourcing from ~M3 (07 §4).

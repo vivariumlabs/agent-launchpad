@@ -1,5 +1,7 @@
 # 02 — SMART CONTRACTS
 
+> **AS-BUILT NOTE (M1 closed 2026-09-22):** this design doc predates implementation. The binding as-built spec is `contracts/SPEC-M1.md` (+ `contracts/src/interfaces/ILaunchpad.sol`); where they differ from this doc, they win. Main deltas, each with rationale recorded in SPEC-M1/BUILD-STATE: hook fee-take is `afterSwap` on the unspecified currency (not §3's beforeSwap sketch); graduation liquidity is minted directly on the PoolManager by `LiquidityLocker` (no PositionManager/LP-NFT); `createAgent`/`openGenesis` carry a KMS-predicted `expectedTreasuryEOA` (genesis front-run fix); buyback price protection is a deploy-time impact bound + caps (no v4 TWAP exists, cf. §7); leftover curve tokens are burned at graduation. Testnet deployment + lifecycle transcript: `contracts/deployments/`.
+
 > Foundry project in `contracts/`. Solidity ^0.8.24. Target: Robinhood Chain testnet (46630) first, mainnet (4663) after audit. Guiding rule: **fork audited patterns, minimize original code.** The custom surface is: FeeSplitHook, RoyaltyDistributor, AgentNFT, AgentRegistry, TreasuryBuyback, AgentFactory. Everything else (ERC-20, ERC-721 base, curve math) comes from OpenZeppelin + the PONS V2 pattern (github.com/ponsdotdev/pons-labs — study it in the first contracts session; adapt, credit, respect license).
 
 Pre-build verification checklist (first contracts session):

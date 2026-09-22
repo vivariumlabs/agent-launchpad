@@ -1,6 +1,8 @@
 # contracts/
 
-Foundry project. M1 contract suite per `docs/02-CONTRACTS.md` + `SPEC-M1.md` (binding implementation spec, includes review findings). M0 verification spike also lives here (`test/M0_RHTestnetV4.t.sol`).
+Foundry project. M1 contract suite per `docs/02-CONTRACTS.md` + `SPEC-M1.md` (binding implementation spec, includes review findings; it wins over 02 where they differ). M0 verification spike also lives here (`test/M0_RHTestnetV4.t.sol`).
+
+Testnet deployment (chain 46630, all contracts Blockscout-verified): addresses in `deployments/testnet-46630.json`, full real-tx lifecycle transcript in `deployments/testnet-46630-lifecycle.md`. Deploy via `script/Deploy.s.sol` — the hook MUST be deployed through `script/support/HookDeployer.sol` (owned CREATE2), never the canonical CREATE2 singleton, or its one-time `setFactory` wiring bricks.
 
 ## Setup
 
