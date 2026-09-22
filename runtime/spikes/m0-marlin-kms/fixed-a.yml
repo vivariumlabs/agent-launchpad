@@ -1,0 +1,11 @@
+services:
+  drill:
+    image: alpine:3.22
+    network_mode: host
+    restart: unless-stopped
+    command: >
+      sh -c 'while true; do
+      H=$$(wget -qO- "http://127.0.0.1:1100/derive/secp256k1?path=drill" | sha256sum | cut -d" " -f1);
+      [ -n "$$H" ] && break; echo waiting-for-kms; sleep 2; done;
+      echo DRILL_HASH=$$H;
+      while true; do printf "HTTP/1.0 200 OK\r\n\r\n%s" "$$H" | nc -l -p 8080; done'
