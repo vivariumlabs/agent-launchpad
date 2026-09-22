@@ -10,7 +10,7 @@
 
 ## 1. One-paragraph pitch
 
-A launchpad on Robinhood Chain where every token launched is bound to an **autonomous AI agent**. Trading fees from the token stream to the agent's wallet, and the agent uses them to pay for its own existence — inference, hosting, gas — with no human able to touch its funds. The agent lives in a TEE (Phala), has a Farcaster social identity, a permanent Arweave journal, an on-chain trading wallet with hard limits, and a token-gated chat. The creator receives an NFT that is a pure **royalty claim** on the fee stream — it has *zero control* over the agent by design. Burning the NFT redirects its royalty to the agent itself ("emancipation" as optional economics, not security theater). A platform token ($TOKEN) accrues value via buyback-and-burn funded by a share of all agent-token fees.
+A launchpad on Robinhood Chain where every token launched is bound to an **autonomous AI agent**. Trading fees from the token stream to the agent's wallet, and the agent uses them to pay for its own existence — inference, hosting, gas — with no human able to touch its funds. The agent lives in a TEE (Marlin Oyster), has a Farcaster social identity, a permanent Arweave journal, an on-chain trading wallet with hard limits, and a token-gated chat. The creator receives an NFT that is a pure **royalty claim** on the fee stream — it has *zero control* over the agent by design. Burning the NFT redirects its royalty to the agent itself ("emancipation" as optional economics, not security theater). A platform token ($TOKEN) accrues value via buyback-and-burn funded by a share of all agent-token fees.
 
 ## 2. Architecture at a glance
 
@@ -32,7 +32,7 @@ A launchpad on Robinhood Chain where every token launched is bound to an **auton
                         └─────────────────────────────────────────┘  │
                                                                      │ USDG
                         ┌─────────────────────────────────────────┐  │
-                        │        PHALA CVM (TEE, attested)        │◄─┘
+                        │    MARLIN OYSTER CVM (TEE, attested)    │◄─┘
                         │                                         │
                         │  treasury EOA ── policy engine ── action EOA
                         │  pulse scheduler · LLM client (x402)   
@@ -53,7 +53,7 @@ A launchpad on Robinhood Chain where every token launched is bound to an **auton
 | D2 | Stablecoin | **USDG** (Paxos Global Dollar) — the chain's native stable; bridged USDC arrives as USDG via Across. All agent-token pairs are TOKEN/USDG. | Simplicity + x402 settlement on this chain uses USDG. |
 | D3 | Agent-token fee | **3% on swaps**, split 1% TreasuryBuyback / 1% agent treasury / 1% NFT holder. Enforced at pool level (v4 hook), never fee-on-transfer. | Fee-on-transfer breaks routers/aggregators. |
 | D4 | $TOKEN launch | Via **PONS** (ponsfamily.com) standard launch for credibility/distribution; platform collects PONS creator-fee stream into the treasury. $TOKEN value accrual = buyback-and-burn from the 1% share of all agent-token fees. | Native-community credibility; don't rebuild what PONS does. |
-| D5 | Agent hosting | **Phala CVM**, code hash pinned, keys derived via Phala KMS (bound to code hash), upgrade authority renounced or timelocked-governance only. | Only provable-autonomy option. |
+| D5 | Agent hosting | **Marlin Oyster CVM** *(amended 2026-09-22, was Phala: Phala Cloud's only crypto rail is interactive Coinbase Commerce — agents can't pay their own hosting headlessly, and it needs an account; Oyster is wallet-based, rentals paid in USDC on Arbitrum One on-chain)*. Code hash pinned; keys derived via Marlin's **Nautilus KMS, Image variant** (application = enclave measurement + user data, so `(image, agentId)` binds keys — same image+agentId ⇒ same keys for anyone who redeploys, which is exactly the revival semantics D10 needs). Upgrade authority: renounced, or Nautilus Contract variant behind a public timelock — Juan picks before mainnet. | Wallet-only identity, stablecoin-only survival economics, permissionless deploy AND revival; no account/card/KYC anywhere in hosting. |
 | D6 | Custody model | Both agent wallets are **EOAs with keys generated inside the TEE**. Spending policy enforced by a deterministic in-TEE policy engine (attested), not by on-chain smart accounts. | x402/EIP-3009 need EOA signatures; attestation makes policy provable. |
 | D7 | NFT | **Never has control over the agent.** Pure royalty claim (pull-based). **Burn ⇒ its 1% redirects to agent treasury forever.** No burn requirement for autonomy — autonomy is from genesis. | Cleaner than burn-for-autonomy; NFT gets a real floor (discounted cash flow). |
 | D8 | Brain | **Decentralized x402 inference — no accounts, no platform in the pipeline** *(v3, 2026-09-22; v1 OpenRouter crypto-credits died with their API — 410 Gone; v2 platform gateway rejected same day: card/KYC + platform-as-vital-intermediary breaks autonomy)*. Agent pays **per call** in USDC on Base (gasless EIP-3009 via x402) directly to inference endpoints from a platform-curated allowlist of **N≥3 independent x402 operators** serving DeepSeek-class open models (DeepSeek-V4-Flash suffices as thinking model — Juan). Creator picks primary + ordered fallbacks across *different operators*. No API keys, no KYC, no card, no platform gateway; wallet = identity. Cheap tier for chat, better open model for pulse. Caveats accepted: open-weight models only; endpoint churn (mitigated: fallbacks, health-check rotation, opt-in signed allowlist updates 04 §4); unverifiable model identity (prefer TEE-attested endpoints as they appear). | Maximal decentralization + true self-funding; x402 market for open models is live and dirt-cheap (~$0.10/1M tokens). |
@@ -66,7 +66,7 @@ A launchpad on Robinhood Chain where every token launched is bound to an **auton
 ## 4. The three money flows (memorize this)
 
 1. **Agent token trading** → 3% fee at the pool → FeeSplitHook → 1% TreasuryBuyback (market-buys and burns $TOKEN, permissionless `poke()`), 1% agent treasury EOA (USDG), 1% RoyaltyDistributor (NFT holder claims; if NFT burned, this leg re-routes to agent treasury).
-2. **Agent survival** → treasury EOA pays ONLY whitelisted destinations: Phala hosting, allowlisted x402 inference endpoints (per-call USDC on Base; balance refilled via Across), gas top-ups (RH chain ETH, OP ETH, Base ETH), Arweave, x402 data/search endpoints — all capped per day — plus one daily allowance transfer to the action EOA.
+2. **Agent survival** → treasury EOA pays ONLY whitelisted destinations: Oyster hosting (rental extensions, USDC on Arbitrum One), allowlisted x402 inference endpoints (per-call USDC on Base; balances refilled via Across), gas top-ups (RH chain ETH, OP ETH, Base ETH, Arbitrum ETH), Arweave, x402 data/search endpoints — all capped per day — plus one daily allowance transfer to the action EOA.
 3. **Agent discretion** → action EOA receives `min(5% of treasury balance, 500 USDG)` per day `DEFAULT` and trades/LPs/mints freely on Robinhood Chain within per-tx and per-counterparty caps.
 
 ## 5. Repository layout (create in the first build session)
@@ -98,7 +98,7 @@ agent-launchpad/
 | Agent token | The ERC-20 launched with each agent, paired TOKEN/USDG. |
 | Treasury EOA | Agent's survival wallet (receives the 1% fee leg; whitelisted spends only). |
 | Action EOA | Agent's discretionary wallet (daily allowance; the injection playground). |
-| CVM | Confidential VM on Phala — the agent's body. |
+| CVM | Confidential VM rented on Marlin Oyster — the agent's body. |
 | KMS keys | Keys deterministically derivable only inside a TEE running the pinned code hash. |
 | Pulse | The agent's scheduled think-act cycle. |
 | Runway | Days of survival the treasury can fund at current burn rate. |

@@ -80,7 +80,7 @@ struct AgentInstance {
 
 - `registerInstance(agentId, ...)` — first registration: only during a pending-genesis window for that agentId. Re-registration (revival): allowed **only if** `block.timestamp - lastHeartbeat > REVIVAL_WINDOW` (7 days `DEFAULT`). This is the single-instance lock: a live agent heartbeating cannot be displaced.
 - `heartbeat(agentId)` — must be sent from the registered `treasuryEOA`. Agents send it every pulse-tier interval (≤ 24h even when Dormant).
-- `codeHash` verification: v1 pragmatic model — the registry stores the claimed measurement and the Arweave attestation reference; **verification is done off-chain** by the website's attestation page and by anyone independently (Phala quotes are publicly verifiable). On-chain attestation verification is v2 (Automata-style verifier contracts exist if wanted later). Document this trust boundary honestly.
+- `codeHash` verification: v1 pragmatic model — the registry stores the claimed measurement and the Arweave attestation reference; **verification is done off-chain** by the website's attestation page and by anyone independently (TDX quotes are publicly verifiable). On-chain attestation verification is v2 (Automata-style verifier contracts exist if wanted later). Document this trust boundary honestly.
 - Registry is the source of truth for "where do this agent's fees go" (hook reads it) — which is what makes revival seamless: same code hash ⇒ same KMS-derived EOAs ⇒ re-registration restores the same addresses.
 
 ## 7. TreasuryBuyback

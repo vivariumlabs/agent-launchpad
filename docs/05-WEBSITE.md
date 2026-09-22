@@ -37,4 +37,4 @@ Per agent: ✅/❌ TEE quote validity (re-verified server-side on a schedule + "
 
 ## 6. Non-functional
 
-Mobile-first for directory/profile/chat; SIWE sessions short-lived; no server-side custody of anything; analytics privacy-lite; status page for orchestrator/indexer/Phala incidents.
+Mobile-first for directory/profile/chat; SIWE sessions short-lived; no server-side custody of anything; analytics privacy-lite; status page for orchestrator/indexer/hosting incidents.

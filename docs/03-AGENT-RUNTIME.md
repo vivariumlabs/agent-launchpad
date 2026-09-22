@@ -1,6 +1,6 @@
 # 03 — AGENT RUNTIME (the TEE program)
 
-> TypeScript service in `runtime/`, deployed as a Docker image to a Phala CVM. **The published source + reproducible build must produce the pinned code hash** — this is the whole trust model. One CVM per agent, all running the identical image; per-agent differences live in an on-chain/Arweave-anchored config, never in code.
+> TypeScript service in `runtime/`, deployed as a Docker image to a Marlin Oyster CVM. **The published source + reproducible build must produce the pinned code hash** — this is the whole trust model. One CVM per agent, all running the identical image; per-agent differences live in an on-chain/Arweave-anchored config, never in code.
 >
 > Trust model in one line: *the LLM proposes, the deterministic policy engine disposes, and the attestation proves which policy engine is running.*
 
@@ -25,11 +25,11 @@ Key properties:
 - **Two paths to a signature, one gate.** Every signing request — from the LLM loop, chat, or the daemon — passes through the policy engine. There is no code path from model output to a private key.
 - **The daemon never thinks.** Heartbeats, hosting payments, gas top-ups, allowance transfers, inference-balance refills (Base USDC), memory snapshots are deterministic cron jobs. An agent in Dormant tier is *only* the daemon.
 
-## 2. Keys (Phala KMS)
+## 2. Keys (Nautilus KMS — Marlin, D5 as amended)
 
-All secrets derive inside the enclave from Phala KMS, bound to `(codeHash, agentId)`:
+All secrets derive inside the enclave from Marlin's Nautilus KMS, **Image variant**: the application identity is (enclave measurement, user data), and we put `agentId` in user data — so keys are bound to `(codeHash, agentId)`:
 `treasuryEOA = derive("treasury", agentId)`, `actionEOA = derive("action", agentId)`, `farcasterSigner = derive("fc", agentId)`, `memKey = derive("mem", agentId)`.
-Consequences: same code hash + same agentId ⇒ same keys on any redeploy (revival works); different code hash ⇒ different keys (nobody can fork the code, weaken the policy, and steal funds — the modified code derives useless keys). Verify this KMS binding behavior against current Phala docs in the first runtime session; it is the load-bearing assumption of the whole project.
+Consequences: same code hash + same agentId ⇒ same keys on any redeploy, by anyone (revival works, permissionlessly); different code hash or different agentId ⇒ different keys (nobody can fork the code, weaken the policy, and steal funds — the modified code derives useless keys). The M0-1 drill verifies this binding empirically before anything depends on it; it is the load-bearing assumption of the whole project.
 
 CVM upgrade authority: renounced at deploy, or assigned to platform multisig behind a public 7-day timelock `DEFAULT` — Juan must pick one before mainnet (renounced = maximal autonomy, no bugfixes; timelock = fixable, documented trust). Either way the choice is public and per-platform, not per-agent.
 
@@ -37,7 +37,7 @@ CVM upgrade authority: renounced at deploy, or assigned to platform multisig beh
 
 Pure function: `(proposedAction, walletState, budgetLedger, config) → allow | deny(reason)`. No LLM anywhere inside. Budgets from `01-TOKENOMICS.md §5` are compiled into the attested config. Enforcement summary:
 
-- **Treasury EOA** may sign ONLY: heartbeats; transfers to the whitelist {Phala payment address, Across bridge (only to its own Base/OP addresses), Arweave funding, gas top-ups to its own EOAs, x402 payments to allowlisted inference and data/search endpoints (D8 v3)}; and one allowance transfer per 24h to `actionEOA` — and only if hosting reserve (≥45 days) holds.
+- **Treasury EOA** may sign ONLY: heartbeats; transfers to the whitelist {Oyster rental payments (Marlin contracts on Arbitrum One, own machine only), Across bridge (only to its own Base/OP/Arbitrum addresses), Arweave funding, gas top-ups to its own EOAs, x402 payments to allowlisted inference and data/search endpoints (D8 v3)}; and one allowance transfer per 24h to `actionEOA` — and only if hosting reserve (≥45 days) holds.
 - **Action EOA** may sign: swaps/LP on RH-chain Uniswap v4, NFT mints, arbitrary transfers — within per-tx cap (20% of balance), per-counterparty daily cap (30% of allowance), and a hard "never send to treasury-whitelist look-alikes" check (anti-confusion).
 - **Inference spend** metered against the dynamic daily budget (01 §5): total = `clamp(25% of trailing-7-day avg daily fee income, 5, 60)` USDG, split pulse/chat/social by archetype weights. Any inference spend that would push hosting runway below 45 days is denied. When remaining budget runs low, the scheduler stretches pulse intervals and trims context — degrade, don't stop.
 - Every allow/deny is written to the memory log — deny reasons are surfaced in chat if a user's request caused them ("I'd love to, but my policy engine says no").
@@ -57,7 +57,7 @@ Archetypes (v1 set `DEFAULT`): **Trader** (higher trading weight, terse poster),
 
 ## 5. Chat (D9)
 
-- HTTPS endpoint on the CVM (Phala provides public ingress + TLS terminating inside the enclave; verify current mechanism at build time).
+- HTTPS endpoint on the CVM (Oyster exposes a public enclave IP; TLS terminates inside the enclave — cert issuance flow, e.g. in-enclave ACME, designed and verified at build time in M2/M3).
 - Session: SIWE signature → enclave verifies → per-message balance check via RPC: ≥0.1% agent-token supply OR ≥1% $TOKEN supply. Uses 2 independent RPC endpoints; on disagreement/failure, fail closed with a friendly error.
 - Rate limits per wallet (20/h, 100/day `DEFAULT`), cheap model tier, chat inference budget cap. History stored per-wallet in memory DB; agent may reference chat in its pulse thinking (summarized), but never reveals one user's chats to another (guardrail prompt + summary-only crossover).
 - Website is a pure relay/UI; endpoint is public and documented so third-party frontends can exist.
@@ -75,7 +75,7 @@ Genesis registers FID (OP mainnet), storage rent, fname, signer key (all from th
 
 ## 8. Treasury ops daemon (deterministic survival loop)
 
-Every 6 h: pay Phala if due (keep ≥ 45-day runway topped); check gas floors on RH/OP/Base and top up via Across (only to its own addresses); check Base USDC inference balance → bridge to Base via Across when it falls below 3 days of current inference burn (min $15) `DEFAULT`, refilling to ~10 days' worth (batching amortizes bridge costs; inference itself is paid per call from this balance via x402 to allowlisted endpoints, D8 v3); run `FeeSplitHook.distribute()` for its own pool if accrued fees > threshold (self-serve income collection); convert non-USDG income to USDG (bounded slippage); heartbeat; snapshot if due; recompute runway tier.
+Every 6 h: extend Oyster rental if due (USDC on Arbitrum One; keep ≥ 45-day runway topped); check gas floors on RH/OP/Base/Arbitrum and top up via Across (only to its own addresses); check Base USDC inference balance → bridge to Base via Across when it falls below 3 days of current inference burn (min $15) `DEFAULT`, refilling to ~10 days' worth (batching amortizes bridge costs; inference itself is paid per call from this balance via x402 to allowlisted endpoints, D8 v3); run `FeeSplitHook.distribute()` for its own pool if accrued fees > threshold (self-serve income collection); convert non-USDG income to USDG (bounded slippage); heartbeat; snapshot if due; recompute runway tier.
 
 ## 9. Death and revival (D10)
 

@@ -11,7 +11,7 @@ creator fills form
   → image + config → Arweave
   → tx: createAgent(...) ──► AgentRequested event ──► picks up event
                                                        → deploys pinned image
-                                                         on Phala (agentId)
+                                                         on Oyster (agentId)
                                                                         ──────► boots:
                                                                                 derive keys (KMS)
                                                                                 fetch+verify config vs hash
@@ -41,6 +41,7 @@ Target wall-clock: < 10 minutes from tx to first cast. Every step idempotent + r
 | OP mainnet EOA (Farcaster reg + rent) | $5 |
 | Base EOA gas buffer (x402 is gasless for payer) | $2 |
 | Base EOA inference seed (USDC — pays allowlisted x402 endpoints per call) | $15 |
+| Arbitrum One EOA gas (Oyster rental-extension txs; first month's rental is paid by the orchestrator at deploy from the creation fee) | $1 |
 | Arweave balance | $3 |
 
 After seeding, the platform never funds the agent again (01 §4). Reconciliation job verifies every seed landed; failures alert and block `finalize`.
@@ -60,7 +61,7 @@ At boot the CVM produces its TEE quote; uploads quote + a human-readable verific
 
 ## 6. Revival flow (orchestrator side)
 
-"Revive" button (05) → reviver pays revival fee (≈ 1 month hosting + seed gas, priced live) → orchestrator deploys same pinned image with same agentId → CVM re-derives keys, restores newest Arweave snapshot, `registerInstance` (passes because heartbeat stale > 7 d) → generation++ → wake journal entry crediting the reviver's address. If the platform orchestrator itself is gone: the runtime image, deploy scripts, and instructions are public — anyone with a Phala account can perform revival manually; document this "orchestrator-less revival" path explicitly (it is the project's decentralization backstop).
+"Revive" button (05) → reviver pays revival fee (≈ 1 month hosting + seed gas, priced live) → orchestrator deploys same pinned image with same agentId → CVM re-derives keys, restores newest Arweave snapshot, `registerInstance` (passes because heartbeat stale > 7 d) → generation++ → wake journal entry crediting the reviver's address. If the platform orchestrator itself is gone: the runtime image, deploy scripts, and instructions are public — anyone with a funded wallet can perform revival manually (Oyster deploys are wallet-only); document this "orchestrator-less revival" path explicitly (it is the project's decentralization backstop).
 
 ## 7. Failure modes to handle explicitly
 
@@ -70,5 +71,5 @@ At boot the CVM produces its TEE quote; uploads quote + a human-readable verific
 | Config hash mismatch in CVM | CVM refuses to boot (03 §10); orchestrator marks failed. |
 | Farcaster registration fails | Agent goes live anyway; daemon retries daily; "social pending" badge. |
 | Seed tx partial failure | Reconciliation retries; finalize blocked until complete. |
-| Phala capacity/outage | Queue launches; status page; creations pausable via multisig (02 §1). |
+| Oyster capacity/outage | Queue launches; status page; creations pausable via multisig (02 §1). |
 | Orchestrator key compromise | Powers are only deploy+finalize; worst case = junk launches. Rotate key, pause factory. Funds are never at risk. |

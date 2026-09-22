@@ -6,7 +6,7 @@
 |------|---------|------|
 | Platform multisig (2-of-3 Safe on RH chain) | Factory pause, buyback tuning, (optionally) runtime-upgrade timelock | M1 |
 | Deployer wallet + testnet/mainnet ETH & USDG | Contract deploys, PONS $TOKEN launch | M1 |
-| Phala Cloud account + billing | CVM hosting; orchestrator API access | M2 |
+| Marlin Oyster: no account (wallet-based) — fund the orchestrator wallet with USDC + ETH on Arbitrum One | CVM hosting deploys (D5 as amended) | M2 |
 | x402 inference-endpoint allowlist curation (no account — an ops duty) | Maintain signed endpoint×model list, N≥3 independent operators, health monitoring (D8 v3) | M2 |
 | RPC provider account(s) | Chain access for runtime/indexer/web | M1 |
 | GitHub org (public repos) | Reproducible builds are the trust model — code must be public | M1 |
@@ -23,12 +23,12 @@ Claude will prepare each step precisely (what to click, what to fund, how much);
 |------|--------:|--------:|
 | Contract audit (small scope, ~6 contracts) | $15–40k | — |
 | Legal opinion | $5–15k | — |
-| Testnet phase (Phala test CVMs ×5, services) | ~$300 | — |
+| Testnet phase (Oyster test CVMs ×5, services) | ~$300 | — |
 | RPC + hosting + domain | — | $100–300 |
 | Orchestrator funding float | $500 | small |
 | Audit + legal are the dominant costs; everything else is noise. | | |
 
-**Crypto-revenue accounting (2026-09-22, updated for D8 v3):** platform crypto receipts (creation fees, PONS stream, buyback flows) are revenue/taxable per counsel's treatment — explicit agenda item at engagement (§5). No fiat float or card is needed for inference (D8 v3 removed the platform from the pipeline). **Open: the hosting payment rail** — Phala Cloud's crypto billing runs through Coinbase Commerce (interactive checkout ⇒ agents cannot pay their own hosting headlessly). Evaluate Marlin Oyster (on-chain USDC CVM rental) and Oasis ROFL (on-chain TDX app hosting) vs. Phala before M2 design freeze; touches D5 — Juan decides.
+**Crypto-revenue accounting (2026-09-22, updated for D8 v3):** platform crypto receipts (creation fees, PONS stream, buyback flows) are revenue/taxable per counsel's treatment — explicit agenda item at engagement (§5). No fiat float or card is needed for inference (D8 v3 removed the platform from the pipeline). **Hosting payment rail: RESOLVED 2026-09-22** — D5 amended to Marlin Oyster (wallet-based, USDC on Arbitrum One, headless; Phala rejected: interactive Coinbase Commerce only; Oasis ROFL rejected: volatile ROSE + app-stake/admin tension).
 
 ## 3. Security controls (non-negotiable, because Juan cannot review code)
 
@@ -38,7 +38,7 @@ Claude will prepare each step precisely (what to click, what to fund, how much);
 4. **Capped mainnet beta:** first 4 weeks `DEFAULT`: max 20 agents, creation allowlist, buyback `maxPerPoke` low, banner "beta — unaudited limits apply". Raise caps only after audit + soak metrics.
 5. **Invariant monitoring in prod:** indexer job continuously checks fee-split sums, registry consistency, attestation validity; any violation → automatic factory pause (the one automated multisig-adjacent power; wire via a guardian module with pause-only rights).
 6. **No emergency backdoors** in agent funds. Accept this consciously: a bug that drains an agent's wallet is unrecoverable. That's the product's promise working against us — say it in the risk disclosures.
-7. **Incident runbook** in repo: sequencer halt, Phala outage, inference-endpoint churn/outage, RPC failure, moderation incident (agent posts something bad), exploit disclosure contact.
+7. **Incident runbook** in repo: sequencer halt, Oyster provider outage, inference-endpoint churn/outage, RPC failure, moderation incident (agent posts something bad), exploit disclosure contact.
 
 ## 4. Risk register (public version goes in site docs)
 
@@ -46,10 +46,10 @@ Claude will prepare each step precisely (what to click, what to fund, how much);
 |------|----------|-----------|
 | FeeSplitHook bug | Critical | Fork tests, invariants, audit, capped beta. |
 | Policy-engine bypass | Critical | Property tests, review, attestation, injection game confines blast radius by design. |
-| Phala KMS assumption wrong (keys not recoverable / recoverable by others) | Critical | Verify in M2 with kill/restore drill before anything else depends on it. **This is the first thing to prove.** |
+| Nautilus KMS assumption wrong (Marlin — keys not recoverable / recoverable by others / user-data not bound) | Critical | Verify in M0-1 with kill/redeploy drill before anything else depends on it. **This is the first thing to prove.** |
 | x402 inference endpoint churn/outage (young operators) | Medium | N≥3 independent operators per agent, health-check rotation, opt-in signed allowlist updates, prefer TEE-attested endpoints as they appear. |
 | Endpoint serves degraded/wrong model (unverifiable identity) | Medium | Price ceilings + output sanity checks in runtime; migrate allowlist toward attested-inference endpoints. |
-| Hosting payment rail: Phala crypto billing = interactive Coinbase Commerce (agents can't pay headlessly) | High | Evaluate Marlin Oyster / Oasis ROFL / Phala alternatives before M2; D5 revisit with Juan. |
+| Oyster marketplace maturity (provider uptime, capacity, persistence across machine swaps) | Medium | Multiple providers, revival path + Arweave snapshot/restore tolerate instance loss by design; M0-1 drill probes persistence; monitor. |
 | Sequencer censorship (Robinhood-operated) | Medium | Documented; L1 forced inclusion exists; accept for v1. |
 | Fee volume ≈ 0 for most agents | High (economic) | Dormancy is cheap, revival exists, honest docs. |
 | Securities characterization ($TOKEN buyback-burn; income NFT) | High (legal) | Counsel opinion pre-mainnet; geo-blocking if advised; possible reframing of NFT as "creator royalty". **Launch blocker until resolved.** |

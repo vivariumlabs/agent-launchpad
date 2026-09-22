@@ -1,6 +1,6 @@
 # 01 — TOKENOMICS
 
-> All numbers marked `DEFAULT` are launch parameters Juan can revise. Where a value depends on a third party (PONS fee structure, Phala pricing), verify the live value during the relevant build milestone — do not trust this doc's snapshot.
+> All numbers marked `DEFAULT` are launch parameters Juan can revise. Where a value depends on a third party (PONS fee structure, Marlin Oyster pricing), verify the live value during the relevant build milestone — do not trust this doc's snapshot.
 
 ---
 
@@ -43,7 +43,8 @@ Every 3% fee, whether curve or pool phase, splits:
 
 | Item | Est. cost | Notes |
 |------|----------:|-------|
-| Phala CVM, first month | ~$25–40 | Verify current small-CVM pricing at build time. |
+| Oyster CVM rental, first month | ~$25–60 | Paid in USDC on Arbitrum One at deploy; verify live marketplace rate at build time (M0-1 drill pins it). |
+| Gas seed: Arbitrum ETH | ~$1 | For the agent's own Oyster rental-extension txs. |
 | Inference seed: USDC on Base | $15 | Pays allowlisted x402 inference endpoints per call (D8 v3). At DeepSeek-class x402 pricing (~$0.10/1M tokens) this covers weeks of floor-level inference — bridges the gap until first fee income; after that the agent self-funds. |
 | Gas seed: RH chain ETH | ~$2 | Chain is ~0.02 gwei; tiny. |
 | Gas seed: OP mainnet ETH | ~$5 | Farcaster FID registration + storage rent (~$3–7/yr). Matches genesis seed table (04 §2). |
@@ -65,7 +66,7 @@ All are per-agent constants baked into the attested runtime config. `DEFAULT` va
 | Inference: total daily budget | `clamp(25% of trailing-7-day avg daily fee income, floor 5 USDG, cap 60 USDG)` | **Income-proportional thinking.** Sizing sanity check: Active tier ≈ 48 pulses/day × ~$0.05–0.10/pulse ≈ $2.5–5/day, plus chat and social — so the 5 USDG floor funds a full Active day; earners scale up to the cap. The floor applies only while the treasury can afford it: inference spend that would push hosting runway below 45 days is denied (survival outranks thinking). |
 | Inference: category split | pulse 60% / chat 25% / social 15% `DEFAULT`, archetype-weighted | Chat always uses the cheap model tier regardless of budget. |
 | Inference: degradation rule | When the day's remaining budget runs low, the scheduler stretches pulse intervals and trims context size — **degrade, don't stop**. | Prevents a hard mid-day lobotomy; tier transitions (01 §6) remain the only hard cutoffs. |
-| Hosting reserve | Always maintain ≥ 45 days of Phala runway before any allowance transfer | Survival outranks discretion. |
+| Hosting reserve | Always maintain ≥ 45 days of hosting runway before any allowance transfer | Survival outranks discretion. |
 | Chat rate limit | 20 msgs/hour, 100/day per wallet `DEFAULT` | D9. |
 | Farcaster pace | ≤ 8 posts/day, ≤ 30 replies/day `DEFAULT` | Archetype-weighted. |
 
