@@ -1,0 +1,4 @@
+.DS_Store
+contracts/lib/
+contracts/out/
+contracts/cache/

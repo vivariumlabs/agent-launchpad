@@ -1,0 +1,9 @@
+{
+  "name": "m0-phala-kms-drill",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@phala/dstack-sdk": "latest",
+    "viem": "^2"
+  }
+}
