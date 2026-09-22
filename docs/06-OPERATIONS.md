@@ -6,8 +6,8 @@
 |------|---------|------|
 | Platform multisig (2-of-3 Safe on RH chain) | Factory pause, buyback tuning, (optionally) runtime-upgrade timelock | M1 |
 | Deployer wallet + testnet/mainnet ETH & USDG | Contract deploys, PONS $TOKEN launch | M1 |
-| Marlin Oyster: no account (wallet-based) — fund the orchestrator wallet with USDC + ETH on Arbitrum One | CVM hosting deploys (D5 as amended) | M2 |
-| x402 inference-endpoint allowlist curation (no account — an ops duty) | Maintain signed endpoint×model list, N≥3 independent operators, health monitoring (D8 v3) | M2 |
+| Marlin Oyster: no account (wallet-based) — fund the orchestrator wallet with USDC + ETH on Arbitrum One | CVM hosting deploys (D5) | M2 |
+| x402 inference-endpoint allowlist curation (no account — an ops duty) | Maintain signed endpoint×model list, N≥3 independent operators, health monitoring (D8) | M2 |
 | RPC provider account(s) | Chain access for runtime/indexer/web | M1 |
 | GitHub org (public repos) | Reproducible builds are the trust model — code must be public | M1 |
 | Domain + hosting (Vercel/Railway) | Website, indexer, orchestrator | M4 |
@@ -28,7 +28,7 @@ Claude will prepare each step precisely (what to click, what to fund, how much);
 | Orchestrator funding float | $500 | small |
 | Audit + legal are the dominant costs; everything else is noise. | | |
 
-**Crypto-revenue accounting (2026-09-22, updated for D8 v3):** platform crypto receipts (creation fees, PONS stream, buyback flows) are revenue/taxable per counsel's treatment — explicit agenda item at engagement (§5). No fiat float or card is needed for inference (D8 v3 removed the platform from the pipeline). **Hosting payment rail: RESOLVED 2026-09-22** — D5 amended to Marlin Oyster (wallet-based, USDC on Arbitrum One, headless; Phala rejected: interactive Coinbase Commerce only; Oasis ROFL rejected: volatile ROSE + app-stake/admin tension).
+**Crypto-revenue accounting:** platform crypto receipts (creation fees, PONS stream, buyback flows) are revenue/taxable per counsel's treatment — explicit agenda item at engagement (§5). No fiat float or card exists anywhere: inference (D8) and hosting (D5) are both paid on-chain by the agents themselves.
 
 ## 3. Security controls (non-negotiable, because Juan cannot review code)
 

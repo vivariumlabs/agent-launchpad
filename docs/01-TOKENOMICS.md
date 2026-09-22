@@ -45,7 +45,7 @@ Every 3% fee, whether curve or pool phase, splits:
 |------|----------:|-------|
 | Oyster CVM rental, first month | ~$25–60 | Paid in USDC on Arbitrum One at deploy; verify live marketplace rate at build time (M0-1 drill pins it). |
 | Gas seed: Arbitrum ETH | ~$1 | For the agent's own Oyster rental-extension txs. |
-| Inference seed: USDC on Base | $15 | Pays allowlisted x402 inference endpoints per call (D8 v3). At DeepSeek-class x402 pricing (~$0.10/1M tokens) this covers weeks of floor-level inference — bridges the gap until first fee income; after that the agent self-funds. |
+| Inference seed: USDC on Base | $15 | Pays allowlisted x402 inference endpoints per call (D8). At DeepSeek-class x402 pricing (~$0.10/1M tokens) this covers weeks of floor-level inference — bridges the gap until first fee income; after that the agent self-funds. |
 | Gas seed: RH chain ETH | ~$2 | Chain is ~0.02 gwei; tiny. |
 | Gas seed: OP mainnet ETH | ~$5 | Farcaster FID registration + storage rent (~$3–7/yr). Matches genesis seed table (04 §2). |
 | Gas seed: Base ETH | ~$2 | x402 inference payments are gasless for the payer (EIP-3009); small buffer for Base ops (bridge receipts, dust). |

@@ -5,10 +5,10 @@
 ## M0 — Verify load-bearing assumptions (1 session, DO THIS FIRST)
 
 Before writing any product code, prove the four assumptions the design stands on:
-1. **Nautilus KMS key derivation** (Marlin Oyster — re-pointed 2026-09-22 per amended D5) bound to (image, user data): deploy a hello-world CVM, derive a key, kill it, redeploy same image + same user data, assert same key; redeploy modified image, assert *different* key; redeploy same image + different user data (stand-in for agentId), assert *different* key. Also pins live rental pricing and probes disk persistence. (Needs Juan: ~$5 USDC + 0.005 ETH on Arbitrum One.)
+1. **Nautilus KMS key derivation** (Marlin Oyster, D5) bound to (image, user data): deploy a hello-world CVM, derive a key, kill it, redeploy same image + same user data, assert same key; redeploy modified image, assert *different* key; redeploy same image + different user data (stand-in for agentId), assert *different* key. Also pins live rental pricing and probes disk persistence. (Needs Juan: ~$5 USDC + 0.005 ETH on Arbitrum One.)
 2. **Uniswap v4 on RH testnet**: locate PoolManager, execute a swap through a trivial custom hook in a fork test.
 3. **USDG mechanics** on testnet (address, decimals, EIP-3009 support for x402).
-4. **x402 inference** *(rescoped twice 2026-09-22 — D8 v3: decentralized x402 endpoints, no accounts)*: one end-to-end paid inference call (DeepSeek-class model) against ≥2 independent allowlisted x402 endpoints from a throwaway wallet (needs Juan: ~$5 USDC on Base + explicit OK to spend it). (Hosting-rail evaluation completed 2026-09-22 → D5 amended to Marlin Oyster; see decision log.)
+4. **x402 inference** (D8 — decentralized x402 endpoints, no accounts): one end-to-end paid inference call (DeepSeek-class model) against ≥2 independent allowlisted x402 endpoints from a throwaway wallet (needs Juan: ~$5 USDC on Base + explicit OK to spend it).
 Exit gate: all four demonstrated with written evidence in BUILD-STATE.md. **If any fails, stop and redesign with Juan before proceeding.**
 
 ## M1 — Contracts (2–4 sessions)

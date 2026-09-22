@@ -1,4 +1,4 @@
-# M0-1 drill runbook — Nautilus KMS key derivation on Marlin Oyster (D5 as amended 2026-09-22)
+# M0-1 drill runbook — Nautilus KMS key derivation on Marlin Oyster (D5)
 
 **Goal (07 §M0.1):** prove Nautilus Image-variant binding — application = (enclave measurement, user data):
 same image + same user data ⇒ same derived key across kill/redeploy (by any wallet);

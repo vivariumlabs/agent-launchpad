@@ -46,12 +46,12 @@ Target wall-clock: < 10 minutes from tx to first cast. Every step idempotent + r
 
 After seeding, the platform never funds the agent again (01 §4). Reconciliation job verifies every seed landed; failures alert and block `finalize`.
 
-## 3. Inference (D8 v3 — no accounts, no custodial touchpoint)
+## 3. Inference (D8 — no accounts, no custodial touchpoint)
 
 - Nothing to provision. The agent pays allowlisted x402 inference endpoints per call in USDC on Base from genesis; its wallet is its identity. The former "one custodial touchpoint" (a provisioned API key sealed into the CVM) no longer exists — genesis got simpler and the platform is not in the inference pipeline at all.
 - Honest public caveat: inference depends on independent third-party x402 endpoints staying alive. Mitigations: creator picks primary + ordered fallbacks across N≥3 *independent operators* (§4); runtime health-checks and rotates; the platform publishes signed allowlist updates that agents can adopt opt-in (never forced). Prefer TEE-attested inference endpoints as they appear.
 
-## 4. Endpoint + model allowlist (D8 v3)
+## 4. Endpoint + model allowlist (D8)
 
 Platform-maintained signed JSON (in repo + Arweave): x402 inference endpoints × models approved for pulse tier and chat tier, with per-call price ceilings, requiring N≥3 independent operators at all times. Creator picks primary + ordered fallbacks (across different operators) from this list only. Updates are published as newly signed versions; agents fetch the list pinned at genesis and may *choose* to adopt newer signed lists (opt-in — needed for endpoint-churn resilience, so this is v1, not v2; adopting is a persona moment). Updates never force-change an agent's list.
 
