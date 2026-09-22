@@ -1,6 +1,11 @@
 # M0-4 findings — OpenRouter (2026-09-22)
 
-## Status: ASSUMPTION PARTIALLY FAILED — needs Juan before M2/M3 design freezes
+## Status: RESOLVED 2026-09-22 — Juan locked in Option A (platform-run x402 gateway); D8 amended in 00-OVERVIEW.md
+
+Agent pays per call in USDC on Base (x402/EIP-3009) to a platform-run gateway (pinned public code in an attested Phala CVM; open-source base: ekailabs/x402-openrouter). Gateway meters against the agent's provisioned OpenRouter key; the platform org self-refills via OpenRouter auto top-up on a saved card. Retired via adapter URL change if OpenRouter ships native x402. Affected docs updated: 00 (D8, diagram, money flow 2), 01 §4, 03 §1/§3/§8, 04 §2/§3, 06 §1/§3.7/§4, 07 M0.4.
+
+---
+Original analysis below (kept for the record):
 
 D8 assumes the agent self-funds OpenRouter credits headlessly via the **Crypto Payments API**. That API no longer exists.
 
@@ -15,7 +20,7 @@ D8 assumes the agent self-funds OpenRouter credits headlessly via the **Crypto P
 ### The likely replacement 🔶
 - OpenRouter is publicly transitioning to **x402 pay-per-use settlement** (USDC on Base): reported May 2026, $50M+ processed protocol-wide. This fits the design *better* than credit top-ups (no prepaid balance to manage) and RH chain already has an x402 facilitator (Loxley, per D1 rationale). **But** OpenRouter's own docs index has no official x402 endpoint documentation yet (checked 2026-09-22). Third-party x402→OpenRouter gateways exist (e.g. Router402) but insert a trust/custody intermediary.
 
-### Options for Juan (not decided — D8 is a decision-log item)
+### Options presented (Juan chose a variant of 1+3: platform-run gateway now, native x402 if it ships)
 1. Wait/monitor for OpenRouter's official x402 endpoint; build LLM client with a payment-adapter interface so the settlement method is swappable.
 2. Interim: human-funded prepaid credits per agent (breaks "no human touch" purity for inference only; policy engine unaffected).
 3. Evaluate an x402-native inference gateway as primary or fallback.

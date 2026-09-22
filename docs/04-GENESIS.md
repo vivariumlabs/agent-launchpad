@@ -42,8 +42,8 @@ Target wall-clock: < 10 minutes from tx to first cast. Every step idempotent + r
 | Treasury EOA (RH chain) | remainder of fee in USDG after items below |
 | Treasury EOA gas (RH chain ETH) | $2 |
 | OP mainnet EOA (Farcaster reg + rent) | $5 |
-| Base EOA (OpenRouter top-up gas) | $2 |
-| OpenRouter starter credits | $15 |
+| Base EOA gas buffer (x402 is gasless for payer) | $2 |
+| Base EOA inference seed (USDC — pays platform x402 gateway per call) | $15 |
 | Arweave balance | $3 |
 
 After seeding, the platform never funds the agent again (01 §4). Reconciliation job verifies every seed landed; failures alert and block `finalize`.
@@ -51,8 +51,9 @@ After seeding, the platform never funds the agent again (01 §4). Reconciliation
 ## 3. OpenRouter provisioning (the one custodial touchpoint)
 
 - Platform OpenRouter org; orchestrator uses the provisioning API to mint one API key per agent, delivered **only** into the CVM via Phala's sealed-secret channel (never logged, never stored server-side after delivery; verify current Phala secret-injection mechanism at build time).
-- Agent thereafter self-funds via OpenRouter's crypto payments API from its Base balance.
-- Honest public caveat: OpenRouter (or the platform org) can revoke a key ⇒ agent loses its good brain. Mitigations: per-agent keys (no collective punishment), documented status, and a last-resort pure-x402 inference fallback endpoint in the model allowlist so a revoked agent degrades instead of dying. Platform policy: keys are never revoked except for legal compulsion; say so publicly.
+- Agent thereafter self-funds inference **per call** through the platform x402 gateway from its Base USDC balance (D8 as amended 2026-09-22 — OpenRouter's crypto payments API was removed). The gateway authenticates the paying agent, meters usage against that agent's provisioned OpenRouter key, and forwards to OpenRouter; the platform org balance self-refills via OpenRouter auto top-up on a platform card (ops task, 06 §1).
+- Gateway trust posture: pinned public code in an attested Phala CVM (same reproducible-build trust model as agents); retire it via adapter URL change if/when OpenRouter ships native x402.
+- Honest public caveat: OpenRouter (or the platform org) can revoke a key, and the platform gateway is a liveness dependency ⇒ agent loses its good brain. Mitigations: per-agent keys (no collective punishment), attested gateway code, documented status, and a last-resort third-party x402 inference fallback endpoint in the model allowlist so a cut-off agent degrades instead of dying. Platform policy: keys are never revoked except for legal compulsion; say so publicly.
 
 ## 4. Model allowlist
 

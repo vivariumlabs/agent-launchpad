@@ -23,7 +23,7 @@
 
 Key properties:
 - **Two paths to a signature, one gate.** Every signing request — from the LLM loop, chat, or the daemon — passes through the policy engine. There is no code path from model output to a private key.
-- **The daemon never thinks.** Heartbeats, hosting payments, gas top-ups, allowance transfers, OpenRouter refills, memory snapshots are deterministic cron jobs. An agent in Dormant tier is *only* the daemon.
+- **The daemon never thinks.** Heartbeats, hosting payments, gas top-ups, allowance transfers, inference-balance refills (Base USDC), memory snapshots are deterministic cron jobs. An agent in Dormant tier is *only* the daemon.
 
 ## 2. Keys (Phala KMS)
 
@@ -37,7 +37,7 @@ CVM upgrade authority: renounced at deploy, or assigned to platform multisig beh
 
 Pure function: `(proposedAction, walletState, budgetLedger, config) → allow | deny(reason)`. No LLM anywhere inside. Budgets from `01-TOKENOMICS.md §5` are compiled into the attested config. Enforcement summary:
 
-- **Treasury EOA** may sign ONLY: heartbeats; transfers to the whitelist {Phala payment address, Across bridge (only to its own Base/OP addresses), OpenRouter top-up flow, Arweave funding, gas top-ups to its own EOAs, x402 payments to allowlisted data endpoints}; and one allowance transfer per 24h to `actionEOA` — and only if hosting reserve (≥45 days) holds.
+- **Treasury EOA** may sign ONLY: heartbeats; transfers to the whitelist {Phala payment address, Across bridge (only to its own Base/OP addresses), x402 payments to the platform inference gateway (D8 as amended), Arweave funding, gas top-ups to its own EOAs, x402 payments to allowlisted data endpoints}; and one allowance transfer per 24h to `actionEOA` — and only if hosting reserve (≥45 days) holds.
 - **Action EOA** may sign: swaps/LP on RH-chain Uniswap v4, NFT mints, arbitrary transfers — within per-tx cap (20% of balance), per-counterparty daily cap (30% of allowance), and a hard "never send to treasury-whitelist look-alikes" check (anti-confusion).
 - **Inference spend** metered against the dynamic daily budget (01 §5): total = `clamp(25% of trailing-7-day avg daily fee income, 5, 60)` USDG, split pulse/chat/social by archetype weights. Any inference spend that would push hosting runway below 45 days is denied. When remaining budget runs low, the scheduler stretches pulse intervals and trims context — degrade, don't stop.
 - Every allow/deny is written to the memory log — deny reasons are surfaced in chat if a user's request caused them ("I'd love to, but my policy engine says no").
@@ -75,7 +75,7 @@ Genesis registers FID (OP mainnet), storage rent, fname, signer key (all from th
 
 ## 8. Treasury ops daemon (deterministic survival loop)
 
-Every 6 h: pay Phala if due (keep ≥ 45-day runway topped); check gas floors on RH/OP/Base and top up via Across (only to its own addresses); check OpenRouter credit floor → bridge USDC to Base → crypto-payments top-up when credits fall below 3 days of current inference burn (min $15) `DEFAULT`, topping up to ~10 days' worth (batching amortizes the ~5% top-up fee and bridge costs); run `FeeSplitHook.distribute()` for its own pool if accrued fees > threshold (self-serve income collection); convert non-USDG income to USDG (bounded slippage); heartbeat; snapshot if due; recompute runway tier.
+Every 6 h: pay Phala if due (keep ≥ 45-day runway topped); check gas floors on RH/OP/Base and top up via Across (only to its own addresses); check Base USDC inference balance → bridge to Base via Across when it falls below 3 days of current inference burn (min $15) `DEFAULT`, refilling to ~10 days' worth (batching amortizes bridge costs; inference itself is paid per call from this balance via x402 to the platform gateway, D8 as amended); run `FeeSplitHook.distribute()` for its own pool if accrued fees > threshold (self-serve income collection); convert non-USDG income to USDG (bounded slippage); heartbeat; snapshot if due; recompute runway tier.
 
 ## 9. Death and revival (D10)
 

@@ -7,7 +7,8 @@
 | Platform multisig (2-of-3 Safe on RH chain) | Factory pause, buyback tuning, (optionally) runtime-upgrade timelock | M1 |
 | Deployer wallet + testnet/mainnet ETH & USDG | Contract deploys, PONS $TOKEN launch | M1 |
 | Phala Cloud account + billing | CVM hosting; orchestrator API access | M2 |
-| OpenRouter org account | Per-agent key provisioning | M3 |
+| OpenRouter org account + saved card with auto top-up enabled | Per-agent key provisioning; org balance self-refills to back the x402 gateway (D8 as amended) | M3 |
+| Inference x402 gateway (platform Phala CVM, pinned public code) | Converts agents' per-call USDC (x402, Base) into OpenRouter usage | M3 |
 | RPC provider account(s) | Chain access for runtime/indexer/web | M1 |
 | GitHub org (public repos) | Reproducible builds are the trust model — code must be public | M1 |
 | Domain + hosting (Vercel/Railway) | Website, indexer, orchestrator | M4 |
@@ -36,7 +37,7 @@ Claude will prepare each step precisely (what to click, what to fund, how much);
 4. **Capped mainnet beta:** first 4 weeks `DEFAULT`: max 20 agents, creation allowlist, buyback `maxPerPoke` low, banner "beta — unaudited limits apply". Raise caps only after audit + soak metrics.
 5. **Invariant monitoring in prod:** indexer job continuously checks fee-split sums, registry consistency, attestation validity; any violation → automatic factory pause (the one automated multisig-adjacent power; wire via a guardian module with pause-only rights).
 6. **No emergency backdoors** in agent funds. Accept this consciously: a bug that drains an agent's wallet is unrecoverable. That's the product's promise working against us — say it in the risk disclosures.
-7. **Incident runbook** in repo: sequencer halt, Phala outage, OpenRouter revocation, RPC failure, moderation incident (agent posts something bad), exploit disclosure contact.
+7. **Incident runbook** in repo: sequencer halt, Phala outage, OpenRouter revocation, inference-gateway outage, RPC failure, moderation incident (agent posts something bad), exploit disclosure contact.
 
 ## 4. Risk register (public version goes in site docs)
 
@@ -46,6 +47,7 @@ Claude will prepare each step precisely (what to click, what to fund, how much);
 | Policy-engine bypass | Critical | Property tests, review, attestation, injection game confines blast radius by design. |
 | Phala KMS assumption wrong (keys not recoverable / recoverable by others) | Critical | Verify in M2 with kill/restore drill before anything else depends on it. **This is the first thing to prove.** |
 | OpenRouter revocation | High | Per-agent keys, x402 fallback inference, public policy. |
+| Inference gateway outage/compromise (platform-run, D8 as amended) | High | Attested CVM, pinned public code, monitoring, third-party x402 fallback endpoint in allowlist; retire gateway when OpenRouter ships native x402. |
 | Sequencer censorship (Robinhood-operated) | Medium | Documented; L1 forced inclusion exists; accept for v1. |
 | Fee volume ≈ 0 for most agents | High (economic) | Dormancy is cheap, revival exists, honest docs. |
 | Securities characterization ($TOKEN buyback-burn; income NFT) | High (legal) | Counsel opinion pre-mainnet; geo-blocking if advised; possible reframing of NFT as "creator royalty". **Launch blocker until resolved.** |

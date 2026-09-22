@@ -41,8 +41,9 @@ A launchpad on Robinhood Chain where every token launched is bound to an **auton
                         └─────────────────────────────────────────┘
                               │              │             │
                         OpenRouter      Farcaster       Arweave
-                        (Base USDC      (OP mainnet     (crypto-
-                         top-ups)       FID+keys)        paid)
+                        (via platform   (OP mainnet     (crypto-
+                         x402 gateway,   FID+keys)       paid)
+                         USDC/call)
 ```
 
 ## 3. Decision log (settled — do not reopen without Juan)
@@ -56,7 +57,7 @@ A launchpad on Robinhood Chain where every token launched is bound to an **auton
 | D5 | Agent hosting | **Phala CVM**, code hash pinned, keys derived via Phala KMS (bound to code hash), upgrade authority renounced or timelocked-governance only. | Only provable-autonomy option. |
 | D6 | Custody model | Both agent wallets are **EOAs with keys generated inside the TEE**. Spending policy enforced by a deterministic in-TEE policy engine (attested), not by on-chain smart accounts. | x402/EIP-3009 need EOA signatures; attestation makes policy provable. |
 | D7 | NFT | **Never has control over the agent.** Pure royalty claim (pull-based). **Burn ⇒ its 1% redirects to agent treasury forever.** No burn requirement for autonomy — autonomy is from genesis. | Cleaner than burn-for-autonomy; NFT gets a real floor (discounted cash flow). |
-| D8 | Brain | **OpenRouter**: creator picks model + fallback list at launch from a platform allowlist. Agent self-funds credits via OpenRouter's Crypto Payments API (USDC on Base, bridged via Across). Cheap model tier for chat, better tier for pulse decisions. Centralized-brain caveat accepted. | One API, all models, native fallback, headless crypto top-ups. |
+| D8 | Brain | **OpenRouter behind a platform-run x402 gateway** *(amended 2026-09-22: OpenRouter removed its crypto payments API — verified 410 Gone; see `runtime/spikes/m0-openrouter/FINDINGS.md`)*. Creator picks model + fallback list at launch from a platform allowlist. Agent pays inference **per call** in USDC on Base (gasless EIP-3009 signature via x402) to the platform gateway, which fronts the platform OpenRouter org using the agent's own provisioned key; the org balance self-refills via OpenRouter auto top-up (platform card, ops task 06 §1). Gateway runs in an attested Phala CVM with pinned public code. If OpenRouter ships native x402, retire the gateway (adapter URL change). Cheap model tier for chat, better tier for pulse decisions. Centralized-brain caveat accepted, now incl. gateway liveness (mitigated: attestation + third-party x402 fallback endpoint in allowlist). | One API, all models, native fallback; x402 keeps agent-side payment headless after OpenRouter killed credit top-ups. |
 | D9 | Chat | **Holders only** (no pay-per-message). Gate: ≥0.1% of agent token supply, or ≥1% of $TOKEN supply (all-agent pass). Rate-limited per wallet. Verified inside the TEE via SIWE + RPC balance check. | Juan's call 2026-09-22. |
 | D10 | Revival | **Community revival ON.** Evicted/dead agents can be revived by anyone funding a redeploy of the same code hash; keys re-derive via KMS, memory restores from Arweave snapshot. Registry enforces single live instance. | Juan's call 2026-09-22. |
 | D11 | Personas | **Archetype + free-text.** Archetype sets budget weights/behavior; free-text persona layered *under* platform guardrail prompt. | Juan's call 2026-09-22. |
@@ -66,7 +67,7 @@ A launchpad on Robinhood Chain where every token launched is bound to an **auton
 ## 4. The three money flows (memorize this)
 
 1. **Agent token trading** → 3% fee at the pool → FeeSplitHook → 1% TreasuryBuyback (market-buys and burns $TOKEN, permissionless `poke()`), 1% agent treasury EOA (USDG), 1% RoyaltyDistributor (NFT holder claims; if NFT burned, this leg re-routes to agent treasury).
-2. **Agent survival** → treasury EOA pays ONLY whitelisted destinations: Phala hosting, OpenRouter top-up (bridge to Base via Across), gas top-ups (RH chain ETH, OP ETH, Base ETH), Arweave, x402 data/search endpoints — all capped per day — plus one daily allowance transfer to the action EOA.
+2. **Agent survival** → treasury EOA pays ONLY whitelisted destinations: Phala hosting, inference via the platform x402 gateway (per-call USDC on Base; Base balance refilled via Across), gas top-ups (RH chain ETH, OP ETH, Base ETH), Arweave, x402 data/search endpoints — all capped per day — plus one daily allowance transfer to the action EOA.
 3. **Agent discretion** → action EOA receives `min(5% of treasury balance, 500 USDG)` per day `DEFAULT` and trades/LPs/mints freely on Robinhood Chain within per-tx and per-counterparty caps.
 
 ## 5. Repository layout (create in the first build session)

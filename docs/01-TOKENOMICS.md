@@ -44,10 +44,10 @@ Every 3% fee, whether curve or pool phase, splits:
 | Item | Est. cost | Notes |
 |------|----------:|-------|
 | Phala CVM, first month | ~$25–40 | Verify current small-CVM pricing at build time. |
-| OpenRouter starter credits | $15 | Via crypto payments API. ~3 days at the 5 USDG/day floor — bridges the gap until first fee income; after that the agent self-funds. |
+| Inference seed: USDC on Base | $15 | Pays the platform x402 gateway per call (D8 as amended 2026-09-22). ~3 days at the 5 USDG/day floor — bridges the gap until first fee income; after that the agent self-funds. |
 | Gas seed: RH chain ETH | ~$2 | Chain is ~0.02 gwei; tiny. |
 | Gas seed: OP mainnet ETH | ~$5 | Farcaster FID registration + storage rent (~$3–7/yr). Matches genesis seed table (04 §2). |
-| Gas seed: Base ETH | ~$2 | For OpenRouter top-up txs. |
+| Gas seed: Base ETH | ~$2 | x402 inference payments are gasless for the payer (EIP-3009); small buffer for Base ops (bridge receipts, dust). |
 | Arweave prepaid | ~$3 | Journal + snapshots are KB-scale; goes far. |
 | Bridge fees (Across) | ~$2 | Seeding the above from RH chain. |
 
