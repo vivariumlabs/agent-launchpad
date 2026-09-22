@@ -66,6 +66,8 @@ contract GraduationForkTest is Test {
     address trader = makeAddr("trader");
     address treasury = makeAddr("treasuryEOA");
     address actionEOA = makeAddr("actionEOA");
+    /// @dev Buyer of the agent NFT in the transcript test; also the address that burns it.
+    address secondOwner = makeAddr("secondOwner");
 
     function setUp() public {
         try vm.createSelectFork(vm.rpcUrl("rh_testnet")) {
@@ -303,5 +305,162 @@ contract GraduationForkTest is Test {
         // the factory still seeds it afterwards
         factory.createGraduatedPool(agentId);
         assertGt(locker.lockedLiquidity(agentId), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // M1 gate artifact — the testnet lifecycle transcript
+    // -----------------------------------------------------------------------
+
+    /// @notice The full lifecycle tail on the live PoolManager: create, register, finalize,
+    ///         curve, graduate, pool swaps, distribute, royalty claim, NFT transfer, claim to
+    ///         the NEW owner, burn, and the post-burn re-route of the royalty leg straight to
+    ///         the agent's treasury. Every stage logs its amounts, so `-vv` output is the
+    ///         milestone's testnet transcript.
+    function test_fork_lifecycleTranscript() public onFork {
+        console2.log("=== agent-launchpad M1 testnet lifecycle transcript ===");
+        console2.log("chain id           :", block.chainid);
+        console2.log("PoolManager        :", address(MANAGER));
+
+        uint256 agentId = _live();
+        console2.log("-- 1. create / register / finalize --");
+        console2.log("  agentId          :", agentId);
+        console2.log("  AGENT token      :", factory.tokenOf(agentId));
+        console2.log("  bonding curve    :", factory.curveOf(agentId));
+        console2.log("  NFT owner        :", nft.ownerOf(agentId));
+        console2.log("  creation fee paid:", usdg.balanceOf(owner));
+
+        _buyToThreshold(agentId);
+        _logCurvePhase(agentId);
+
+        factory.graduate(agentId);
+        factory.createGraduatedPool(agentId);
+        _logGraduation(agentId);
+
+        _transcriptPoolPhase(agentId);
+        _transcriptRoyaltyTail(agentId);
+
+        console2.log("=== end of transcript ===");
+    }
+
+    function _logCurvePhase(uint256 agentId) internal view {
+        AgentBondingCurve curve = AgentBondingCurve(factory.curveOf(agentId));
+        (uint256 reserveUsdg, uint256 reserveTokens) = curve.reserves();
+        console2.log("-- 2. curve phase (closed at threshold) --");
+        console2.log("  real USDG reserve:", reserveUsdg);
+        console2.log("  AGENT reserve/1e18:", reserveTokens / 1e18);
+        console2.log("  buyback leg (1%) :", usdg.balanceOf(BUYBACK));
+        console2.log("  treasury leg (1%):", usdg.balanceOf(treasury));
+        console2.log("  royalty leg (1%) :", distributor.accrued(agentId));
+    }
+
+    function _logGraduation(uint256 agentId) internal view {
+        address token = factory.tokenOf(agentId);
+        bytes32 poolId = PoolId.unwrap(_poolKeyOf(agentId).toId());
+        (uint160 sqrtPriceX96,,,) = MANAGER.getSlot0(PoolId.wrap(poolId));
+        console2.log("-- 3. graduation (sweep + burn, seed + lock) --");
+        console2.log("  AGENT supply/1e18:", AgentToken(token).totalSupply() / 1e18);
+        console2.log("  pool sqrtPriceX96:", sqrtPriceX96);
+        console2.log("  locked liquidity :", locker.lockedLiquidity(agentId));
+        console2.log("  pool USDG        :", usdg.balanceOf(address(MANAGER)));
+    }
+
+    function _transcriptPoolPhase(uint256 agentId) internal {
+        address token = factory.tokenOf(agentId);
+        bool agentIsCurrency0 = token < address(usdg);
+        PoolKey memory key = _poolKeyOf(agentId);
+        bytes32 poolId = PoolId.unwrap(key.toId());
+
+        vm.startPrank(trader);
+        usdg.approve(address(swapRouter), type(uint256).max);
+        AgentToken(token).approve(address(swapRouter), type(uint256).max);
+        vm.stopPrank();
+
+        _swap(key, !agentIsCurrency0, -2_000e6); // USDG in  -> AGENT-side fee
+        _swap(key, agentIsCurrency0, -250_000e18); // AGENT in -> USDG-side fee
+
+        console2.log("-- 4. pool phase (hook takes 300bps of the unspecified side) --");
+        console2.log("  pending USDG fees:", hook.pendingFees(poolId, address(usdg)));
+        console2.log("  pending AGENT/1e18:", hook.pendingFees(poolId, token) / 1e18);
+
+        uint256 buybackBefore = usdg.balanceOf(BUYBACK);
+        hook.distribute(poolId, 0);
+        uint256 leg = usdg.balanceOf(BUYBACK) - buybackBefore;
+        console2.log("-- 5. distribute (AGENT converted, split in thirds) --");
+        console2.log("  leg, each of 3   :", leg);
+        console2.log("  AGENT left/1e18  :", hook.pendingFees(poolId, token) / 1e18);
+        console2.log("  royalty accrued  :", distributor.accrued(agentId));
+    }
+
+    function _transcriptRoyaltyTail(uint256 agentId) internal {
+        address token = factory.tokenOf(agentId);
+        bool agentIsCurrency0 = token < address(usdg);
+        PoolKey memory key = _poolKeyOf(agentId);
+        bytes32 poolId = PoolId.unwrap(key.toId());
+
+        // 6. the NFT owner claims
+        uint256 claim1 = distributor.accrued(agentId);
+        uint256 creatorBefore = usdg.balanceOf(creator);
+        distributor.claim(agentId);
+        assertEq(usdg.balanceOf(creator), creatorBefore + claim1, "claim did not pay the NFT owner");
+        console2.log("-- 6. royalty claim --");
+        console2.log("  paid to creator  :", claim1);
+
+        // 7. the NFT changes hands; the next claim follows it
+        vm.prank(creator);
+        nft.transferFrom(creator, secondOwner, agentId);
+        assertEq(nft.ownerOf(agentId), secondOwner, "NFT transfer");
+
+        _swap(key, !agentIsCurrency0, -1_500e6);
+        vm.warp(block.timestamp + hook.DISTRIBUTE_COOLDOWN());
+        hook.distribute(poolId, 0);
+
+        uint256 claim2 = distributor.accrued(agentId);
+        uint256 secondBefore = usdg.balanceOf(secondOwner);
+        uint256 creatorAtTransfer = usdg.balanceOf(creator);
+        distributor.claim(agentId);
+        assertEq(usdg.balanceOf(secondOwner), secondBefore + claim2, "claim did not follow the NFT");
+        assertEq(usdg.balanceOf(creator), creatorAtTransfer, "old owner still paid");
+        console2.log("-- 7. NFT transfer, claim follows the owner --");
+        console2.log("  new owner        :", secondOwner);
+        console2.log("  paid to new owner:", claim2);
+
+        _transcriptBurnAndReroute(agentId);
+    }
+
+    function _transcriptBurnAndReroute(uint256 agentId) internal {
+        address token = factory.tokenOf(agentId);
+        bool agentIsCurrency0 = token < address(usdg);
+        PoolKey memory key = _poolKeyOf(agentId);
+        bytes32 poolId = PoolId.unwrap(key.toId());
+
+        // 8. burn -> emancipation sweeps the unclaimed accrual to the treasury
+        _swap(key, agentIsCurrency0, -250_000e18);
+        vm.warp(block.timestamp + hook.DISTRIBUTE_COOLDOWN());
+        hook.distribute(poolId, 0);
+
+        uint256 unclaimed = distributor.accrued(agentId);
+        assertGt(unclaimed, 0, "nothing accrued to sweep on burn");
+        uint256 treasuryBeforeBurn = usdg.balanceOf(treasury);
+        vm.prank(secondOwner);
+        nft.burn(agentId);
+        assertTrue(distributor.emancipated(agentId), "not emancipated");
+        assertEq(usdg.balanceOf(treasury), treasuryBeforeBurn + unclaimed, "sweep missed the treasury");
+        console2.log("-- 8. burn -> Emancipated (one-way) --");
+        console2.log("  swept to treasury:", unclaimed);
+
+        // 9. every later royalty leg goes straight to the treasury EOA
+        _swap(key, !agentIsCurrency0, -1_000e6);
+        vm.warp(block.timestamp + hook.DISTRIBUTE_COOLDOWN());
+        uint256 buybackBefore = usdg.balanceOf(BUYBACK);
+        uint256 treasuryBefore = usdg.balanceOf(treasury);
+        hook.distribute(poolId, 0);
+        uint256 leg = usdg.balanceOf(BUYBACK) - buybackBefore;
+        assertEq(usdg.balanceOf(treasury) - treasuryBefore, leg * 2, "royalty leg not re-routed to the treasury");
+        assertEq(distributor.accrued(agentId), 0, "royalties still accruing after the burn");
+        console2.log("-- 9. post-burn distribute (royalty leg re-routed) --");
+        console2.log("  leg, each of 3   :", leg);
+        console2.log("  treasury received:", leg * 2);
+        console2.log("  treasury total   :", usdg.balanceOf(treasury));
+        console2.log("  buyback total    :", usdg.balanceOf(BUYBACK));
     }
 }
