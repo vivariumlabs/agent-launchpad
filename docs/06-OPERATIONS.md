@@ -27,7 +27,10 @@ Claude will prepare each step precisely (what to click, what to fund, how much);
 | Testnet phase (Phala test CVMs ×5, services) | ~$300 | — |
 | RPC + hosting + domain | — | $100–300 |
 | Orchestrator funding float | $500 | small |
+| Fiat float for OpenRouter auto top-up card (D8 as amended) | 1–2 months' projected inference spend (beta scale: low $1000s) | replenished by monthly USDC→fiat sweep |
 | Audit + legal are the dominant costs; everything else is noise. | | |
+
+**Crypto-revenue accounting (added 2026-09-22):** gateway USDC receipts are platform revenue at receipt; monthly batched USDC→fiat sweeps fund the card float (stablecoin disposals ≈ zero gain/loss but each is reportable). Explicit counsel agenda item at engagement (§5). Same pattern applies to Phala if M3 verification finds agents cannot pay hosting in crypto directly — verify Phala's crypto billing mechanism in M2/M3 before relying on it.
 
 ## 3. Security controls (non-negotiable, because Juan cannot review code)
 
