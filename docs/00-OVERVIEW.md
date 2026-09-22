@@ -60,7 +60,7 @@ A launchpad on Robinhood Chain where every token launched is bound to an **auton
 | D9 | Chat | **Holders only** (no pay-per-message). Gate: ≥0.1% of agent token supply, or ≥1% of $TOKEN supply (all-agent pass). Rate-limited per wallet. Verified inside the TEE via SIWE + RPC balance check. | Juan's call 2026-09-22. |
 | D10 | Revival | **Community revival ON.** Evicted/dead agents can be revived by anyone funding a redeploy of the same code hash; keys re-derive via KMS, memory restores from Arweave snapshot. Registry enforces single live instance. | Juan's call 2026-09-22. |
 | D11 | Personas | **Archetype + free-text.** Archetype sets budget weights/behavior; free-text persona layered *under* platform guardrail prompt. | Juan's call 2026-09-22. |
-| D12 | Out of scope v1 | Hyperliquid, ENS, ERC-8004, agent-hiring-agents, reproduction, cross-chain trading (agent trades only on Robinhood Chain; Base/OP balances exist solely for OpenRouter/Farcaster ops), X/Twitter and all custodial socials, lending (until protocols exist on RH chain). | Scope discipline; each adds friction or an API key. |
+| D12 | Out of scope v1 | Hyperliquid, ENS, ERC-8004, agent-hiring-agents, reproduction, cross-chain trading (agent trades only on Robinhood Chain; Base/OP balances exist solely for x402-inference/Farcaster ops), X/Twitter and all custodial socials, lending (until protocols exist on RH chain). | Scope discipline; each adds friction or an API key. |
 | D13 | Prompt injection | Accepted as **part of the experience** for the action wallet (bounded playground). Survival funds are structurally out of reach of the LLM. | Freysa-as-a-feature. |
 
 ## 4. The three money flows (memorize this)
