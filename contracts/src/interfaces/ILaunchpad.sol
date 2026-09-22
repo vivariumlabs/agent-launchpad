@@ -107,7 +107,19 @@ interface IFeeSplitHook {
 }
 
 interface ILiquidityLocker {
-    function lockPosition(uint256 agentId, uint256 positionId) external; // factory only
+    event Locked(uint256 indexed agentId, bytes32 indexed poolId, uint128 liquidity);
+
+    /// @notice Mints a full-range position directly on the PoolManager and holds it forever.
+    ///         Factory-only, once per agent. The factory transfers both token amounts to the
+    ///         locker immediately before this call; the locker settles them against the mint.
+    ///         There is no removal, collect, or call surface of any kind — liquidity is locked
+    ///         by construction. Rounding dust left after settlement is stranded here (wei-level;
+    ///         equivalent to burned).
+    function lock(uint256 agentId, PoolKey calldata key, uint256 amount0, uint256 amount1)
+        external
+        returns (uint128 liquidity);
+
+    function lockedLiquidity(uint256 agentId) external view returns (uint128);
 }
 
 interface ITreasuryBuyback {

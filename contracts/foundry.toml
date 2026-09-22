@@ -4,6 +4,12 @@ out = "out"
 libs = ["lib"]
 solc_version = "0.8.26"
 evm_version = "cancun"
+# AgentFactory embeds AgentToken's creation code (it deploys one per agent) and the whole
+# graduation preflight; unoptimized it is ~33 KB, well past EIP-170's 24,576-byte runtime limit.
+# With the standard optimizer it lands at ~20 KB. FeeSplitHook (19.9 KB -> 11.4 KB) and the
+# other contracts gain headroom from the same setting.
+optimizer = true
+optimizer_runs = 200
 
 [rpc_endpoints]
 rh_testnet = "https://rpc.testnet.chain.robinhood.com"

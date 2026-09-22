@@ -64,8 +64,11 @@ USDG-denominated, pull-based.
 - `onBurn(agentId)` — only AgentNFT. Sets `emancipated[agentId] = true` (one-way), sweeps unclaimed accrual to `registry.treasuryOf(agentId)`, emits `Emancipated(agentId)`.
 - No admin.
 
-### LiquidityLocker (Sonnet)
-Holds graduated LP position NFTs forever. `lockPosition(agentId, positionId)` — factory only; verifies `positionManager.ownerOf(positionId) == address(this)`. ERC721Receiver. **No** transfer/collect/call functions of any kind. (Pool fee is 0 so the position never accrues fees.)
+### LiquidityLocker (REVISED by Fable, session 2 — replaces the PositionManager/ERC721 model)
+**Decision:** graduation liquidity is minted **directly on the PoolManager** by the locker via its own `unlock` callback + `modifyLiquidity` (full range for tickSpacing 60: ticks ±887220, salt = bytes32(agentId)). PositionManager + Permit2 + GraduationExecutor are dropped entirely. Rationale: a v4 position owned by a contract with no removal function is locked forever by construction; removes the Permit2 two-step, ERC721 custody, and an unconfirmed testnet PositionManager dependency; the M0 spike already proved direct liquidity provisioning against the real PoolManager.
+- `lock(agentId, key, amount0, amount1)` — factory only, once per agent. Factory transfers both amounts to the locker immediately before. Locker computes liquidity via LiquidityAmounts-style math from current sqrtPrice (read live) and the amounts, `poolManager.unlock` → `modifyLiquidity(+L)` → settle both currencies from its own balances (sync/transfer/settle, balance-delta checked). Reverts if liquidity == 0.
+- Rounding dust after settlement is stranded in the locker (wei-level, equivalent to burned; documented).
+- **No** other mutating functions. `lockedLiquidity(agentId)` view.
 
 ### CurveMath + AgentBondingCurve (Opus)
 CurveMath: port PONS `getAmountOut`/`getAmountIn`/`quoteAmountOut` verbatim semantics (input-side fee variant NOT used — see below; we fee the USDG side explicitly, so use the feeBps=0 variants for pricing and handle fees outside the math lib).
@@ -90,11 +93,12 @@ Singleton v4 hook, all agent pools. Permissions: `beforeInitialize` (restrict po
 - Known accepted risk (document in natspec + BUILD-STATE): spot-based impact bound is sandwichable; loss bounded by MAX_IMPACT_BPS × MAX_CONVERSION_PER_CALL per cooldown period.
 - Tests: fork tests against real PoolManager `0x8366a39CC670B4001A1121B8F6A443A643e40951` (RH testnet fork, rpc endpoint `rh_testnet`): exact-in/exact-out both directions, fee exactness invariant (sum of legs == 3% of volume), distribute happy path + conversion cap + impact bound revert + cooldown, hostile-ordering (distribute mid-lifecycle, distribute with zero pending, reentrancy attempt via malicious token — AGENT tokens are ours so token callbacks don't exist, but test with a mock hostile caller), gas snapshot of hooked swap (target < 120k added vs bare swap; record number).
 
-### GraduationGuard / GraduationExecutor / GraduationMath / graduation flow in factory (Opus)
-Port PONS pattern with credit: guard = stateless preflight (int128 ceilings, sqrt bounds, nonzero liquidity, maxLiquidityPerTick) run **before** the irreversible sweep and again before seeding; executor mints the full-range position via PositionManager + Permit2 two-step, position owner = LiquidityLocker, non-throwing dust sweep (AGENT dust → burn; USDG dust → TreasuryBuyback), events for swept/retained.
+### GraduationChecks (library) / GraduationMath / graduation flow in factory (Opus — REVISED, executor dropped)
+GraduationChecks = internal **library** (not a contract) of stateless preflight asserts adapted from PONS GraduationGuard (credit): int128 (not uint128) amount ceilings, sqrtPrice within TickMath bounds, resulting liquidity nonzero and ≤ maxLiquidityPerTick(60). Run **before** the irreversible sweep (phase 1) and again before seeding (phase 2). GraduationMath = PONS port (credit) for sqrtPriceX96FromAmounts.
 Factory graduation, two phases, both permissionless:
 - `graduate(agentId)`: requires `curve.readyToGraduate()`; guard preflight; sweep curve via balance-delta; compute `poolTokens = mulDiv(sweptTokens, sweptQuote, sweptQuote + PHANTOM_QUOTE)`; **burn** `sweptTokens − poolTokens` (AgentToken is Burnable); record swept state; CEI.
-- `createGraduatedPool(agentId)`: retryable; re-check guard; init pool (fee 0, tickSpacing 60, hook) with sqrtPrice from GraduationMath on the sorted amounts; `hook.registerPool`; executor mints; locker locks. Zero swept state before external calls.
+- `createGraduatedPool(agentId)`: retryable; re-check guard; `hook.registerPool` FIRST, then init pool (fee 0, tickSpacing 60, hook) with sqrtPrice from GraduationMath on the sorted amounts; transfer both amounts to locker; `locker.lock`. Zero swept state before external calls.
+- `finalize` uses `pending.imageURI` as the NFT tokenURI (it is the Arweave metadata URI uploaded by the website pre-create; 02 §5 semantics — document in natspec).
 
 ### AgentFactory (Opus)
 Per 02 §2 exactly:
