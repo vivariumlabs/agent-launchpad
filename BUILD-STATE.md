@@ -19,7 +19,7 @@
 - Start M1 (contracts, per 02-CONTRACTS.md; study PONS repo first). M1 depends on none of the above.
 
 ## Blocked on Juan
-- Throwaway-wallet funding (~$10 USDC total + dust ETH, split Base/Arbitrum) + spend approval for the two remaining M0 drills.
+- Fund the drill wallet `0x6930FD5C95a2D9d80F3d165597d55843e8A00154` (key in local-only `.secrets/`, gitignored): ~$5 USDC on **Base** + ~$5 USDC and 0.005 ETH on **Arbitrum One**; spend approval already implicit in funding, Claude will confirm before first spend.
 
 ## Known issues / debt
 - `contracts/lib/` (forge-std, v4-core, v4-periphery) is not committed — run `forge install uniswap/v4-core uniswap/v4-periphery` per `contracts/README.md`; commit hashes used for the green run are pinned there.
