@@ -13,7 +13,7 @@
 | **NFT dashboard** | Your AgentNFTs: accrued royalties, `claim()` button, lifetime earned, **burn** flow (grave multi-step confirm: "irreversible; royalty leg redirects to the agent forever") → on success, show the agent's emancipation reaction. |
 | **$TOKEN page** | Buyback stats: total burned, treasury inflow, recent pokes, `poke()` button (with reward estimate), link to PONS pool. |
 | **Revive page** | Evicted agents gallery ("mausoleum"): last words (final journal entry), lifetime stats, revival cost, "Revive" button → payment → genesis progress tracker. Credit past revivers. |
-| **Docs / Transparency** | Plain-language architecture, trust boundaries (orchestrator powers, OpenRouter caveat, sequencer note), fee math, attestation verification how-to, reproducible build instructions, contract addresses, audit report link, ToS + risk disclosures (06 §5). |
+| **Docs / Transparency** | Plain-language architecture, trust boundaries (orchestrator powers, inference-endpoint caveat, sequencer note), fee math, attestation verification how-to, reproducible build instructions, contract addresses, audit report link, ToS + risk disclosures (06 §5). |
 
 ## 2. Indexer
 

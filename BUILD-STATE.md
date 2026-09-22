@@ -10,17 +10,18 @@
   - name "Global Dollar", symbol "USDG", **decimals = 6** (⚠ propagate: all USDG amounts in contracts/runtime are 6-decimals).
   - **EIP-3009 supported**: `TRANSFER_WITH_AUTHORIZATION_TYPEHASH()` returns the canonical `0x7c7c6cdb67a18743f49ec6fa9b35f50d52ed05cbed4cc592e13b44501c1a2267`; `DOMAIN_SEPARATOR()` set. x402 settlement viable.
 - **M0-1 🟡 Phala KMS — docs confirm the property, empirical drill prepared but blocked on Juan.** dstack KMS docs confirm deterministic keys bound to app identity/compose hash, portable across TEE nodes (exactly what D5/D6/D10 need). Full kill/redeploy drill is scripted and ready: `runtime/spikes/m0-phala-kms/` (app + compose + RUNBOOK, ~30 min once an account exists).
-- **M0-4 🔴 OpenRouter — PARTIALLY FAILED as designed.** Key provisioning via management API: exists, documented, drill script ready (`runtime/spikes/m0-openrouter/provision-drill.sh`). **But the Crypto Payments API that D8's self-funding relies on has been REMOVED** — `POST /api/v1/credits/coinbase` returns 410 Gone (verified live 2026-09-22); only interactive web checkout remains. OpenRouter is publicly transitioning to x402 pay-per-use (USDC on Base, reported May 2026) but has no official x402 docs yet. **Redesign RESOLVED same day — Juan locked in the platform-run x402 gateway (D8 amended in 00 §3):** agent pays per call in USDC on Base (x402/EIP-3009) to a platform gateway in an attested Phala CVM; gateway meters against the agent's provisioned key; org balance self-refills via OpenRouter auto top-up (card). Docs updated: 00 (D8/diagram/money-flow 2), 01 §4, 03 §1/§3/§8, 04 §2/§3, 06 §1/§3.7/§4, 07 M0.4. Details: `runtime/spikes/m0-openrouter/FINDINGS.md`. Remaining M0-4 evidence: provisioning drill + local gateway spike with one paid testnet-USDC call.
+- **M0-4 🔴 OpenRouter — PARTIALLY FAILED as designed.** Key provisioning via management API: exists, documented, drill script ready (`runtime/spikes/m0-openrouter/provision-drill.sh`). **But the Crypto Payments API that D8's self-funding relies on has been REMOVED** — `POST /api/v1/credits/coinbase` returns 410 Gone (verified live 2026-09-22); only interactive web checkout remains. OpenRouter is publicly transitioning to x402 pay-per-use (USDC on Base, reported May 2026) but has no official x402 docs yet. **Final resolution — D8 v3 (2026-09-22, supersedes the same-day gateway v2, which Juan rejected over card/KYC + platform-as-vital-intermediary):** agents pay **independent x402 inference endpoints** directly, per call, USDC on Base (gasless EIP-3009) — DeepSeek-class open models, N≥3 operators, ordered fallbacks, opt-in signed allowlist updates. No OpenRouter, no accounts, no card, no KYC, no platform in the inference pipeline; genesis lost its one custodial touchpoint (no API key sealing). Verified live: x402 inference market exists (DeepSeek-V4-Flash ~$0.10/1M tokens; BlockRun 100+ models). Docs updated across 00/01/03/04/05/06/07. Remaining M0-4 evidence: paid e2e inference calls against ≥2 allowlisted endpoints from a throwaway wallet.
 
 ## In progress / next steps
-- Juan: create Phala Cloud account + billing → run the M0-1 drill (RUNBOOK ready).
-- Juan: create OpenRouter org + management key + ~$20 + saved card with auto top-up → run provision-drill.sh.
-- Claude: build local x402→OpenRouter gateway spike (base: ekailabs/x402-openrouter), one paid testnet-USDC inference call end-to-end (closes M0-4).
-- Then close M0 and start M1 (contracts, per 02-CONTRACTS.md; study PONS repo first). M1 does not depend on the two blocked drills.
+- Juan: create Phala Cloud account (free tier, $20 credits, NO card needed) → Claude runs the M0-1 KMS drill (RUNBOOK ready).
+- Juan: send ~$5 USDC on Base to a throwaway wallet Claude generates + explicit OK to spend → Claude runs paid x402 inference calls against ≥2 endpoints (closes M0-4).
+- Claude: hosting-payment-rail evaluation — Phala's crypto billing is interactive Coinbase Commerce, so agents can't pay hosting headlessly; evaluate **Marlin Oyster** (permissionless CVM rental paid on-chain in USDC) and **Oasis ROFL** (TDX containers, on-chain registry + built-in KMS, ROSE) vs. Phala against: code-hash-bound key derivation, verifiable attestation, persistent volumes, public ingress/TLS, headless on-chain payment by the agent itself, revival semantics, price. Feeds a **D5 decision by Juan** before M2 design freeze. (M0-1 drill still runs on Phala free credits as KMS baseline.)
+- Then close M0 and start M1 (contracts, per 02-CONTRACTS.md; study PONS repo first). M1 depends on none of the above.
 
 ## Blocked on Juan
-- Phala Cloud account/billing (M0-1 empirical drill).
-- OpenRouter org + management key + ~$20 + auto top-up card (M0-4 remaining drill).
+- Phala Cloud account signup (free, no card) for M0-1.
+- ~$5 USDC on Base + spend approval for M0-4.
+- D5 hosting decision once the evaluation lands.
 
 ## Known issues / debt
 - `contracts/lib/` (forge-std, v4-core, v4-periphery) is not committed — run `forge install uniswap/v4-core uniswap/v4-periphery` per `contracts/README.md`; commit hashes used for the green run are pinned there.
@@ -28,7 +29,8 @@
 - Repo has git initialized but no commits yet.
 
 ## Decisions made this session (mirrored to 00 decision log)
-- **D8 amended (Juan, 2026-09-22):** inference funding = platform-run x402 gateway fronting OpenRouter (per-call USDC on Base, EIP-3009), gateway in attested Phala CVM with pinned public code, org self-refills via auto top-up card; retire gateway via adapter URL change if OpenRouter ships native x402. Mirrored into 00 §3 D8.
+- **D8 v3 (Juan, 2026-09-22, supersedes v2 gateway decided earlier the same day):** decentralized x402 inference — agents pay N≥3 independent x402 endpoints directly (USDC on Base, per call); DeepSeek-class open models accepted; no accounts/card/KYC/platform intermediary anywhere in the inference pipeline. Mirrored into 00 §3 D8.
+- **New constraint (Juan):** the whole agent pipeline must run with no card and no KYC — maximum decentralization. Hosting rail now under evaluation accordingly (possible D5 revisit; not yet decided).
 - CLAUDE.md added at repo root: response style + Fable/Opus/Sonnet delegation policy for all future sessions.
 
 ## Evidence links (test runs, tx hashes, attestation refs)

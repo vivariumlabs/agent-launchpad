@@ -8,7 +8,7 @@ Before writing any product code, prove the four assumptions the design stands on
 1. **Phala KMS key derivation** bound to code hash: deploy a hello-world CVM, derive a key, kill it, redeploy same image, assert same key; redeploy modified image, assert *different* key.
 2. **Uniswap v4 on RH testnet**: locate PoolManager, execute a swap through a trivial custom hook in a fork test.
 3. **USDG mechanics** on testnet (address, decimals, EIP-3009 support for x402).
-4. **OpenRouter via platform x402 gateway** *(rescoped 2026-09-22 — crypto payments API removed, D8 amended)*: (a) provision a key via management API and make a call (needs Juan: OpenRouter org + ~$20 + card with auto top-up enabled); (b) run an x402→OpenRouter gateway spike locally and complete one paid inference call end-to-end with testnet USDC.
+4. **x402 inference** *(rescoped twice 2026-09-22 — D8 v3: decentralized x402 endpoints, no accounts)*: one end-to-end paid inference call (DeepSeek-class model) against ≥2 independent allowlisted x402 endpoints from a throwaway wallet (needs Juan: ~$5 USDC on Base + explicit OK to spend it). Plus: hosting-payment-rail evaluation (Phala vs Marlin Oyster vs Oasis ROFL — agents must pay hosting headlessly on-chain; feeds a D5 decision by Juan).
 Exit gate: all four demonstrated with written evidence in BUILD-STATE.md. **If any fails, stop and redesign with Juan before proceeding.**
 
 ## M1 — Contracts (2–4 sessions)

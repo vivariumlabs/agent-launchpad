@@ -7,8 +7,7 @@
 | Platform multisig (2-of-3 Safe on RH chain) | Factory pause, buyback tuning, (optionally) runtime-upgrade timelock | M1 |
 | Deployer wallet + testnet/mainnet ETH & USDG | Contract deploys, PONS $TOKEN launch | M1 |
 | Phala Cloud account + billing | CVM hosting; orchestrator API access | M2 |
-| OpenRouter org account + saved card with auto top-up enabled | Per-agent key provisioning; org balance self-refills to back the x402 gateway (D8 as amended) | M3 |
-| Inference x402 gateway (platform Phala CVM, pinned public code) | Converts agents' per-call USDC (x402, Base) into OpenRouter usage | M3 |
+| x402 inference-endpoint allowlist curation (no account — an ops duty) | Maintain signed endpoint×model list, N≥3 independent operators, health monitoring (D8 v3) | M2 |
 | RPC provider account(s) | Chain access for runtime/indexer/web | M1 |
 | GitHub org (public repos) | Reproducible builds are the trust model — code must be public | M1 |
 | Domain + hosting (Vercel/Railway) | Website, indexer, orchestrator | M4 |
@@ -27,10 +26,9 @@ Claude will prepare each step precisely (what to click, what to fund, how much);
 | Testnet phase (Phala test CVMs ×5, services) | ~$300 | — |
 | RPC + hosting + domain | — | $100–300 |
 | Orchestrator funding float | $500 | small |
-| Fiat float for OpenRouter auto top-up card (D8 as amended) | 1–2 months' projected inference spend (beta scale: low $1000s) | replenished by monthly USDC→fiat sweep |
 | Audit + legal are the dominant costs; everything else is noise. | | |
 
-**Crypto-revenue accounting (added 2026-09-22):** gateway USDC receipts are platform revenue at receipt; monthly batched USDC→fiat sweeps fund the card float (stablecoin disposals ≈ zero gain/loss but each is reportable). Explicit counsel agenda item at engagement (§5). Same pattern applies to Phala if M3 verification finds agents cannot pay hosting in crypto directly — verify Phala's crypto billing mechanism in M2/M3 before relying on it.
+**Crypto-revenue accounting (2026-09-22, updated for D8 v3):** platform crypto receipts (creation fees, PONS stream, buyback flows) are revenue/taxable per counsel's treatment — explicit agenda item at engagement (§5). No fiat float or card is needed for inference (D8 v3 removed the platform from the pipeline). **Open: the hosting payment rail** — Phala Cloud's crypto billing runs through Coinbase Commerce (interactive checkout ⇒ agents cannot pay their own hosting headlessly). Evaluate Marlin Oyster (on-chain USDC CVM rental) and Oasis ROFL (on-chain TDX app hosting) vs. Phala before M2 design freeze; touches D5 — Juan decides.
 
 ## 3. Security controls (non-negotiable, because Juan cannot review code)
 
@@ -40,7 +38,7 @@ Claude will prepare each step precisely (what to click, what to fund, how much);
 4. **Capped mainnet beta:** first 4 weeks `DEFAULT`: max 20 agents, creation allowlist, buyback `maxPerPoke` low, banner "beta — unaudited limits apply". Raise caps only after audit + soak metrics.
 5. **Invariant monitoring in prod:** indexer job continuously checks fee-split sums, registry consistency, attestation validity; any violation → automatic factory pause (the one automated multisig-adjacent power; wire via a guardian module with pause-only rights).
 6. **No emergency backdoors** in agent funds. Accept this consciously: a bug that drains an agent's wallet is unrecoverable. That's the product's promise working against us — say it in the risk disclosures.
-7. **Incident runbook** in repo: sequencer halt, Phala outage, OpenRouter revocation, inference-gateway outage, RPC failure, moderation incident (agent posts something bad), exploit disclosure contact.
+7. **Incident runbook** in repo: sequencer halt, Phala outage, inference-endpoint churn/outage, RPC failure, moderation incident (agent posts something bad), exploit disclosure contact.
 
 ## 4. Risk register (public version goes in site docs)
 
@@ -49,8 +47,9 @@ Claude will prepare each step precisely (what to click, what to fund, how much);
 | FeeSplitHook bug | Critical | Fork tests, invariants, audit, capped beta. |
 | Policy-engine bypass | Critical | Property tests, review, attestation, injection game confines blast radius by design. |
 | Phala KMS assumption wrong (keys not recoverable / recoverable by others) | Critical | Verify in M2 with kill/restore drill before anything else depends on it. **This is the first thing to prove.** |
-| OpenRouter revocation | High | Per-agent keys, x402 fallback inference, public policy. |
-| Inference gateway outage/compromise (platform-run, D8 as amended) | High | Attested CVM, pinned public code, monitoring, third-party x402 fallback endpoint in allowlist; retire gateway when OpenRouter ships native x402. |
+| x402 inference endpoint churn/outage (young operators) | Medium | N≥3 independent operators per agent, health-check rotation, opt-in signed allowlist updates, prefer TEE-attested endpoints as they appear. |
+| Endpoint serves degraded/wrong model (unverifiable identity) | Medium | Price ceilings + output sanity checks in runtime; migrate allowlist toward attested-inference endpoints. |
+| Hosting payment rail: Phala crypto billing = interactive Coinbase Commerce (agents can't pay headlessly) | High | Evaluate Marlin Oyster / Oasis ROFL / Phala alternatives before M2; D5 revisit with Juan. |
 | Sequencer censorship (Robinhood-operated) | Medium | Documented; L1 forced inclusion exists; accept for v1. |
 | Fee volume ≈ 0 for most agents | High (economic) | Dormancy is cheap, revival exists, honest docs. |
 | Securities characterization ($TOKEN buyback-burn; income NFT) | High (legal) | Counsel opinion pre-mainnet; geo-blocking if advised; possible reframing of NFT as "creator royalty". **Launch blocker until resolved.** |

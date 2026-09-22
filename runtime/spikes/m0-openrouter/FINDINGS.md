@@ -1,6 +1,10 @@
 # M0-4 findings — OpenRouter (2026-09-22)
 
-## Status: RESOLVED 2026-09-22 — Juan locked in Option A (platform-run x402 gateway); D8 amended in 00-OVERVIEW.md
+## Status: SUPERSEDED same day — D8 v3 locked in (decentralized x402 inference, no OpenRouter at all)
+
+Juan rejected the gateway (v2) hours after locking it: card/KYC + platform-as-vital-intermediary breaks agent autonomy. Final D8 v3 (see 00 §3): agents pay independent x402 inference endpoints (N≥3 operators, DeepSeek-class models) per call in USDC on Base — no accounts, no keys, no platform in the pipeline. Verified live: x402 inference market exists (e.g. DeepSeek-V4-Flash at ~$0.10/1M tokens; BlockRun 100+ models pay-per-call). `provision-drill.sh` in this folder is now obsolete; M0-4 evidence = paid e2e calls against ≥2 allowlisted endpoints (needs ~$5 USDC on Base from Juan). Related open item: hosting payment rail (Phala = interactive Coinbase Commerce only) — evaluating Marlin Oyster / Oasis ROFL, D5 decision pending.
+
+## Superseded v2 record (gateway, locked then rejected 2026-09-22)
 
 Agent pays per call in USDC on Base (x402/EIP-3009) to a platform-run gateway (pinned public code in an attested Phala CVM; open-source base: ekailabs/x402-openrouter). Gateway meters against the agent's provisioned OpenRouter key; the platform org self-refills via OpenRouter auto top-up on a saved card. Retired via adapter URL change if OpenRouter ships native x402. Affected docs updated: 00 (D8, diagram, money flow 2), 01 §4, 03 §1/§3/§8, 04 §2/§3, 06 §1/§3.7/§4, 07 M0.4.
 

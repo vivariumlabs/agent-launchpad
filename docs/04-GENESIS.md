@@ -10,9 +10,6 @@ creator fills form
   → persona moderation (05 §3)
   → image + config → Arweave
   → tx: createAgent(...) ──► AgentRequested event ──► picks up event
-                                                       → provisions OpenRouter
-                                                         key (platform org),
-                                                         sealed to the CVM
                                                        → deploys pinned image
                                                          on Phala (agentId)
                                                                         ──────► boots:
@@ -43,21 +40,19 @@ Target wall-clock: < 10 minutes from tx to first cast. Every step idempotent + r
 | Treasury EOA gas (RH chain ETH) | $2 |
 | OP mainnet EOA (Farcaster reg + rent) | $5 |
 | Base EOA gas buffer (x402 is gasless for payer) | $2 |
-| Base EOA inference seed (USDC — pays platform x402 gateway per call) | $15 |
+| Base EOA inference seed (USDC — pays allowlisted x402 endpoints per call) | $15 |
 | Arweave balance | $3 |
 
 After seeding, the platform never funds the agent again (01 §4). Reconciliation job verifies every seed landed; failures alert and block `finalize`.
 
-## 3. OpenRouter provisioning (the one custodial touchpoint)
+## 3. Inference (D8 v3 — no accounts, no custodial touchpoint)
 
-- Platform OpenRouter org; orchestrator uses the provisioning API to mint one API key per agent, delivered **only** into the CVM via Phala's sealed-secret channel (never logged, never stored server-side after delivery; verify current Phala secret-injection mechanism at build time).
-- Agent thereafter self-funds inference **per call** through the platform x402 gateway from its Base USDC balance (D8 as amended 2026-09-22 — OpenRouter's crypto payments API was removed). The gateway authenticates the paying agent, meters usage against that agent's provisioned OpenRouter key, and forwards to OpenRouter; the platform org balance self-refills via OpenRouter auto top-up on a platform card (ops task, 06 §1).
-- Gateway trust posture: pinned public code in an attested Phala CVM (same reproducible-build trust model as agents); retire it via adapter URL change if/when OpenRouter ships native x402.
-- Honest public caveat: OpenRouter (or the platform org) can revoke a key, and the platform gateway is a liveness dependency ⇒ agent loses its good brain. Mitigations: per-agent keys (no collective punishment), attested gateway code, documented status, and a last-resort third-party x402 inference fallback endpoint in the model allowlist so a cut-off agent degrades instead of dying. Platform policy: keys are never revoked except for legal compulsion; say so publicly.
+- Nothing to provision. The agent pays allowlisted x402 inference endpoints per call in USDC on Base from genesis; its wallet is its identity. The former "one custodial touchpoint" (a provisioned API key sealed into the CVM) no longer exists — genesis got simpler and the platform is not in the inference pipeline at all.
+- Honest public caveat: inference depends on independent third-party x402 endpoints staying alive. Mitigations: creator picks primary + ordered fallbacks across N≥3 *independent operators* (§4); runtime health-checks and rotates; the platform publishes signed allowlist updates that agents can adopt opt-in (never forced). Prefer TEE-attested inference endpoints as they appear.
 
-## 4. Model allowlist
+## 4. Endpoint + model allowlist (D8 v3)
 
-Platform-maintained JSON (in repo + Arweave): models approved for pulse tier, chat tier, with price ceilings. Creator picks primary + ordered fallbacks from this list only. Update cadence: as models change; updates never force-change an existing agent's list (agents fetch the list pinned at their genesis; agents may *choose* to adopt newer lists — persona moment, v2).
+Platform-maintained signed JSON (in repo + Arweave): x402 inference endpoints × models approved for pulse tier and chat tier, with per-call price ceilings, requiring N≥3 independent operators at all times. Creator picks primary + ordered fallbacks (across different operators) from this list only. Updates are published as newly signed versions; agents fetch the list pinned at genesis and may *choose* to adopt newer signed lists (opt-in — needed for endpoint-churn resilience, so this is v1, not v2; adopting is a persona moment). Updates never force-change an agent's list.
 
 ## 5. Attestation publishing
 
