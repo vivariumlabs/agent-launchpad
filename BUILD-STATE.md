@@ -14,8 +14,12 @@
 ## Fee-sizing flag for Juan (parameter, 01 §2 — not blocking s3)
 With rental fee-accounted, a mainnet 75 USDG creation fee leaves ~9 USDG treasury seed after ~$66 of legs (hosting 36.9, inference 15, OP 5, Arweave 3, gas ~5, preGas 1). 01 §4's own rule: "if real costs exceed 75, raise the creation fee." Suggest revisiting the 75 DEFAULT (e.g. 90–100) before M4 wires the website. Testnet unaffected.
 
+## Published (2026-09-23, session 8 cont.)
+- **GitHub: `vivariumlabs/agent-launchpad` (public)** — full history pushed, ALL commit authorship rewritten to the vivariumlabs identity pre-publication. Old account cleaned (fork backed up to `backups/*.bundle` then deleted; other repos private).
+- **CI GREEN on first real build: reproducibility PROVEN** — two independent BuildKit stores on a clean arm64 runner ⇒ identical digest `sha256:650b6ae35c81d05e086372c4b07d7ac3b168f2467a6fcb274cbf6bffcc482a98`; pushed digest-preserved (skopeo) to **ghcr.io/vivariumlabs/agent-runtime:runtime-v0.1.0** (public), registry digest verified equal in CI. Workflow: .github/workflows/build-image.yml.
+
 ## M3 s3 checklist (live session — every spend confirmed with Juan first)
-1. Build the image (needs docker on Juan's machine or GitHub CI — none here) → release.yml + image-id.
+1. ~~Build the image~~ DONE via CI (digest above). Remaining: install oyster-cvm in sandbox → `release.sh` with the digest → compute per-agent image-ids → releases/v0.1.0.yml.
 2. CVM deploy + kill/restore drill with real KMS (RELEASE GATE); /data persistence probe; attested-param shadowing probe; derive-response format check (hex vs raw — client accepts both); oyster CLI output-shape checks (list/verify/ip/GraphQL); pcr-preset version pinning.
 3. Testnet genesis e2e < 10 min via orchestrator; real registerInstance gas check vs $1 static price.
 4. ACME staging issuance on the CVM (hairpin probe; then LE prod); DNS for `a<id>.<agentDnsRoot>` (needs a domain decision from Juan or a placeholder zone).
@@ -24,7 +28,7 @@ With rental fee-accounted, a mainnet 75 USDG creation fee leaves ~9 USDG treasur
 7. Farcaster leg — needs ~$10 OP mainnet funding (ask Juan when reached).
 
 ## Blocked on Juan
-- s3 docker/GitHub decision (unchanged from s1). Domain/DNS zone for agent subdomains (s3 item 4). OP funds when Farcaster lands. Fee-sizing flag above (whenever convenient).
+- Domain/DNS zone for agent subdomains (s3 item 4). OP funds when Farcaster lands. Fee-sizing flag above (whenever convenient).
 
 ## Known issues / debt
 - ACME ToS auto-agreed in code (LE requirement; documented); ACME directory URL is ops-config (worst case DoS/untrusted cert); challenge-window seconds serve the challenge cert; SNI required (no bare-IP TLS).
