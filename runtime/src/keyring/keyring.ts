@@ -69,6 +69,8 @@ export interface Keyring {
   farcasterPublicKey(): Hex;
   /** Scoped to the memory module only: raw key material for encrypting/decrypting memory state. */
   memKeyForMemoryModule(): Hex;
+  /** Scoped to the chat module only (SPEC-M2C §1): raw 32-byte HMAC key for chat session tokens. */
+  chatSessionKey(): Hex;
 }
 
 export interface CreateKeyringOptions {
@@ -89,11 +91,12 @@ export const CONSUMED_RETENTION_TTLS = 10n;
 export async function createKeyring(kms: KmsClient, opts?: CreateKeyringOptions): Promise<Keyring> {
   const retryOpts = opts?.retry;
 
-  // Sequential, deterministic derive order: treasury, action, fc, mem.
+  // Sequential, deterministic derive order: treasury, action, fc, mem, chat.
   const treasuryKey = await withRetry(() => kms.derive("treasury"), retryOpts);
   const actionKey = await withRetry(() => kms.derive("action"), retryOpts);
   const fcSeed = await withRetry(() => kms.derive("fc"), retryOpts);
   const memKey = await withRetry(() => kms.derive("mem"), retryOpts);
+  const chatKey = await withRetry(() => kms.derive("chat"), retryOpts);
 
   const treasuryAccount: PrivateKeyAccount = privateKeyToAccount(treasuryKey);
   const actionAccount: PrivateKeyAccount = privateKeyToAccount(actionKey);
@@ -262,6 +265,10 @@ export async function createKeyring(kms: KmsClient, opts?: CreateKeyringOptions)
 
     memKeyForMemoryModule(): Hex {
       return memKey;
+    },
+
+    chatSessionKey(): Hex {
+      return chatKey;
     },
   };
 }

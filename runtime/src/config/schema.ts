@@ -166,6 +166,26 @@ export const CapsSchema = z
     gasTargetWei: chainBigintMapSchema(3n * 10n ** 15n, 10n ** 16n),
     /** ADDITIVE (Job D): daemon tick interval, seconds (6 h DEFAULT). */
     daemonIntervalSec: bigintCoerce.default(21_600n),
+    // ---- SPEC-M2C §1 chat server (ADDITIVE, Job E; all DEFAULTs Juan-revisable) ----
+    /** HTTP port of the chat server (TLS terminates in-enclave from M3). */
+    chatPort: z.number().int().min(0).max(65_535).default(8420),
+    /** Max chars (UTF-16 units) of one chat message. */
+    chatMaxChars: z.number().int().positive().default(2000),
+    /** D9 gate: pass iff agentTokenBal ≥ agentSupply × this / 10000 (0.1%) … */
+    chatAgentGateBps: z.number().int().nonnegative().max(10_000).default(10),
+    /** … OR platformTokenBal ≥ platformSupply × this / 10000 (1%). */
+    chatPlatformGateBps: z.number().int().nonnegative().max(10_000).default(100),
+    /** Per-wallet rate limits: sliding hour + UTC day (counted from `chats` dir 'in'). */
+    chatPerHour: z.number().int().nonnegative().default(20),
+    chatPerDay: z.number().int().nonnegative().default(100),
+    /** Chat context: last N exchanges of THIS wallet's history. */
+    chatHistoryMax: z.number().int().nonnegative().default(10),
+    /** Session token lifetime (exp = now + this). */
+    chatSessionTtlSec: bigintCoerce.default(3_600n),
+    /** SIWE nonce lifetime (single-use). */
+    chatNonceTtlSec: bigintCoerce.default(300n),
+    /** Dual-RPC balance read timeout (both reads), ms. */
+    chatGateTimeoutMs: z.number().int().positive().default(3000),
   })
   .default({});
 
@@ -228,6 +248,13 @@ export const PlatformConfigSchema = z.object({
    * buildTx(registerInstance) throws when absent.
    */
   registration: z.object({ codeHash: bytes32Schema, attestationRef: z.string() }).optional(),
+  // ---- SPEC-M2C §1 chat server (ADDITIVE, Job E) ----
+  /** SIWE domain the chat server accepts (EIP-4361 `domain`). Required to construct the chat server. */
+  chatDomain: z.string().min(1).optional(),
+  /** Two INDEPENDENT RPC endpoints for the dual balance read (D9). */
+  chatRpc: z.array(z.string().min(1)).length(2).optional(),
+  /** Platform token ($TOKEN) address on RH — second leg of the D9 chat gate. */
+  platformTokenAddress: addressSchema.optional(),
 });
 
 export type PlatformConfig = z.infer<typeof PlatformConfigSchema>;

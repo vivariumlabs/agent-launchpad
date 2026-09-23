@@ -291,15 +291,44 @@ describe("§6 hygiene: src/policy, src/ledger and src/exec (SPEC-M2B §10)", () 
     }
   });
 
-  it("no Date.now / Math.random / fetch( / process.env in code", () => {
-    const bad = /Date\.now|Math\.random|fetch\(|process\.env/;
-    const hits = files.filter((f) => bad.test(stripComments(readFileSync(f, "utf8"))));
+  it("no Date.now / Math.random / fetch( / process.env / crypto randomness anywhere in src/ (explicit allowlist)", () => {
+    // SPEC-M2C §3/§1: the ONLY exceptions — src/clock.ts may read Date.now (systemClock);
+    // src/chat/nonce.ts may use node:crypto randomBytes. Every other ban still applies to them.
+    const bans: Array<[string, RegExp]> = [
+      ["Date.now", /Date\.now/],
+      ["Math.random", /Math\.random/],
+      ["fetch(", /fetch\(/],
+      ["process.env", /process\.env/],
+      ["randomBytes", /randomBytes|randomUUID|getRandomValues/],
+    ];
+    const allow: Record<string, readonly string[]> = { "clock.ts": ["Date.now"], "chat/nonce.ts": ["randomBytes"] };
+    const hits: string[] = [];
+    for (const f of walk(SRC)) {
+      const rel = f.slice(SRC.length + 1);
+      const code = stripComments(readFileSync(f, "utf8"));
+      for (const [name, re] of bans) if (re.test(code) && !(allow[rel] ?? []).includes(name)) hits.push(`${rel}: ${name}`);
+    }
     expect(hits).toEqual([]);
   });
 
   it("no network/fs/time imports", () => {
     const bad = /from\s+["'](node:)?(http|https|net|dgram|tls|fs|child_process|worker_threads)["']|new Date\(/;
     const hits = files.filter((f) => bad.test(stripComments(readFileSync(f, "utf8"))));
+    expect(hits).toEqual([]);
+  });
+
+  it("src/chat (SPEC-M2C §1): no `any`, no new Date(, no fs/net imports; node:http ONLY in chat/server.ts (listen wrapper)", () => {
+    const chat = walk(join(SRC, "chat"));
+    expect(chat.map((f) => f.slice(SRC.length + 1))).toContain("chat/nonce.ts");
+    const hits: string[] = [];
+    for (const f of chat) {
+      const rel = f.slice(SRC.length + 1);
+      const code = stripComments(readFileSync(f, "utf8"));
+      if (/(:\s*any\b|\bas\s+any\b|<any>|any\[\])/.test(code)) hits.push(`${rel}: any`);
+      if (/new Date\(|parseFloat|toFixed\(/.test(code)) hits.push(`${rel}: time/float`);
+      if (/from\s+["'](node:)?(https|net|dgram|tls|fs|child_process|worker_threads)["']/.test(code)) hits.push(`${rel}: import`);
+      if (/from\s+["'](node:)?http["']/.test(code) && rel !== "chat/server.ts") hits.push(`${rel}: http`);
+    }
     expect(hits).toEqual([]);
   });
 
