@@ -4,9 +4,11 @@
 # from runtime/ via defaults.run.working-directory; the lint test (runtime/test/build/
 # repro-lint.test.ts) reads this file at ../.github/workflows/build-image.yml.
 #
-# Trigger: tag `runtime-vX.Y.Z` (or manual). Output: OCI archive + digest as a workflow artifact.
-# Pushing to a registry and cutting releases/<version>.yml are deliberate maintainer steps
-# (runtime/docs/REPRODUCIBLE-BUILD.md §Publishing) — no registry credentials live here.
+# Trigger: tag `runtime-vX.Y.Z` (or manual). Output: OCI archive + digest as a workflow artifact,
+# AND (tag builds) the identical image pushed to ghcr.io/<owner>/agent-runtime via skopeo with
+# preserved digests — the registry digest EQUALS the verified local digest, so anyone can
+# `docker pull ghcr.io/...@sha256:<digest>` exactly what the reproducible build produced.
+# Cutting releases/<version>.yml stays a deliberate maintainer step (REPRODUCIBLE-BUILD.md).
 # Every action is pinned by full commit SHA (no floating tags; runtime/test/build/repro-lint.test.ts).
 name: runtime-image
 
@@ -19,6 +21,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 jobs:
   build:
@@ -58,3 +61,23 @@ jobs:
             ${{ runner.temp }}/image/build-info.txt
           if-no-files-found: error
           retention-days: 90
+
+      - name: Push to ghcr (digest-preserved via skopeo; tag builds only)
+        if: startsWith(github.ref, 'refs/tags/runtime-v')
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          command -v skopeo >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q skopeo; }
+          DIGEST=$(cut -d' ' -f1 < "$RUNNER_TEMP/image/image-digest.txt")
+          REF="ghcr.io/${OWNER}/agent-runtime"
+          skopeo copy --preserve-digests --dest-creds "${OWNER}:${GHCR_TOKEN}" \
+            "oci-archive:$RUNNER_TEMP/image/agent-runtime.oci.tar" \
+            "docker://${REF}:${GITHUB_REF_NAME}"
+          # Verify the registry serves the exact verified digest
+          REMOTE=$(skopeo inspect --creds "${OWNER}:${GHCR_TOKEN}" --format '{{.Digest}}' "docker://${REF}:${GITHUB_REF_NAME}")
+          echo "local:  ${DIGEST}"
+          echo "remote: ${REMOTE}"
+          [ "${DIGEST}" = "${REMOTE}" ] || { echo "DIGEST MISMATCH — registry mutated the image"; exit 1; }
+          echo "pull-by-digest: ${REF}@${REMOTE}" >> "$GITHUB_STEP_SUMMARY"
