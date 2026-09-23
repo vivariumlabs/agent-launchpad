@@ -43,4 +43,4 @@ With rental fee-accounted, a mainnet 75 USDG creation fee leaves ~9 USDG treasur
 ## Evidence links
 - Runtime: `npm run typecheck && npm test` **48 files, 1295/1295**; `test:integration` **14/14** (incl. revival generation-bump on real registry). Genesis: **91/91 unit + 3/3 anvil integration** (full launch lifecycle, no manual funding after preGas). Re-verified by Fable directly 2026-09-23.
 - ANS-104: byte-identical vs arbundles (8 cases). Live RH testnet read-only revival gate check (no spend).
-- Git: `58977f3` (M3 s1) → this commit.
+- Git (hashes rewritten 2026-09-23 when authorship moved to the vivariumlabs identity pre-publication): `8cc04eb` (M2 closed) → `85a109a` (M3 s1) → `424adf7` (M3 s2).
