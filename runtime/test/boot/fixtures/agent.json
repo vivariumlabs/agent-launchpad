@@ -1,0 +1,117 @@
+{
+  "platform": {
+    "registry": {
+      "rh": "0xf100000100000000000000000000000000000001",
+      "base": "0xf100000200000000000000000000000000000002",
+      "arbitrum": "0xf100000300000000000000000000000000000003",
+      "optimism": "0xf100000400000000000000000000000000000004"
+    },
+    "feeSplitHook": {
+      "rh": "0xf200000100000000000000000000000000000001",
+      "base": "0xf200000200000000000000000000000000000002",
+      "arbitrum": "0xf200000300000000000000000000000000000003",
+      "optimism": "0xf200000400000000000000000000000000000004"
+    },
+    "poolManager": {
+      "rh": "0xf300000100000000000000000000000000000001",
+      "base": "0xf300000200000000000000000000000000000002",
+      "arbitrum": "0xf300000300000000000000000000000000000003",
+      "optimism": "0xf300000400000000000000000000000000000004"
+    },
+    "usdg": {
+      "rh": "0xf4000001000000000000000000000000000000f4",
+      "base": "0xf4000002000000000000000000000000000000f5",
+      "arbitrum": "0xf4000003000000000000000000000000000000f6",
+      "optimism": "0xf4000004000000000000000000000000000000f7"
+    },
+    "across": {
+      "spokePool": {
+        "rh": "0xcc000001000000000000000000000000000000c1",
+        "base": "0xcc000002000000000000000000000000000000c2",
+        "arbitrum": "0xcc000003000000000000000000000000000000c3",
+        "optimism": "0xcc000004000000000000000000000000000000c4"
+      }
+    },
+    "marlin": {
+      "paymentAddresses": [
+        "0xbb000001000000000000000000000000000000b1"
+      ]
+    },
+    "arweaveFundingAddress": "0xdd000001000000000000000000000000000000d1",
+    "x402Allowlist": [
+      {
+        "id": "ep-a",
+        "kind": "inference",
+        "operator": "op-a",
+        "url": "https://a.invalid",
+        "payTo": "0xee000002000000000000000000000000000000e2",
+        "model": "m-main",
+        "tier": "standard",
+        "maxPricePerMTokUsd": "2000000",
+        "attested": false
+      },
+      {
+        "id": "ep-b",
+        "kind": "inference",
+        "operator": "op-b",
+        "url": "https://b.invalid",
+        "payTo": "0xee000001000000000000000000000000000000e1",
+        "model": "m-alt",
+        "tier": "cheap",
+        "maxPricePerMTokUsd": "1000000",
+        "attested": false
+      }
+    ],
+    "caps": {},
+    "usdc": {
+      "rh": "0x5c000001000000000000000000000000000005c1",
+      "base": "0x5c000002000000000000000000000000000005c2",
+      "arbitrum": "0x5c000003000000000000000000000000000005c3",
+      "optimism": "0x5c000004000000000000000000000000000005c4"
+    },
+    "weth": {
+      "rh": "0x5e000001000000000000000000000000000005e1",
+      "base": "0x5e000002000000000000000000000000000005e2",
+      "arbitrum": "0x5e000003000000000000000000000000000005e3",
+      "optimism": "0x5e000004000000000000000000000000000005e4"
+    },
+    "chainIds": {
+      "rh": 46630
+    },
+    "swapRouter": {
+      "rh": "0x5a000001000000000000000000000000000005a1"
+    },
+    "usdcDomain": {
+      "base": {
+        "name": "USD Coin",
+        "version": "2",
+        "chainId": 8453,
+        "verifyingContract": "0x5c000002000000000000000000000000000005c2"
+      }
+    },
+    "agentTokenAddress": "0x7070aaaa0000000000000000000000007070bbbb",
+    "agentPoolId": "0x9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d",
+    "registration": {
+      "codeHash": "0xc0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0de",
+      "attestationRef": "mock-attestation"
+    }
+  },
+  "agent": {
+    "agentId": 1,
+    "name": "Boot Agent",
+    "symbol": "BOOT",
+    "archetype": "trader",
+    "persona": "a test agent booted from a fixture config",
+    "models": {
+      "primary": "m-main",
+      "fallbacks": [
+        "m-alt"
+      ],
+      "chatTier": "cheap"
+    },
+    "social": {
+      "postsPerDay": 4,
+      "repliesPerDay": 4
+    }
+  }
+}

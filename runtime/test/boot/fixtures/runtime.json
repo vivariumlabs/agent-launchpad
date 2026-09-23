@@ -1,0 +1,10 @@
+{
+  "mockKms": {
+    "imageId": "image-boot",
+    "agentId": "agent-boot"
+  },
+  "hosting": {
+    "paidUntil": "1791028800",
+    "ratePerDay": "1700000"
+  }
+}

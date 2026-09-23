@@ -306,6 +306,36 @@ describe("execute: non-tx kinds", () => {
     expect(r.error).toMatch(/x402Auth/);
     expect(h.ledger().inferenceSpent.pulse).toBe(300_000n);
   });
+  it("inference meterOnly (free x402 endpoint) ⇒ approval + ledger + log, NO K3 signature, NO error", async () => {
+    const h = await harness();
+    const r = await execute(INF, h.deps, { meterOnly: true });
+    expect(r.verdict.allow).toBe(true);
+    expect(r.error).toBeUndefined();
+    expect(r.x402).toBeUndefined();
+    expect(h.chain.sent).toHaveLength(0);
+    expect(h.ledger().inferenceSpent.pulse).toBe(300_000n);
+    expect(h.logs).toEqual([r]);
+  });
+  it("inference meterOnly still gated: a deny is a deny (nothing consumed)", async () => {
+    const h = await harness();
+    const r = await execute({ ...INF, maxCostUsd: 10n ** 12n }, h.deps, { meterOnly: true });
+    expect(r.verdict.allow).toBe(false);
+    expect(h.ledger().inferenceSpent.pulse).toBe(0n);
+    expect(h.logs).toEqual([r]);
+  });
+  it("meterOnly misuse throws before evaluation: non-inference kind, or together with x402Auth", async () => {
+    const h = await harness();
+    const hash = (await import("../../src/policy/approval.js")).actionHash(INF);
+    await expect(execute({ kind: "heartbeat" }, h.deps, { meterOnly: true })).rejects.toThrow(/meterOnly/);
+    await expect(
+      execute(INF, h.deps, {
+        meterOnly: true,
+        x402Auth: { to: PAYTO_INF_CHEAP, value: 1n, validAfter: NOW, validBefore: NOW + 600n, nonce: x402Nonce(hash) },
+      }),
+    ).rejects.toThrow(/mutually exclusive/);
+    expect(h.logs).toHaveLength(0);
+    expect(h.ledger().inferenceSpent.pulse).toBe(0n);
+  });
   it("castPost ⇒ K4 signature (verifies), published, counter incremented; PACE_CAP after postsPerDay", async () => {
     const h = await harness();
     const bytes = stringToBytes("hello world");

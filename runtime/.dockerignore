@@ -1,0 +1,25 @@
+# Allowlist: the image is built from EXACTLY these inputs (they are also the paths
+# scripts/build-image.sh checks for a clean tree and derives SOURCE_DATE_EPOCH from).
+*
+!package.json
+!package-lock.json
+!tsconfig.json
+!tsconfig.build.json
+!src
+
+# Belt and braces: never in the context even if the allowlist above is widened.
+.git
+**/.git
+.secrets
+**/.secrets
+**/.env*
+**/*.pem
+**/*.key
+test
+**/test
+**/*.test.ts
+node_modules
+dist
+out
+releases
+spikes

@@ -1,11 +1,21 @@
 // SPEC-M2C §3 — composition root. boot(opts) assembles the whole runtime from a
 // config file alone (plus optional test/ops overrides) and returns Runtime{start,stop}.
 //
-//   (1) config: read JSON (node:fs) → configHash over the WHOLE file (canonicalEncode) →
-//       if opts.expectedHash is given it MUST match, else throw (03 §10 refuse-to-boot) →
-//       zod-validate (file envelope strict; platform + agent via their schemas).
-//   (2) keyring: createKeyring (withRetry inside) over opts.kms ?? MockKms(runtime.mockKms)
-//       (real Nautilus KMS = M3) → resolveConfig with the derived OwnAddresses → attachConfig.
+//   (1) config — two layouts (SPEC-M3 §3b):
+//       SPLIT (opts.runtimeConfigPath): agent.json = FROZEN { platform, agent } + runtime.json = ops
+//         (loadSplitConfig); configHash = frozenHash = keccak256(canonicalEncode(agent.json));
+//         opts.expectedHash is checked against it; relative ops paths resolve against runtime.json.
+//       LEGACY single file { platform, agent, runtime } (tests/dev): configHash over the WHOLE file
+//         (opts.expectedHash checked against it, as before); frozenHash over its { platform, agent }.
+//       Then Oyster init-param cross-checks, all BEFORE the KMS is touched:
+//       - <initParamsDir>/agent-id (attested) present ⇒ MUST equal "agent-<agent.agentId>";
+//       - <initParamsDir>/config-hash (attested; part of the image-id ⇒ keys bind to
+//         (codeHash, agentId, configHash)) present ⇒ MUST equal frozenHash; ABSENT with
+//         runtime.tee ⇒ refuse (no unbound TEE boots).
+//   (2) keyring: createKeyring (withRetry inside) over opts.kms ?? (runtime.tee ? NautilusKms(runtime.kmsUrl)
+//       : MockKms(runtime.mockKms)) → resolveConfig with the derived OwnAddresses →
+//       [tee: fetch attestation (withRetry) → buildReport → sink.upload → cfg.registration =
+//       {codeHash: runtime.imageId, attestationRef}] (SPEC-M3 §2) → attachConfig.
 //   (3) memory: open dbPath; missing or corrupt AND snapshots exist ⇒ restoreLatest (03 §7).
 //       A corrupt file is moved aside (never deleted). Corrupt with no snapshot, or snapshots
 //       present but none restorable ⇒ throw (a fresh ledger would reset daily caps).
@@ -14,7 +24,9 @@
 //       EVERY set (budget consumption is persisted before any side effect); clock; chain
 //       (override, else RealChainClient when runtime.rpc urls are configured, else
 //       MockChainClient); getState from ChainClient reads.
-//   (5) EndpointManager; chat server (createChatServer, enabled iff cfg.chatDomain is set;
+//   (5) EndpointManager; paid inference: runtime.x402.enabled ⇒ X402HttpInference over
+//       FetchHttpClient (or overrides.http / overrides.paidInference) handed to pulse + chat, else
+//       the overrides.x402 + overrides.llm mocks; chat server (createChatServer, enabled iff cfg.chatDomain is set;
 //       dual balance readers over two independent RealChainClients on cfg.chatRpc, or
 //       overrides.chatReaders); pulse + daemon schedulers as
 //       start/stop-able setTimeout loops driven by nextPulse / nextTickAt (timers injectable),
@@ -33,11 +45,15 @@ import { createChatServer, type ChatServer } from "./chat/server.js";
 import { systemClock, type Clock } from "./clock.js";
 import {
   AgentConfigSchema,
-  bigintCoerce,
+  ConfigHashMismatchError,
   configHash,
+  frozenConfigHash,
+  loadSplitConfig,
   PlatformConfigSchema,
   resolveConfig,
+  RuntimeOpsConfigSchema,
   type ResolvedConfig,
+  type RuntimeOpsConfig,
 } from "./config/schema.js";
 import { kvTierStore, KV_LAST_SNAPSHOT_AT, tick, type ChainReader, type DaemonDeps, type TickReport, type TierStore } from "./daemon/daemon.js";
 import { nextTickAt } from "./daemon/scheduler.js";
@@ -46,51 +62,42 @@ import { MockChainClient, type ChainClient } from "./exec/chain.js";
 import { execute, type ExecDeps, type ExecResult, type LedgerStore } from "./exec/execute.js";
 import { RealChainClient } from "./exec/chainViem.js";
 import { createKeyring, type Keyring } from "./keyring/keyring.js";
-import type { KmsClient, WithRetryOptions } from "./keyring/kms.js";
+import { withRetry, type KmsClient, type WithRetryOptions } from "./keyring/kms.js";
 import { MockKms } from "./keyring/mockKms.js";
+import { assertLocalhostUrl, DEFAULT_KMS_URL, NautilusKms } from "./keyring/nautilusKms.js";
+import {
+  buildReport,
+  DEFAULT_ATTESTATION_URL,
+  fetchAttestation,
+  LocalDirSink as AttestationDirSink,
+  type AttestationSink,
+} from "./attestation/attestation.js";
 import { dayKeyOf, emptyLedger } from "./ledger/ledger.js";
 import { EndpointManager } from "./llm/endpoints.js";
-import type { LlmClient, X402Transport } from "./llm/types.js";
+import { FetchHttpClient } from "./llm/httpFetch.js";
+import type { HttpClient, LlmClient, X402Transport } from "./llm/types.js";
+import { X402HttpInference, type PaidInferenceClient } from "./llm/x402Http.js";
 import { kvGet, kvSet, loadLedger, openMemory, saveLedger, type MemoryDb } from "./memory/db.js";
 import { LocalDirSink, restoreLatest, writeSnapshot, type SnapshotSink } from "./memory/snapshot.js";
 import { runwayDays } from "./policy/runway.js";
 import type { BudgetLedger, Chain, UnixSeconds, WalletBalances, WalletState } from "./policy/types.js";
 import { tierOf } from "./pulse/tier.js";
 import type { ContextSources } from "./pulse/context.js";
-import { memoryCastSink, memoryJournalSink, recordExecResult, runPulse, type PulseResult } from "./pulse/pulse.js";
+import { annotateExecResult, memoryCastSink, memoryJournalSink, recordExecResult, runPulse, type PulseResult } from "./pulse/pulse.js";
 import { announceTierTransition, budgetPressure, nextPulse, planNext, type TierTransition } from "./pulse/scheduler.js";
 import { pulsesEnabled, PULSE_INTERVAL_SEC, type Tier } from "./pulse/tier.js";
 import { contentAction } from "./pulse/tools.js";
 
 // ---------------------------------------------------------------------------
-// Config file envelope (ADDITIVE, boot-owned; platform/agent schemas untouched)
+// Config file envelope. The ops ("runtime") section schema now lives in config/schema.ts as
+// RuntimeOpsConfigSchema (= runtime.json in the split layout, SPEC-M3 §3b); aliases kept.
 // ---------------------------------------------------------------------------
 
-const optionalUrl = z.string().url().optional();
+export const RuntimeSectionSchema = RuntimeOpsConfigSchema;
+export type RuntimeSection = RuntimeOpsConfig;
+export { ConfigHashMismatchError };
 
-export const RuntimeSectionSchema = z
-  .object({
-    /** M2 MockKms derivation inputs (fixture). Real Nautilus KMS = M3; opts.kms overrides. */
-    mockKms: z.object({ imageId: z.string().min(1), agentId: z.string().min(1) }).strict().optional(),
-    /** Memory DB path, relative to the config file (DEFAULT "memory.sqlite"); opts.dbPath overrides. */
-    dbPath: z.string().min(1).optional(),
-    /** Snapshot dir (mock Arweave), relative to the config file (DEFAULT "snapshots"). */
-    snapshotDir: z.string().min(1).optional(),
-    /** Per-chain RPC urls. Any set ⇒ RealChainClient (src/exec/chainViem.ts) over those chains. */
-    rpc: z.object({ rh: optionalUrl, base: optionalUrl, arbitrum: optionalUrl, optimism: optionalUrl }).strict().default({}),
-    /**
-     * M2 stand-in for the Oyster rental reader (no Marlin reads in ChainClient yet):
-     * current rental expiry (unix s) + live rate (USDC(6)/day). Absent ⇒ rate 0 (infinite runway).
-     */
-    hosting: z.object({ paidUntil: bigintCoerce, ratePerDay: bigintCoerce }).strict().optional(),
-    /** Chat server bind address (DEFAULT "127.0.0.1"; the enclave passes its ingress address). */
-    chatHost: z.string().min(1).optional(),
-  })
-  .strict()
-  .default({});
-
-export type RuntimeSection = z.infer<typeof RuntimeSectionSchema>;
-
+/** LEGACY single-file layout { platform, agent, runtime } (tests/dev). */
 export const RuntimeConfigFileSchema = z
   .object({
     platform: z.unknown(),
@@ -99,14 +106,76 @@ export const RuntimeConfigFileSchema = z
   })
   .strict();
 
-export class ConfigHashMismatchError extends Error {
+/** DEFAULT Oyster init-params mount (docs.marlin.org "Initialization parameters"; compose mounts it ro). */
+export const DEFAULT_INIT_PARAMS_DIR = "/init-params";
+
+export class InitParamAgentIdMismatchError extends Error {
   constructor(
+    readonly path: string,
     readonly expected: string,
-    readonly actual: Hex,
+    readonly actual: string,
   ) {
-    super(`config hash mismatch: expected ${expected}, file hashes to ${actual} — refusing to boot (03 §10)`);
-    this.name = "ConfigHashMismatchError";
+    super(
+      `init param ${path} = ${JSON.stringify(actual.slice(0, 64))} but config agent.agentId ⇒ ${JSON.stringify(expected)} — ` +
+        "refusing to boot (the attested agent-id binds the KMS keys; config and deployment disagree)",
+    );
+    this.name = "InitParamAgentIdMismatchError";
   }
+}
+
+/**
+ * Oyster init-param cross-check. `<dir>/agent-id` absent ⇒ "absent" (not an Oyster deployment, or
+ * the param was not passed). Present ⇒ must equal "agent-<agentId>" (canonical decimal, no
+ * padding; a single trailing newline is tolerated), else InitParamAgentIdMismatchError.
+ */
+export function checkInitParamAgentId(dir: string, agentId: number): "absent" | "match" {
+  const path = resolve(dir, "agent-id");
+  if (!existsSync(path)) return "absent";
+  const raw = readFileSync(path, "utf8");
+  const actual = raw.endsWith("\r\n") ? raw.slice(0, -2) : raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+  const expected = `agent-${agentId.toString(10)}`;
+  if (actual !== expected) throw new InitParamAgentIdMismatchError(path, expected, actual);
+  return "match";
+}
+
+export class InitParamConfigHashMismatchError extends Error {
+  constructor(
+    readonly path: string,
+    readonly expected: Hex,
+    readonly actual: string,
+  ) {
+    super(
+      `init param ${path} = ${JSON.stringify(actual.slice(0, 80))} but the frozen agent config hashes to ${expected} — ` +
+        "refusing to boot (the attested config-hash binds the KMS keys; agent.json is not the one this enclave was deployed for)",
+    );
+    this.name = "InitParamConfigHashMismatchError";
+  }
+}
+
+export class UnboundTeeBootError extends Error {
+  constructor(readonly path: string) {
+    super(
+      `runtime.tee: no attested config-hash init param at ${path} — refusing to boot (no unbound TEE boots: ` +
+        "deploy with --init-params config-hash:1:0:utf8:0x<frozen config hash>, SPEC-M3 §3b)",
+    );
+    this.name = "UnboundTeeBootError";
+  }
+}
+
+/**
+ * Oyster init-param config-hash check (SPEC-M3 §3b). `<dir>/config-hash` absent ⇒ "absent" (the
+ * caller refuses when runtime.tee). Present ⇒ must be EXACTLY the lowercase 0x-hex frozenHash (a
+ * single trailing newline is tolerated; the utf8 bytes are part of the image-id, so no other
+ * spelling is canonical), else InitParamConfigHashMismatchError.
+ */
+export function checkInitParamConfigHash(dir: string, frozenHash: Hex): "absent" | "match" {
+  const path = resolve(dir, "config-hash");
+  if (!existsSync(path)) return "absent";
+  const raw = readFileSync(path, "utf8");
+  const actual = raw.endsWith("\r\n") ? raw.slice(0, -2) : raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+  const expected = frozenHash.toLowerCase() as Hex;
+  if (actual !== expected) throw new InitParamConfigHashMismatchError(path, expected, actual);
+  return "match";
 }
 
 // ---------------------------------------------------------------------------
@@ -153,18 +222,33 @@ export interface BootOverrides {
   chatReaders?: readonly [BalanceReader, BalanceReader];
   /** Chat listen port override (e.g. 0 = ephemeral in tests; DEFAULT cfg.chatPort). */
   chatPort?: number;
+  /** SPEC-M3 §2: attestation report sink (DEFAULT LocalDirSink(runtime.attestationDir)). tee: true only. */
+  attestationSink?: AttestationSink;
+  /** Paid-inference client used by pulse + chat regardless of runtime.x402 (tests). */
+  paidInference?: PaidInferenceClient;
+  /** HttpClient for the real x402 transport when runtime.x402.enabled (DEFAULT FetchHttpClient). */
+  http?: HttpClient;
 }
 
 export interface BootOptions {
+  /** Legacy single-file config, or — with runtimeConfigPath — the FROZEN agent.json (SPEC-M3 §3b). */
   configPath: string;
+  /** SPEC-M3 §3b: mutable ops config (runtime.json). Given ⇒ split layout; absent ⇒ legacy single file. */
+  runtimeConfigPath?: string;
   dbPath?: string;
   snapshotDir?: string;
-  /** keccak256 of the canonical config JSON; mismatch ⇒ throw (03 §10). */
+  /** keccak256 of the canonical config JSON (split: of agent.json = frozenHash; legacy: whole file); mismatch ⇒ throw (03 §10). */
   expectedHash?: string;
   kms?: KmsClient;
   clock?: Clock;
   /** withRetry options for boot-time KMS derives. */
   kmsRetry?: WithRetryOptions;
+  /**
+   * Oyster init-params dir override (tests / non-Oyster harnesses; main.ts never sets it). With
+   * runtime.tee the dir is NOT configurable from the (unattested) runtime config: it is this, else
+   * DEFAULT_INIT_PARAMS_DIR — see boot step (1b).
+   */
+  initParamsDir?: string;
   overrides?: BootOverrides;
 }
 
@@ -190,6 +274,10 @@ export interface Runtime {
   readonly exec: ExecDeps;
   /** Snapshot id the memory DB was restored from at boot, or null. */
   readonly restoredFrom: string | null;
+  /** SPEC-M3 §3b: keccak256(canonicalEncode({platform, agent})) — the value the attested config-hash init param binds. */
+  readonly frozenHash: Hex;
+  /** SPEC-M3 §2: attestation report ref (sink id) when booted with runtime.tee, else null. */
+  readonly attestationRef: string | null;
   /** Chat server (null ⇒ disabled: cfg.chatDomain not set). */
   readonly chat: ChatServer | null;
   /** Bound chat address once start() has listened, else null. */
@@ -237,12 +325,19 @@ function errMsg(e: unknown): string {
 
 export interface LoadedConfig {
   json: unknown;
+  /** Runtime.configHash: legacy = whole file; split = frozenHash. */
   hash: Hex;
+  /** keccak256(canonicalEncode({platform, agent})) — compared with the attested config-hash init param. */
+  frozenHash: Hex;
   platform: unknown;
   agent: unknown;
   runtime: RuntimeSection;
+  /** Base dir for relative ops paths (legacy: the config file's dir; split: runtime.json's dir). */
+  baseDir: string;
+  layout: "legacy" | "split";
 }
 
+/** Legacy single-file layout { platform, agent, runtime }. */
 export function loadConfigFile(configPath: string, expectedHash?: string): LoadedConfig {
   const text = readFileSync(configPath, "utf8");
   let json: unknown;
@@ -259,7 +354,31 @@ export function loadConfigFile(configPath: string, expectedHash?: string): Loade
   // Validate platform + agent BEFORE touching the KMS (fail fast on a bad file).
   PlatformConfigSchema.parse(file.platform);
   AgentConfigSchema.parse(file.agent);
-  return { json, hash, platform: file.platform, agent: file.agent, runtime: file.runtime };
+  return {
+    json,
+    hash,
+    frozenHash: frozenConfigHash({ platform: file.platform, agent: file.agent }),
+    platform: file.platform,
+    agent: file.agent,
+    runtime: file.runtime,
+    baseDir: dirname(resolve(configPath)),
+    layout: "legacy",
+  };
+}
+
+/** SPEC-M3 §3b split layout: agent.json (frozen) + runtime.json (ops). expectedHash is checked against frozenHash. */
+export function loadSplitConfigFiles(agentPath: string, runtimePath: string, expectedHash?: string): LoadedConfig {
+  const split = loadSplitConfig({ agentPath, runtimePath, ...(expectedHash !== undefined ? { expectedHash } : {}) });
+  return {
+    json: split.frozenJson,
+    hash: split.frozenHash,
+    frozenHash: split.frozenHash,
+    platform: split.frozenJson.platform,
+    agent: split.frozenJson.agent,
+    runtime: split.ops,
+    baseDir: dirname(resolve(runtimePath)),
+    layout: "split",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -575,18 +694,82 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
   const timers = ov.timers ?? nodeTimers;
 
   // (1) config
-  const loaded = loadConfigFile(opts.configPath, opts.expectedHash);
-  const baseDir = dirname(resolve(opts.configPath));
+  const loaded =
+    opts.runtimeConfigPath !== undefined
+      ? loadSplitConfigFiles(opts.configPath, opts.runtimeConfigPath, opts.expectedHash)
+      : loadConfigFile(opts.configPath, opts.expectedHash);
+  const baseDir = loaded.baseDir;
   const rt = loaded.runtime;
 
+  // (1b) Oyster init-param cross-checks (before the KMS: a mismatched deployment derives nothing).
+  const agentId = AgentConfigSchema.parse(loaded.agent).agentId;
+  // tee: runtime.json is UNATTESTED — letting it relocate the init-params dir would let an operator
+  // point boot at a forged config-hash file (e.g. an extra unattested init param) while the REAL attested
+  // hash keeps deriving the real keys. So under tee the dir is fixed (compose mounts /init-params, measured).
+  if (rt.tee && rt.initParamsDir !== undefined && resolve(baseDir, rt.initParamsDir) !== DEFAULT_INIT_PARAMS_DIR) {
+    throw new Error(
+      `boot: runtime.tee forbids runtime.initParamsDir (${rt.initParamsDir}) — the attested init params are read only from ${DEFAULT_INIT_PARAMS_DIR}`,
+    );
+  }
+  const initParamsDir = resolve(baseDir, opts.initParamsDir ?? rt.initParamsDir ?? DEFAULT_INIT_PARAMS_DIR);
+  const initParam = checkInitParamAgentId(initParamsDir, agentId);
+  if (initParam === "match") logger.info(`init param agent-id matches config (agent-${agentId})`);
+  else if (rt.tee) logger.warn(`runtime.tee: no ${resolve(initParamsDir, "agent-id")} — deployed without the attested agent-id init param?`);
+  // SPEC-M3 §3b: the attested config-hash binds keys to (codeHash, agentId, configHash).
+  const hashParam = checkInitParamConfigHash(initParamsDir, loaded.frozenHash);
+  if (hashParam === "match") logger.info(`init param config-hash matches the frozen config (${loaded.frozenHash})`);
+  else if (rt.tee) throw new UnboundTeeBootError(resolve(initParamsDir, "config-hash"));
+
   // (2) keyring
+  // tee: validate everything that can fail fast BEFORE touching the KMS (no retry loop on a bad config).
+  let teeImageId: Hex | undefined;
+  let attestationUrl = DEFAULT_ATTESTATION_URL;
+  if (rt.tee) {
+    if (rt.imageId === undefined) throw new Error("boot: runtime.tee requires runtime.imageId (enclave image id = registry codeHash)");
+    teeImageId = rt.imageId.toLowerCase() as Hex;
+    attestationUrl = rt.attestationUrl ?? DEFAULT_ATTESTATION_URL;
+    assertLocalhostUrl(attestationUrl);
+    if (rt.mockKms !== undefined) logger.warn("runtime.tee: runtime.mockKms is ignored (NautilusKms in use)");
+  }
   let kms = opts.kms;
   if (kms === undefined) {
-    if (rt.mockKms === undefined) throw new Error("boot: no KMS — pass opts.kms or set runtime.mockKms (real Nautilus KMS = M3)");
-    kms = new MockKms(rt.mockKms.imageId, rt.mockKms.agentId);
+    if (rt.tee) {
+      kms = new NautilusKms(rt.kmsUrl ?? DEFAULT_KMS_URL); // throws on a non-localhost URL
+    } else {
+      if (rt.mockKms === undefined) throw new Error("boot: no KMS — pass opts.kms, set runtime.mockKms, or runtime.tee");
+      kms = new MockKms(rt.mockKms.imageId, rt.mockKms.agentId);
+    }
   }
   const keyring = await createKeyring(kms, opts.kmsRetry !== undefined ? { retry: opts.kmsRetry } : undefined);
-  const cfg = resolveConfig({ platform: loaded.platform, agent: loaded.agent, ownAddresses: keyring.addresses() });
+  const resolved = resolveConfig({ platform: loaded.platform, agent: loaded.agent, ownAddresses: keyring.addresses() });
+
+  // (2b) SPEC-M3 §2 attestation: quote → report → sink → cfg.registration (real registerInstance values,
+  // replacing any fixture registration from the platform config).
+  let attestationRef: string | null = null;
+  let registration = resolved.registration;
+  if (teeImageId !== undefined) {
+    const quote = await withRetry(() => fetchAttestation(attestationUrl), opts.kmsRetry);
+    const now = clock();
+    const report = buildReport({
+      quote,
+      imageId: teeImageId,
+      imageDigest: rt.imageDigest ?? null,
+      configHash: loaded.frozenHash, // = the attested config-hash init param (SPEC-M3 §3b)
+      ownAddresses: keyring.addresses(),
+      generation: null, // assigned by AgentRegistry.registerInstance; unknown pre-registration
+      now,
+    });
+    const sink = ov.attestationSink ?? new AttestationDirSink(resolve(baseDir, rt.attestationDir ?? "attestations"));
+    if (sink instanceof AttestationDirSink) {
+      logger.warn(
+        "!!! attestationRef is a LOCAL file — not publishable on-chain; wire Turbo (s2) before registering for real !!!",
+      );
+    }
+    attestationRef = await sink.upload(report, now);
+    registration = { codeHash: teeImageId, attestationRef };
+    logger.info(`attestation report published: ${attestationRef} (imageId ${teeImageId})`);
+  }
+  const cfg: ResolvedConfig = teeImageId !== undefined ? { ...resolved, registration } : resolved;
   keyring.attachConfig(cfg);
 
   // (3) memory
@@ -625,12 +808,22 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
     journalSink: memoryJournalSink(db, clock),
   };
   /** Logged deps: every ExecResult → actions row. Daemon, announcements, chat. */
-  const exec: ExecDeps = { ...baseExec, log: (r) => recordExecResult(db, r, clock()) };
+  const exec: ExecDeps = { ...baseExec, log: (r) => recordExecResult(db, r, clock()), annotate: (r) => annotateExecResult(db, r) };
 
   // (5) components
   const endpoints = new EndpointManager(cfg);
   const llm = ov.llm ?? unconfiguredLlm;
   const x402 = ov.x402 ?? unconfiguredX402;
+  // SPEC-M3 §3 real transport. Pulse + chat pass their own memory-logged ExecDeps per call; `exec`
+  // (logged) is only the client's default.
+  let paidInference: PaidInferenceClient | undefined = ov.paidInference;
+  if (paidInference === undefined && rt.x402.enabled) {
+    const insecure = rt.x402.allowInsecureHttp ?? false;
+    if (insecure) logger.warn("runtime.x402.allowInsecureHttp: plain http:// inference endpoints permitted — local testing ONLY");
+    const http = ov.http ?? new FetchHttpClient({ allowInsecureHttp: insecure });
+    paidInference = new X402HttpInference({ http, exec, endpoints });
+    logger.info("x402: real HTTP transport enabled for pulse + chat inference");
+  }
   const chainReader = ov.chainReader ?? chainFeeReader(chain, cfg);
 
   const sharedTiers = kvTierStore(db);
@@ -670,6 +863,7 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
       db,
       llm,
       x402,
+      ...(paidInference !== undefined ? { paidInference } : {}),
       endpoints,
       readers,
       tier: async () => sharedTiers.get() ?? tierOf(runwayDays(await getState(), clock(), undefined, cfg.bridgeHaircutBps)),
@@ -732,7 +926,17 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
       announcement = await announceOnce(transition, "pulse");
     }
 
-    const result = await runPulse({ exec: baseExec, db, llm, x402, endpoints, tier: tierNow, prevTier: prev, sources: ov.sources });
+    const result = await runPulse({
+      exec: baseExec,
+      db,
+      llm,
+      x402,
+      ...(paidInference !== undefined ? { paidInference } : {}),
+      endpoints,
+      tier: tierNow,
+      prevTier: prev,
+      sources: ov.sources,
+    });
     saveLedger(db, ledger.get(), clock());
     const nextPulseAt = nextPulse(tierNow, result.stretch, clock());
     kvSet(db, KV_PULSE_NEXT_AT, nextPulseAt === null ? "" : nextPulseAt.toString(10));
@@ -761,11 +965,13 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
   const runtime: Runtime = {
     cfg,
     configHash: loaded.hash,
+    frozenHash: loaded.frozenHash,
     db,
     keyring,
     endpoints,
     exec,
     restoredFrom: opened.restoredFrom,
+    attestationRef,
     chat,
     chatAddress: () => chatAddr,
 

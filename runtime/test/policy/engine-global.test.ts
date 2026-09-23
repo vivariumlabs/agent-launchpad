@@ -301,7 +301,7 @@ describe("§6 hygiene: src/policy, src/ledger and src/exec (SPEC-M2B §10)", () 
       ["process.env", /process\.env/],
       ["randomBytes", /randomBytes|randomUUID|getRandomValues/],
     ];
-    const allow: Record<string, readonly string[]> = { "clock.ts": ["Date.now"], "chat/nonce.ts": ["randomBytes"] };
+    const allow: Record<string, readonly string[]> = { "clock.ts": ["Date.now"], "chat/nonce.ts": ["randomBytes"], "llm/httpFetch.ts": ["fetch("] /* SPEC-M3 §3: the ONLY x402 network file */ };
     const hits: string[] = [];
     for (const f of walk(SRC)) {
       const rel = f.slice(SRC.length + 1);
@@ -328,6 +328,20 @@ describe("§6 hygiene: src/policy, src/ledger and src/exec (SPEC-M2B §10)", () 
       if (/new Date\(|parseFloat|toFixed\(/.test(code)) hits.push(`${rel}: time/float`);
       if (/from\s+["'](node:)?(https|net|dgram|tls|fs|child_process|worker_threads)["']/.test(code)) hits.push(`${rel}: import`);
       if (/from\s+["'](node:)?http["']/.test(code) && rel !== "chat/server.ts") hits.push(`${rel}: http`);
+    }
+    expect(hits).toEqual([]);
+  });
+
+  it("src/keyring + src/attestation (SPEC-M3 §2): no `any`, no new Date(; node:http ONLY in keyring/nautilusKms.ts + attestation/attestation.ts (localhost-only); no https/net/tls", () => {
+    const httpAllow = ["keyring/nautilusKms.ts", "attestation/attestation.ts"];
+    const hits: string[] = [];
+    for (const f of [...walk(join(SRC, "keyring")), ...walk(join(SRC, "attestation"))]) {
+      const rel = f.slice(SRC.length + 1);
+      const code = stripComments(readFileSync(f, "utf8"));
+      if (/(:\s*any\b|\bas\s+any\b|<any>|any\[\])/.test(code)) hits.push(`${rel}: any`);
+      if (/new Date\(/.test(code)) hits.push(`${rel}: new Date(`);
+      if (/from\s+["'](node:)?(https|net|dgram|tls|child_process|worker_threads)["']/.test(code)) hits.push(`${rel}: import`);
+      if (/from\s+["'](node:)?http["']/.test(code) && !httpAllow.includes(rel)) hits.push(`${rel}: http`);
     }
     expect(hits).toEqual([]);
   });

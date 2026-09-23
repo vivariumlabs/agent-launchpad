@@ -162,13 +162,20 @@ describe("contract checks", () => {
     expect([c.fail("a"), c.fail("a"), c.count("b")]).toEqual([2 - 1, 2, 0]);
     c.succeed("a");
     expect(c.count("a")).toBe(0);
-    // 4000 chars ⇒ 1000 tokens × $2/MTok × 1.5 = $0.003 = 3000 (USD6)
-    expect(estimateMaxCostUsd(4000, 2_000_000n, 500_000n)).toBe(3000n);
+    // SPEC-M3 §3c: (ceil(chars/4) + maxTokens) tokens × price × 1.5
+    // 4000 chars, 0 output ⇒ 1000 tokens × $2/MTok × 1.5 = $0.003 = 3000 (USD6)
+    expect(estimateMaxCostUsd(4000, 0, 2_000_000n, 500_000n)).toBe(3000n);
+    // + 1000 output tokens ⇒ 2000 tokens ⇒ 6000
+    expect(estimateMaxCostUsd(4000, 1000, 2_000_000n, 500_000n)).toBe(6000n);
     // ceil on tokens and on cost
-    expect(estimateMaxCostUsd(1, 1n, 500_000n)).toBe(1n);
-    expect(estimateMaxCostUsd(4001, 2_000_000n, 500_000n)).toBe(3003n);
-    // clamp ≤ maxPerCallUsd
-    expect(estimateMaxCostUsd(4_000_000, 300_000_000n, 500_000n)).toBe(500_000n);
+    expect(estimateMaxCostUsd(1, 0, 1n, 500_000n)).toBe(1n);
+    expect(estimateMaxCostUsd(4001, 0, 2_000_000n, 500_000n)).toBe(3003n);
+    expect(estimateMaxCostUsd(4001, 1, 2_000_000n, 500_000n)).toBe(3006n);
+    // clamp ≤ maxPerCallUsd (output alone can hit the cap)
+    expect(estimateMaxCostUsd(4_000_000, 0, 300_000_000n, 500_000n)).toBe(500_000n);
+    expect(estimateMaxCostUsd(0, 2048, 300_000_000n, 500_000n)).toBe(500_000n);
+    expect(() => estimateMaxCostUsd(10, -1, 1n, 500_000n)).toThrow(/maxTokens/);
+    expect(() => estimateMaxCostUsd(10, 1.5, 1n, 500_000n)).toThrow(/maxTokens/);
   });
 });
 

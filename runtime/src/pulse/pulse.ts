@@ -20,20 +20,27 @@
 //   (6) each toolCall → tool table (tools.ts) → execute()/swapExactIn(); unknown tool / bad
 //       args ⇒ logged skip, pulse continues. A response whose known-tool calls carry bad
 //       args counts as a contract failure for the endpoint (valid calls still run, no retry).
-//   (7) diary → memory kv; journal → journalWrite execute; posts → castPost execute.
+//   (7) diary → memory kv; journal → journalWrite execute; posts → castPost execute;
+//       publicSummary (SPEC-M3 §3, ≤ PUBLIC_SUMMARY_MAX_CHARS) → kv PUBLIC_SUMMARY_KV_KEY (served by
+//       the chat server as the agent's public self-summary); over-cap ⇒ logged skip, kv unchanged.
 //   (8) heartbeat via execute.
 //   (9) persist ledger (+ every ExecResult was logged to `actions` as it happened).
 // runPulse never throws: unexpected errors are collected in `result.errors`.
+//
+// SPEC-M3 §3 salt: every inference action carries salt = inferenceSalt(now, phase, attempt)
+// (phase "canary" | "pulse"; attempt = canary index / LLM attempt index) — deterministic, no
+// randomness; distinct per call within a pulse ⇒ distinct actionHash ⇒ distinct K3 x402 nonce.
 
 import { bytesToString, type Hex } from "viem";
 import { execute, swapExactIn, type CastSink, type ExecDeps, type ExecResult, type JournalSink } from "../exec/execute.js";
 import { x402Nonce, type X402AuthInput } from "../keyring/keyring.js";
 import { CANARY_MAX_TOKENS, CANARY_SYSTEM, canaryFor, scoreCanary, type CanaryId } from "../llm/canaries.js";
 import { contractCheck, estimateMaxCostUsd, type PulseOutput } from "../llm/checks.js";
+import { inferenceSalt, X402_VALIDITY_SEC, type PaidInferenceClient, type PaidInferenceResult } from "../llm/x402Http.js";
 import type { EndpointManager } from "../llm/endpoints.js";
 import type { LlmClient, LlmMessage, LlmRequest, ToolSpec, X402Transport } from "../llm/types.js";
 import type { X402AllowlistEntry } from "../config/schema.js";
-import { insertAction, insertJournal, insertPost, insertTrade, kvSet, saveLedger, type MemoryDb } from "../memory/db.js";
+import { insertAction, insertJournal, insertPost, insertTrade, kvSet, saveLedger, updateLatestActionJson, type MemoryDb } from "../memory/db.js";
 import { actionHash, canonicalEncode } from "../policy/approval.js";
 import { runwayDays } from "../policy/runway.js";
 import type { DenyCode, ProposedAction, UnixSeconds } from "../policy/types.js";
@@ -46,14 +53,23 @@ import { contentAction, mapToolCall, toolSchemaFor } from "./tools.js";
 export const MAX_LLM_ATTEMPTS = 2;
 /** Pulse response token budget (contract check: chars ≤ 4 × this). */
 export const PULSE_MAX_TOKENS = 2048;
-/** EIP-3009 validity window used for x402 auths (K3 allows ≤ 3600 s). */
-export const X402_VALIDITY_SEC = 600n;
+/** EIP-3009 validity window used for x402 auths (K3 allows ≤ 3600 s). Canonical in llm/x402Http.ts. */
+export { X402_VALIDITY_SEC };
+/** kv key of the agent's PUBLIC self-summary (read by the chat server; never the private rolling summary). */
+export const PUBLIC_SUMMARY_KV_KEY = "chat.publicSelfSummary";
+/** SPEC-M3 §3: publicSummary ≤ 1000 chars (UTF-16 units). */
+export const PUBLIC_SUMMARY_MAX_CHARS = 1000;
 
 export interface PulseDeps {
   exec: ExecDeps;
   db: MemoryDb;
   llm: LlmClient;
   x402: X402Transport;
+  /**
+   * SPEC-M3 §3 real x402 transport (boot: runtime.x402.enabled). Present ⇒ paidCall goes through it
+   * (quote-aware approval, K3, paid retry, envelope check in one call) and llm/x402 are unused.
+   */
+  paidInference?: PaidInferenceClient;
   endpoints: EndpointManager;
   sources?: ContextSources;
   /** Current tier from the scheduler; computed from runway (with prevTier hysteresis) if absent. */
@@ -104,17 +120,31 @@ export interface PulseResult {
 // memory logging + sinks
 // ---------------------------------------------------------------------------
 
+/** actions.json for an ExecResult: canonicalEncode(action), plus `x402Settlement` when present. */
+export function execResultJson(r: ExecResult): string {
+  return r.x402Settlement === undefined ? canonicalEncode(r.action) : canonicalEncode({ ...r.action, x402Settlement: r.x402Settlement });
+}
+
 export function recordExecResult(db: MemoryDb, r: ExecResult, ts: UnixSeconds): void {
   const kind: unknown = (r.action as { kind?: unknown }).kind;
   insertAction(db, {
     ts,
     kind: typeof kind === "string" ? kind : "unknown",
-    json: canonicalEncode(r.action),
+    json: execResultJson(r),
     verdict: r.verdict.allow ? "allow" : "deny",
     denyCode: r.verdict.allow ? null : r.verdict.code,
     txHash: r.txHash ?? null,
     error: r.error ?? null,
   });
+}
+
+/**
+ * ExecDeps.annotate implementation: rewrites the already-logged row of the same action (matched by
+ * kind + canonical action json; inference actions carry a unique salt) to include the annotation.
+ */
+export function annotateExecResult(db: MemoryDb, r: ExecResult): void {
+  const kind: unknown = (r.action as { kind?: unknown }).kind;
+  updateLatestActionJson(db, typeof kind === "string" ? kind : "unknown", canonicalEncode(r.action), execResultJson(r));
 }
 
 /** Non-engine log rows: tool skips, K-cap drops, tier transitions. */
@@ -153,6 +183,10 @@ export function memoryExecDeps(exec: ExecDeps, db: MemoryDb, sink?: ExecResult[]
       if (sink !== undefined) sink.push(r);
       if (exec.log !== undefined) await exec.log(r);
     },
+    annotate: async (r: ExecResult) => {
+      annotateExecResult(db, r);
+      if (exec.annotate !== undefined) await exec.annotate(r);
+    },
     castSink: exec.castSink ?? memoryCastSink(db, exec.clock),
     journalSink: exec.journalSink ?? memoryJournalSink(db, exec.clock),
   };
@@ -165,7 +199,35 @@ export function memoryExecDeps(exec: ExecDeps, db: MemoryDb, sink?: ExecResult[]
 type PaidCall =
   | { kind: "ok"; text: string }
   | { kind: "denied"; code: DenyCode; detail: string }
-  | { kind: "price" | "payError" | "llmError" | "quoteError"; detail: string };
+  | { kind: "price" | "payError" | "quoteError"; detail: string }
+  /** `recorded`: the endpoint failure was already counted by the transport (do not re-record). */
+  | { kind: "llmError"; detail: string; recorded?: true }
+  /** Envelope contract failure detected (and counted) by the transport. */
+  | { kind: "contract"; detail: string };
+
+/**
+ * PaidInferenceResult (real transport) → PaidCall. The transport already counted its own endpoint
+ * failures (price ⇒ markUnhealthy, http / post-payment / envelope ⇒ recordContractFailure), so the
+ * mapped outcomes are never re-recorded by runPulse.
+ */
+export function mapPaidInference(r: PaidInferenceResult): PaidCall {
+  switch (r.kind) {
+    case "ok":
+      return { kind: "ok", text: r.text };
+    case "denied":
+      return { kind: "denied", code: r.code, detail: r.detail };
+    case "quoteRejected":
+      return { kind: "price", detail: r.detail };
+    case "httpError":
+      return { kind: "llmError", detail: r.detail, recorded: true };
+    case "payError":
+      return { kind: "payError", detail: r.detail };
+    case "paymentRejected":
+      return { kind: "payError", detail: `payment rejected: ${r.detail}` };
+    case "contract":
+      return { kind: "contract", detail: r.detail };
+  }
+}
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -176,9 +238,21 @@ async function paidCall(
   ex: ExecDeps,
   ep: X402AllowlistEntry,
   base: { system: string; messages: LlmMessage[]; toolSchema: ToolSpec[]; maxTokens: number },
+  phase: "canary" | "pulse",
+  attempt: number,
 ): Promise<PaidCall> {
   const cfg = ex.cfg;
   const now = ex.clock();
+  if (deps.paidInference !== undefined) {
+    // Real transport: the quote check (payTo + price ceiling vs the estimate) happens on the 402 body.
+    const chars = promptChars(base.system, base.messages, base.toolSchema);
+    const estimateUsd = estimateMaxCostUsd(chars, base.maxTokens, ep.maxPricePerMTokUsd, cfg.maxPerCallUsd);
+    const r = await deps.paidInference.call(
+      { endpointId: ep.id, category: "pulse", estimateUsd, salt: inferenceSalt(now, phase, attempt), system: base.system, messages: base.messages, maxTokens: base.maxTokens },
+      ex,
+    );
+    return mapPaidInference(r);
+  }
   let quoted: bigint;
   try {
     quoted = (await deps.x402.quote(ep.id)).pricePerMTokUsd;
@@ -189,8 +263,9 @@ async function paidCall(
     return { kind: "price", detail: `quoted ${quoted} > ceiling ${ep.maxPricePerMTokUsd} per MTok` };
   }
   const chars = promptChars(base.system, base.messages, base.toolSchema);
-  const maxCostUsd = estimateMaxCostUsd(chars, ep.maxPricePerMTokUsd, cfg.maxPerCallUsd);
-  const action: ProposedAction = { kind: "inference", category: "pulse", endpointId: ep.id, maxCostUsd };
+  const maxCostUsd = estimateMaxCostUsd(chars, base.maxTokens, ep.maxPricePerMTokUsd, cfg.maxPerCallUsd);
+  const salt = inferenceSalt(now, phase, attempt);
+  const action: ProposedAction = { kind: "inference", category: "pulse", endpointId: ep.id, maxCostUsd, salt };
   const auth: X402AuthInput = {
     to: ep.payTo,
     value: maxCostUsd,
@@ -270,19 +345,23 @@ export async function runPulse(deps: PulseDeps): Promise<PulseResult> {
     // (0b) daily canaries
     if (deps.endpoints.canaryDue(now)) {
       deps.endpoints.markCanaryRound(now);
-      for (const ep of deps.endpoints.candidates()) {
+      const eps = deps.endpoints.candidates();
+      for (let ci = 0; ci < eps.length; ci++) {
+        const ep = eps[ci]!;
         const c = canaryFor(ep.id, now);
-        const call = await paidCall(deps, ex, ep, {
-          system: CANARY_SYSTEM,
-          messages: [{ role: "user", content: c.prompt }],
-          toolSchema: [],
-          maxTokens: CANARY_MAX_TOKENS,
-        });
+        const call = await paidCall(
+          deps,
+          ex,
+          ep,
+          { system: CANARY_SYSTEM, messages: [{ role: "user", content: c.prompt }], toolSchema: [], maxTokens: CANARY_MAX_TOKENS },
+          "canary",
+          ci,
+        );
         if (call.kind === "denied") {
           result.canaries.push({ endpointId: ep.id, canary: c.id, outcome: "denied", pass: false });
           break; // budget/runway: stop spending on canaries today
         }
-        if (call.kind === "ok" || call.kind === "llmError") {
+        if (call.kind === "ok" || call.kind === "llmError" || call.kind === "contract") {
           const pass = call.kind === "ok" && scoreCanary(c, call.text);
           deps.endpoints.recordCanary(ep.id, pass, now);
           result.canaries.push({ endpointId: ep.id, canary: c.id, outcome: call.kind, pass });
@@ -305,7 +384,7 @@ export async function runPulse(deps: PulseDeps): Promise<PulseResult> {
       const ep = deps.endpoints.select(ex.clock(), { exclude: tried, cheapOnly: tier === "Conserving" });
       if (ep === undefined) break;
       tried.add(ep.id);
-      const call = await paidCall(deps, ex, ep, { system, messages, toolSchema: tools, maxTokens });
+      const call = await paidCall(deps, ex, ep, { system, messages, toolSchema: tools, maxTokens }, "pulse", i);
       if (call.kind === "denied") {
         result.attempts.push({ endpointId: ep.id, outcome: "denied", detail: `${call.code}: ${call.detail}` });
         result.status = "inferenceDenied";
@@ -325,7 +404,7 @@ export async function runPulse(deps: PulseDeps): Promise<PulseResult> {
         }
         continue;
       }
-      if (call.kind === "llmError" || call.kind === "quoteError") deps.endpoints.recordContractFailure(ep.id, ex.clock());
+      if ((call.kind === "llmError" && call.recorded !== true) || call.kind === "quoteError") deps.endpoints.recordContractFailure(ep.id, ex.clock());
       result.attempts.push({ endpointId: ep.id, outcome: call.kind, detail: call.detail });
     }
 
@@ -454,6 +533,15 @@ async function processOutput(output: PulseOutput, tier: Tier, ex: ExecDeps, db: 
     else {
       result.skips.push({ tool: "journal", reason: j.reason, badArgs: false });
       recordNote(db, ex.clock(), "journal", "skip", { bytes: j.reason }, j.reason);
+    }
+  }
+  if (output.publicSummary !== undefined && output.publicSummary.length > 0) {
+    if (output.publicSummary.length > PUBLIC_SUMMARY_MAX_CHARS) {
+      const reason = `publicSummary ${output.publicSummary.length} chars > ${PUBLIC_SUMMARY_MAX_CHARS}`;
+      result.skips.push({ tool: "publicSummary", reason, badArgs: false });
+      recordNote(db, ex.clock(), "publicSummary", "skip", { chars: output.publicSummary.length }, reason);
+    } else {
+      kvSet(db, PUBLIC_SUMMARY_KV_KEY, output.publicSummary);
     }
   }
   for (const post of output.posts ?? []) {

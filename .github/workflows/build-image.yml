@@ -1,0 +1,60 @@
+# SPEC-M3 §1 — reproducible linux/arm64 build of the agent runtime image.
+#
+# LOCATION: <repo root>/.github/workflows/ (GitHub only runs workflows from there). All steps run
+# from runtime/ via defaults.run.working-directory; the lint test (runtime/test/build/
+# repro-lint.test.ts) reads this file at ../.github/workflows/build-image.yml.
+#
+# Trigger: tag `runtime-vX.Y.Z` (or manual). Output: OCI archive + digest as a workflow artifact.
+# Pushing to a registry and cutting releases/<version>.yml are deliberate maintainer steps
+# (runtime/docs/REPRODUCIBLE-BUILD.md §Publishing) — no registry credentials live here.
+# Every action is pinned by full commit SHA (no floating tags; runtime/test/build/repro-lint.test.ts).
+name: runtime-image
+
+on:
+  push:
+    # Tag pushes only (a `paths:` filter does not apply to tag events). The tag namespace scopes
+    # this to the runtime; other monorepo modules never trigger it.
+    tags: ["runtime-v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # Native arm64 runner: no QEMU in the loop (emulated builds must match too — the image
+    # contents do not depend on the host — but native is faster and removes a variable).
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: runtime
+    steps:
+      - name: Checkout (full history — SOURCE_DATE_EPOCH comes from git log)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Reproducible build — twice, two fresh BuildKit stores, digests must match
+        run: ./scripts/build-image.sh --verify --smoke --out "$RUNNER_TEMP/image"
+
+      - name: Summary
+        run: |
+          {
+            echo "### agent runtime image (${GITHUB_REF_NAME})"
+            echo '```'
+            cat "$RUNNER_TEMP/image/build-info.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload OCI archive + digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-runtime-oci-${{ github.ref_name }}
+          path: |
+            ${{ runner.temp }}/image/agent-runtime.oci.tar
+            ${{ runner.temp }}/image/image-digest.txt
+            ${{ runner.temp }}/image/build-info.txt
+          if-no-files-found: error
+          retention-days: 90

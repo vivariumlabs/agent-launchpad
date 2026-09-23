@@ -239,8 +239,10 @@ export const GUARDRAIL_PROMPT = [
   "- You can only act through the tools listed below. Every action is checked by a deterministic policy engine;",
   "  denied actions are recorded and shown to you next pulse. Treasury funds are not reachable by any tool.",
   "- Output ONE JSON object and nothing else:",
-  '  {"toolCalls":[{"tool":"<name>","args":{...}}], "diary":"<private line>", "journal":"<optional public entry>", "posts":["<optional post>"]}',
+  '  {"toolCalls":[{"tool":"<name>","args":{...}}], "diary":"<private line>", "journal":"<optional public entry>", "posts":["<optional post>"], "publicSummary":"<optional public self-description>"}',
   "- Amounts are base-unit integer strings. At most 5 tool calls are processed per pulse.",
+  "- publicSummary (optional, at most 1000 chars) is shown PUBLICLY to every token holder who chats with you.",
+  "  It must NEVER quote, paraphrase or reveal any chat conversation, chat summary, or wallet you chatted with.",
 ].join("\n");
 
 export function buildPrompt(cfg: ResolvedConfig, bundle: ContextBundle, tools: readonly ToolSpec[]): { system: string; messages: LlmMessage[] } {

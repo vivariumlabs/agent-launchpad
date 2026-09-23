@@ -19,6 +19,9 @@
 // - castPost/castReply: contentHash (and parentHash) 32-byte hex.
 // - journalWrite: contentHash 32-byte hex, sizeBytes bigint > 0n.
 // - actionApprove/treasuryApprove: token/spender addresses, amount bigint > 0n.
+// SPEC-M3 §3 (additive):
+// - inference.salt: OPTIONAL, exactly 16 bytes hex when present; forbidden on every other
+//   kind (strict objects). Passed through untouched (hashed via canonicalEncode).
 
 import type { Hex } from "viem";
 import { z } from "zod";
@@ -29,6 +32,9 @@ const positive = z.bigint().refine((v) => v > 0n, { message: "must be > 0" });
 const nonNegative = z.bigint().refine((v) => v >= 0n, { message: "must be >= 0" });
 const bytes32 = z.custom<Hex>((v) => typeof v === "string" && /^0x[0-9a-fA-F]{64}$/.test(v), {
   message: "must be 32-byte hex",
+});
+const bytes16 = z.custom<Hex>((v) => typeof v === "string" && /^0x[0-9a-fA-F]{32}$/.test(v), {
+  message: "must be 16-byte hex",
 });
 
 const purposeSchema = z.enum(["oysterRental", "acrossBridge", "arweaveFunding", "gasTopUp", "x402Data"]);
@@ -60,6 +66,7 @@ export const ProposedActionSchema = z.discriminatedUnion("kind", [
       category: z.enum(["pulse", "chat", "social"]),
       endpointId: z.string(),
       maxCostUsd: positive,
+      salt: bytes16.optional(),
     })
     .strict(),
   z.object({ kind: z.literal("actionTransfer"), asset: actionAssetSchema, to: addressSchema, amount: positive }).strict(),

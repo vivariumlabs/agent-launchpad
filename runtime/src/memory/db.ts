@@ -117,6 +117,17 @@ export function insertAction(db: MemoryDb, row: NewActionRow): number {
   return Number(info.lastInsertRowid);
 }
 
+/**
+ * Rewrites the json of the LATEST actions row with this kind + json (post-hoc annotation, e.g. x402
+ * settlement; no schema change). Returns the number of rows changed (0 or 1).
+ */
+export function updateLatestActionJson(db: MemoryDb, kind: string, fromJson: string, toJson: string): number {
+  const info = db
+    .prepare("UPDATE actions SET json = ? WHERE id = (SELECT id FROM actions WHERE kind = ? AND json = ? ORDER BY id DESC LIMIT 1)")
+    .run(toJson, kind, fromJson);
+  return Number(info.changes);
+}
+
 interface ActionRowRaw {
   id: number;
   ts: string;

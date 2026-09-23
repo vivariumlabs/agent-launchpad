@@ -2,11 +2,12 @@
 
 import { keccak256, stringToBytes } from "viem";
 import { describe, expect, it } from "vitest";
-import { CANARY_SYSTEM } from "../../src/llm/canaries.js";
+import { CANARY_MAX_TOKENS, CANARY_SYSTEM } from "../../src/llm/canaries.js";
 import { kvGet, listActions, listJournal, listPosts, listTrades, loadLedger } from "../../src/memory/db.js";
 import { recordTierTransition } from "../../src/pulse/pulse.js";
 import { promptChars } from "../../src/pulse/context.js";
 import { estimateMaxCostUsd } from "../../src/llm/checks.js";
+import { inferenceSalt } from "../../src/llm/x402Http.js";
 import { announceTierTransition } from "../../src/pulse/scheduler.js";
 import { memoryExecDeps } from "../../src/pulse/pulse.js";
 import { CP, E18, E6, TOKEN_X, mkLedger, mkRunwayState } from "../policy/helpers.js";
@@ -82,17 +83,26 @@ describe("runPulse: happy path", () => {
     assertStanding(h);
   });
 
-  it("maxCostUsd = ceil(chars/4 × entry price × 1.5) and the K3 auth is bound to it", async () => {
+  it("maxCostUsd = ceil((chars/4 + maxTokens) × entry price × 1.5) and the K3 auth is bound to it", async () => {
     const h = await makeHarness();
     await h.pulse();
     const req = h.llm.calls[2]!;
     const chars = promptChars(req.system, req.messages, req.toolSchema);
-    const tokens = BigInt(Math.ceil(chars / 4));
-    const expected = (tokens * PRICE_A * 3n + 2_000_000n - 1n) / 2_000_000n;
+    // SPEC-M3 §3c: the output allowance (the request's maxTokens) is part of the estimate
+    const tokens = BigInt(Math.ceil(chars / 4)) + BigInt(req.maxTokens);
+    const raw = (tokens * PRICE_A * 3n + 2_000_000n - 1n) / 2_000_000n;
+    const expected = raw > h.cfg.maxPerCallUsd ? h.cfg.maxPerCallUsd : raw;
     expect(req.maxCostUsd).toBe(expected);
-    expect(req.maxCostUsd).toBe(estimateMaxCostUsd(chars, PRICE_A, h.cfg.maxPerCallUsd));
+    expect(req.maxCostUsd).toBe(estimateMaxCostUsd(chars, req.maxTokens, PRICE_A, h.cfg.maxPerCallUsd));
+    // canaries are estimated with THEIR (small) maxTokens, not the pulse's
+    const canary = h.llm.calls[0]!;
+    expect(canary.system).toBe(CANARY_SYSTEM);
+    expect(canary.maxCostUsd).toBe(
+      estimateMaxCostUsd(promptChars(canary.system, canary.messages, canary.toolSchema), CANARY_MAX_TOKENS, PRICE_A, h.cfg.maxPerCallUsd),
+    );
     const inf = h.allResults.filter((x) => x.action.kind === "inference")[2]!;
-    expect(inf.action).toEqual({ kind: "inference", category: "pulse", endpointId: EP_A, maxCostUsd: expected });
+    // SPEC-M3 §3: salt = inferenceSalt(now, "pulse", attempt 0)
+    expect(inf.action).toEqual({ kind: "inference", category: "pulse", endpointId: EP_A, maxCostUsd: expected, salt: inferenceSalt(h.now(), "pulse", 0) });
     const auth = h.x402.paid[2]!.auth.authorization;
     expect(auth.value).toBe(expected);
     expect(auth.to.toLowerCase()).toBe(h.cfg.x402Allowlist[0]!.payTo.toLowerCase());

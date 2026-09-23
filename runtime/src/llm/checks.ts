@@ -32,13 +32,16 @@ export const ToolCallSchema = z
 
 export type ToolCall = z.infer<typeof ToolCallSchema>;
 
-/** SPEC-M2B §6 step 5: `{ toolCalls?: [], diary?: string, journal?: string, posts?: string[] }` (strict). */
+/** SPEC-M2B §6 step 5: `{ toolCalls?: [], diary?: string, journal?: string, posts?: string[] }` (strict).
+ *  SPEC-M3 §3: + optional `publicSummary` (≤ 1000 chars, enforced by the pulse when writing kv —
+ *  an over-long summary is a logged skip, not a contract failure of the whole response). */
 export const PulseOutputSchema = z
   .object({
     toolCalls: z.array(ToolCallSchema).optional(),
     diary: z.string().optional(),
     journal: z.string().optional(),
     posts: z.array(z.string()).optional(),
+    publicSummary: z.string().optional(),
   })
   .strict();
 
@@ -105,11 +108,14 @@ export class ConsecutiveFailureCounter {
 const MTOK = 1_000_000n;
 
 /**
- * maxCostUsd = ceil(ceil(promptChars / 4) × pricePerMTokUsd × 1.5 / 1e6), clamped to
- * [1, maxPerCallUsd]. All USD(6) bigint.
+ * SPEC-M3 §3c: maxCostUsd = ceil((ceil(promptChars / 4) + maxTokens) × pricePerMTokUsd × 1.5 / 1e6),
+ * clamped to [1, maxPerCallUsd]. All USD(6) bigint. The output allowance (maxTokens) is part of the
+ * estimate: a real x402 quote is priced for max_tokens of output, and the transport rejects any
+ * quote above the estimate — an input-only estimate would price-reject every honest endpoint.
  */
-export function estimateMaxCostUsd(promptChars: number, pricePerMTokUsd: bigint, maxPerCallUsd: bigint): bigint {
-  const tokens = (BigInt(promptChars) + 3n) / 4n;
+export function estimateMaxCostUsd(promptChars: number, maxTokens: number, pricePerMTokUsd: bigint, maxPerCallUsd: bigint): bigint {
+  if (!Number.isSafeInteger(maxTokens) || maxTokens < 0) throw new Error(`estimateMaxCostUsd: maxTokens must be a non-negative integer, got ${maxTokens}`);
+  const tokens = (BigInt(promptChars) + 3n) / 4n + BigInt(maxTokens);
   const num = tokens * pricePerMTokUsd * 3n;
   const den = 2n * MTOK;
   let cost = (num + den - 1n) / den;

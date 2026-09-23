@@ -5,12 +5,28 @@
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Address } from "viem";
+import { encodeFunctionData, parseAbi, type Address, type Hex } from "viem";
 import { afterEach, describe, expect, it } from "vitest";
-import { boot, ConfigHashMismatchError, KV_PULSE_NEXT_AT, tierAnnounceKey, type BootLogger, type Runtime, type TimerApi } from "../../src/boot.js";
+import {
+  boot,
+  checkInitParamAgentId,
+  checkInitParamConfigHash,
+  ConfigHashMismatchError,
+  InitParamAgentIdMismatchError,
+  InitParamConfigHashMismatchError,
+  UnboundTeeBootError,
+  KV_PULSE_NEXT_AT,
+  tierAnnounceKey,
+  type BootLogger,
+  type BootOverrides,
+  type Runtime,
+  type TimerApi,
+} from "../../src/boot.js";
+import { mkdirSync } from "node:fs";
+import { SETTLE_TX, x402Server } from "../llm/x402Server.js";
 import type { BalanceReader, Holdings } from "../../src/chat/gate.js";
-import { configHash } from "../../src/config/schema.js";
-import { parseArgs } from "../../src/main.js";
+import { configHash, frozenConfigHash, loadSplitConfig, resolveConfig } from "../../src/config/schema.js";
+import { frozenHashOfFile, parseArgs, printConfigHashTarget } from "../../src/main.js";
 import { MockChainClient, type ReadContractRequest } from "../../src/exec/chain.js";
 import { createKeyring } from "../../src/keyring/keyring.js";
 import { MockKms } from "../../src/keyring/mockKms.js";
@@ -24,6 +40,10 @@ import { transitionAnnouncement } from "../../src/pulse/scheduler.js";
 import { dumpAllTables, populateAllTables } from "../memory/fixtures.js";
 import { CP, E6, NOW } from "../policy/helpers.js";
 import { canaryAnswer } from "../pulse/harness.js";
+import { buildTx } from "../../src/exec/build.js";
+import { execute } from "../../src/exec/execute.js";
+import { NonLocalUrlError } from "../../src/keyring/nautilusKms.js";
+import { MockNautilusServer } from "../attestation/mockNautilus.js";
 
 const FIXTURE = join(__dirname, "fixtures", "runtime.config.json");
 const FIXTURE_JSON = JSON.parse(readFileSync(FIXTURE, "utf8")) as {
@@ -31,6 +51,11 @@ const FIXTURE_JSON = JSON.parse(readFileSync(FIXTURE, "utf8")) as {
   runtime: { mockKms: { imageId: string; agentId: string } };
 };
 const P = FIXTURE_JSON.platform;
+/** SPEC-M3 §3b split fixtures: agent.json = the legacy fixture's { platform, agent }; runtime.json = its runtime section. */
+const FIXTURE_AGENT = join(__dirname, "fixtures", "agent.json");
+const FIXTURE_RUNTIME = join(__dirname, "fixtures", "runtime.json");
+/** GOLDEN frozenHash of the fixture's { platform, agent } — changes iff the frozen fixture content changes. */
+const FROZEN_HASH = "0xef1aaffb0642dae2e269f0137e0b711b7adb74f294b29e7110c8abb8acfb9895" as Hex;
 
 // ---------------------------------------------------------------------------
 // harness
@@ -102,7 +127,13 @@ interface BootEnvOpts {
   expectedHash?: string;
   bal?: Balances;
   configPath?: string;
+  /** SPEC-M3 §3b split layout: configPath = agent.json, this = runtime.json. */
+  runtimeConfigPath?: string;
+  /** BootOptions.initParamsDir (the only way to relocate init params under runtime.tee). */
+  initParamsDir?: string;
   chatReaders?: readonly [BalanceReader, BalanceReader];
+  /** Extra boot overrides (merged last). */
+  overrides?: Partial<BootOverrides>;
 }
 
 async function bootEnv(opts: BootEnvOpts = {}): Promise<Env> {
@@ -141,6 +172,8 @@ async function bootEnv(opts: BootEnvOpts = {}): Promise<Env> {
   const timers = new FakeTimers();
   const bootOpts = {
     configPath: opts.configPath ?? FIXTURE,
+    ...(opts.runtimeConfigPath !== undefined ? { runtimeConfigPath: opts.runtimeConfigPath } : {}),
+    ...(opts.initParamsDir !== undefined ? { initParamsDir: opts.initParamsDir } : {}),
     dbPath,
     snapshotDir: snapDir,
     clock: () => now,
@@ -153,6 +186,7 @@ async function bootEnv(opts: BootEnvOpts = {}): Promise<Env> {
       logger: quiet,
       chatPort: 0,
       ...(opts.chatReaders !== undefined ? { chatReaders: opts.chatReaders } : {}),
+      ...(opts.overrides ?? {}),
     },
     ...(opts.expectedHash !== undefined ? { expectedHash: opts.expectedHash } : {}),
   };
@@ -457,6 +491,134 @@ describe("boot: chat server wiring (SPEC-M2C §1 via the composition root)", () 
   });
 });
 
+describe("boot: runtime.tee (SPEC-M3 §2) — NautilusKms + attestation → cfg.registration", () => {
+  const IMAGE_ID = `0x${"28e981ac".repeat(8)}` as Hex;
+  const REGISTRY = parseAbi([
+    "function registerInstance(uint256 agentId, address treasuryEOA, address actionEOA, bytes32 codeHash, string attestationRef)",
+  ]);
+  const servers: MockNautilusServer[] = [];
+  afterEach(async () => {
+    for (const s of servers.splice(0)) await s.close();
+  });
+  async function nautilus(opts: ConstructorParameters<typeof MockNautilusServer>[0] = {}): Promise<MockNautilusServer> {
+    const s = new MockNautilusServer(opts);
+    await s.start();
+    servers.push(s);
+    return s;
+  }
+  function teeConfig(dir: string, runtime: Record<string, unknown>): string {
+    const j = JSON.parse(readFileSync(FIXTURE, "utf8")) as { runtime: Record<string, unknown> };
+    delete j.runtime.mockKms;
+    Object.assign(j.runtime, runtime);
+    const p = join(dir, "tee.config.json");
+    writeFileSync(p, JSON.stringify(j));
+    return p;
+  }
+
+  it("tee:true ⇒ keys from the Nautilus server, report uploaded, cfg.registration = {codeHash: imageId, attestationRef} and registerInstance-ready", async () => {
+    const s = await nautilus({ seed: "image-a|agent-1" });
+    const dir = tmp();
+    const configPath = teeConfig(dir, { tee: true, kmsUrl: s.baseUrl, attestationUrl: s.attestationUrl, imageId: IMAGE_ID, imageDigest: `sha256:${"ab".repeat(32)}` });
+    const e = await bootEnv({ dir, initParamsDir: boundInitDir(dir), configPath });
+    const { rt } = e;
+
+    expect(s.derivePaths).toEqual(["treasury", "action", "fc", "mem", "chat"]);
+    expect(s.requests.at(-1)).toBe("/attestation/raw");
+    expect(rt.attestationRef).toBe(`attestation-${NOW}.json`);
+    expect(rt.cfg.registration).toEqual({ codeHash: IMAGE_ID, attestationRef: `attestation-${NOW}.json` });
+    // fixture's platform.registration ("mock-attestation") is replaced by the real values
+    expect(FIXTURE_JSON.platform).toHaveProperty("registration.attestationRef", "mock-attestation");
+
+    const report = JSON.parse(readFileSync(join(dir, "attestations", rt.attestationRef!), "utf8")) as Record<string, unknown>;
+    const own = rt.keyring.addresses();
+    expect(report).toMatchObject({
+      kind: "agent-launchpad.attestation-report",
+      imageId: IMAGE_ID,
+      imageDigest: `sha256:${"ab".repeat(32)}`,
+      configHash: rt.frozenHash, // the attested config-hash value (SPEC-M3 §3b), not the legacy whole-file hash
+      eoas: { treasury: own.treasury.toLowerCase(), action: own.action.toLowerCase() },
+      generation: null,
+      timestamp: NOW.toString(),
+    });
+    expect(Buffer.from(report.quote as string, "base64").equals(Buffer.from(s.quote))).toBe(true);
+    expect(rt.frozenHash).toBe(FROZEN_HASH);
+
+    const tx = buildTx({ kind: "registerInstance" }, rt.cfg, NOW);
+    expect(tx.data).toBe(
+      encodeFunctionData({ abi: REGISTRY, functionName: "registerInstance", args: [1n, own.treasury, own.action, IMAGE_ID, `attestation-${NOW}.json`] }),
+    );
+    // end-to-end: engine → keyring K2 (rebuilds the tx from its ATTACHED cfg) → chain carries the real values
+    const r = await execute({ kind: "registerInstance" }, rt.exec);
+    expect(r.verdict.allow).toBe(true);
+    expect(r.error).toBeUndefined();
+    const sent = e.chain.sent.at(-1);
+    expect(sent?.to?.toLowerCase()).toBe(rt.cfg.registry.rh.toLowerCase());
+    expect(sent?.data).toBe(tx.data);
+  });
+
+  it("KMS + attestation server not ready for the first call ⇒ boot retries (withRetry) and succeeds", async () => {
+    const s = await nautilus({ failFirstN: 1 });
+    const dir = tmp();
+    const e = await bootEnv({ dir, initParamsDir: boundInitDir(dir), configPath: teeConfig(dir, { tee: true, kmsUrl: s.baseUrl, attestationUrl: s.attestationUrl, imageId: IMAGE_ID }) });
+    expect(s.requests[0]).toBe("/derive/secp256k1?path=treasury");
+    expect(s.requests[1]).toBe("/derive/secp256k1?path=treasury");
+    expect(e.rt.cfg.registration?.codeHash).toBe(IMAGE_ID);
+  });
+
+  it("injected attestationSink is used; its ref becomes attestationRef", async () => {
+    const s = await nautilus();
+    const dir = tmp();
+    const uploaded: string[] = [];
+    const rt = await boot({
+      configPath: teeConfig(dir, { tee: true, kmsUrl: s.baseUrl, attestationUrl: s.attestationUrl, imageId: IMAGE_ID }),
+      initParamsDir: boundInitDir(dir), // SPEC-M3 §3b: tee:true needs the attested config-hash init param
+      dbPath: join(dir, "m.sqlite"),
+      snapshotDir: join(dir, "snaps"),
+      clock: () => NOW,
+      kmsRetry: { attempts: 1, delayMs: 1 },
+      overrides: {
+        chain: new MockChainClient(),
+        logger: quiet,
+        timers: new FakeTimers(),
+        attestationSink: { upload: async (r) => (uploaded.push(r), "ar://txid-123") },
+      },
+    });
+    runtimes.push(rt);
+    expect(uploaded).toHaveLength(1);
+    expect(rt.cfg.registration).toEqual({ codeHash: IMAGE_ID, attestationRef: "ar://txid-123" });
+    expect(existsSync(join(dir, "attestations"))).toBe(false);
+  });
+
+  it("tee:true without runtime.imageId ⇒ refuses to boot before contacting the KMS", async () => {
+    const s = await nautilus();
+    const dir = tmp();
+    await expect(bootEnv({ dir, initParamsDir: boundInitDir(dir), configPath: teeConfig(dir, { tee: true, kmsUrl: s.baseUrl, attestationUrl: s.attestationUrl }) })).rejects.toThrow(/imageId/);
+    expect(s.requests).toEqual([]);
+  });
+
+  it("tee:true with a non-localhost kmsUrl or attestationUrl ⇒ refuses to boot, nothing contacted", async () => {
+    const s = await nautilus();
+    const dir = tmp();
+    await expect(
+      bootEnv({ dir, initParamsDir: boundInitDir(dir), configPath: teeConfig(dir, { tee: true, kmsUrl: "http://10.0.0.5:1100", attestationUrl: s.attestationUrl, imageId: IMAGE_ID }) }),
+    ).rejects.toBeInstanceOf(NonLocalUrlError);
+    await expect(
+      bootEnv({ dir, initParamsDir: boundInitDir(dir), configPath: teeConfig(dir, { tee: true, kmsUrl: s.baseUrl, attestationUrl: "http://attest.example.com/attestation/raw", imageId: IMAGE_ID }) }),
+    ).rejects.toBeInstanceOf(NonLocalUrlError);
+    expect(s.requests).toEqual([]);
+    expect(existsSync(join(dir, "memory.sqlite"))).toBe(false);
+  });
+
+  it("tee:false (default) regression: MockKms keys, fixture registration untouched, no attestation", async () => {
+    const dir = tmp();
+    const e = await bootEnv({ dir });
+    expect(e.rt.attestationRef).toBeNull();
+    expect(e.rt.cfg.registration).toEqual({ codeHash: `0x${"c0de".repeat(16)}`, attestationRef: "mock-attestation" });
+    expect(e.rt.keyring.memKeyForMemoryModule()).toBe(await fixtureMemKey());
+    expect(existsSync(join(dir, "attestations"))).toBe(false);
+  });
+});
+
 describe("main: argv parsing (argv only, no env)", () => {
   const H = `0x${"ab".repeat(32)}`;
   it("parses --config / --db / --expected-hash", () => {
@@ -468,5 +630,451 @@ describe("main: argv parsing (argv only, no env)", () => {
     expect(() => parseArgs(["--config", "c.json", "--port", "1"])).toThrow(/unknown argument/);
     expect(() => parseArgs(["--config"])).toThrow(/requires a value/);
     expect(() => parseArgs(["--config", "c.json", "--expected-hash", "0x1234"])).toThrow(/32-byte/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M3 s1 review fixes: init-param cross-check, LocalDirSink warning, x402 transport wiring
+// ---------------------------------------------------------------------------
+
+function runtimeConfig(dir: string, runtime: Record<string, unknown>, name = "rt.config.json"): string {
+  const j = JSON.parse(readFileSync(FIXTURE, "utf8")) as { runtime: Record<string, unknown> };
+  Object.assign(j.runtime, runtime);
+  const p = join(dir, name);
+  writeFileSync(p, JSON.stringify(j));
+  return p;
+}
+
+/** An Oyster /init-params stand-in bound to the fixture: agent-id "agent-1" + config-hash = FROZEN_HASH (overridable). */
+let initDirSeq = 0;
+function boundInitDir(parent: string, files: { agentId?: string | null; configHash?: string | null } = {}): string {
+  const d = join(parent, `init-params-${++initDirSeq}`);
+  mkdirSync(d, { recursive: true });
+  const agentId = files.agentId === undefined ? "agent-1" : files.agentId;
+  const hash = files.configHash === undefined ? FROZEN_HASH : files.configHash;
+  if (agentId !== null) writeFileSync(join(d, "agent-id"), agentId);
+  if (hash !== null) writeFileSync(join(d, "config-hash"), hash);
+  return d;
+}
+
+function captureLogger(): BootLogger & { warns: string[]; infos: string[] } {
+  const warns: string[] = [];
+  const infos: string[] = [];
+  return { warns, infos, info: (m) => infos.push(m), warn: (m) => warns.push(m), error: () => undefined };
+}
+
+describe("boot: /init-params/agent-id cross-check (attested agent-id vs config.agent.agentId)", () => {
+  function initDir(content?: string): string {
+    const d = join(tmp(), "init-params");
+    mkdirSync(d, { recursive: true });
+    if (content !== undefined) writeFileSync(join(d, "agent-id"), content);
+    return d;
+  }
+
+  it("matching agent-id (fixture agentId 1 ⇒ \"agent-1\") boots", async () => {
+    const dir = tmp();
+    const e = await bootEnv({ dir, configPath: runtimeConfig(dir, { initParamsDir: initDir("agent-1") }) });
+    expect(e.rt.cfg.agent.agentId).toBe(1);
+  });
+
+  it("a single trailing newline is tolerated", async () => {
+    const dir = tmp();
+    await expect(bootEnv({ dir, configPath: runtimeConfig(dir, { initParamsDir: initDir("agent-1\n") }) })).resolves.toBeDefined();
+  });
+
+  it.each([
+    ["other agent", "agent-2"],
+    ["padded", "agent-01"],
+    ["no prefix", "1"],
+    ["empty", ""],
+    ["trailing space", "agent-1 "],
+    ["two newlines", "agent-1\n\n"],
+  ])("mismatch (%s) ⇒ refuses to boot BEFORE any KMS derive / db open", async (_n, content) => {
+    const dir = tmp();
+    let derives = 0;
+    const kms = { derive: async (p: string) => (derives++, new MockKms("image-boot", "agent-boot").derive(p)) };
+    await expect(
+      boot({
+        configPath: runtimeConfig(dir, { initParamsDir: initDir(content) }),
+        dbPath: join(dir, "m.sqlite"),
+        kms,
+        clock: () => NOW,
+        overrides: { chain: new MockChainClient(), logger: quiet, timers: new FakeTimers() },
+      }),
+    ).rejects.toBeInstanceOf(InitParamAgentIdMismatchError);
+    expect(derives).toBe(0);
+    expect(existsSync(join(dir, "m.sqlite"))).toBe(false);
+  });
+
+  it("no agent-id file (non-Oyster run) ⇒ boots; default dir is /init-params", async () => {
+    const dir = tmp();
+    await expect(bootEnv({ dir, configPath: runtimeConfig(dir, { initParamsDir: initDir() }) })).resolves.toBeDefined();
+    expect(checkInitParamAgentId(initDir(), 1)).toBe("absent");
+    expect(checkInitParamAgentId(initDir("agent-1"), 1)).toBe("match");
+    expect(() => checkInitParamAgentId(initDir("agent-7"), 1)).toThrow(/agent-7.*agent-1/);
+  });
+});
+
+describe("boot: tee:true with the default LocalDirSink ⇒ loud warning", () => {
+  const IMAGE_ID = `0x${"28e981ac".repeat(8)}` as Hex;
+  const servers: MockNautilusServer[] = [];
+  afterEach(async () => {
+    for (const s of servers.splice(0)) await s.close();
+  });
+  function teeRuntime(s: MockNautilusServer): Record<string, unknown> {
+    return { tee: true, mockKms: undefined, kmsUrl: s.baseUrl, attestationUrl: s.attestationUrl, imageId: IMAGE_ID };
+  }
+
+  it("LocalDirSink ⇒ warns that attestationRef is a LOCAL file (not publishable on-chain)", async () => {
+    const s = new MockNautilusServer();
+    await s.start();
+    servers.push(s);
+    const dir = tmp();
+    const log = captureLogger();
+    await bootEnv({ dir, initParamsDir: boundInitDir(dir), configPath: runtimeConfig(dir, teeRuntime(s)), overrides: { logger: log } });
+    expect(log.warns.some((w) => /attestationRef is a LOCAL file — not publishable on-chain; wire Turbo \(s2\)/.test(w))).toBe(true);
+  });
+
+  it("an injected (non-local) sink ⇒ no such warning", async () => {
+    const s = new MockNautilusServer();
+    await s.start();
+    servers.push(s);
+    const dir = tmp();
+    const log = captureLogger();
+    await bootEnv({
+      dir,
+      initParamsDir: boundInitDir(dir),
+      configPath: runtimeConfig(dir, teeRuntime(s)),
+      overrides: { logger: log, attestationSink: { upload: async () => "ar://tx" } },
+    });
+    expect(log.warns.some((w) => /LOCAL file/.test(w))).toBe(false);
+  });
+});
+
+describe("boot: runtime.x402 — real transport wiring (DEFAULT disabled ⇒ mocks)", () => {
+  const PAYTO = Object.fromEntries(
+    (JSON.parse(readFileSync(FIXTURE, "utf8")) as { platform: { x402Allowlist: Array<{ url: string; payTo: Address }> } }).platform.x402Allowlist.map((e) => [
+      e.url,
+      e.payTo,
+    ]),
+  ) as Record<string, Address>;
+  const answer = (system: string, user: string): string =>
+    system === CANARY_SYSTEM ? canaryAnswer({ messages: [{ role: "user", content: user }] } as LlmRequest) : JSON.stringify({ diary: "(real transport)" });
+
+  it("enabled ⇒ pulse inference goes over HTTP (overrides.http), MockLlm/MockX402 unused, settlement persisted", async () => {
+    const dir = tmp();
+    const http = x402Server({ payTo: PAYTO, answer, amount: 1n });
+    const e = await bootEnv({ dir, configPath: runtimeConfig(dir, { x402: { enabled: true } }), overrides: { http } });
+    const cycle = await e.rt.pulse();
+    expect(cycle.result.status).toBe("completed");
+    expect(cycle.result.errors).toEqual([]);
+    expect(e.llm.calls).toHaveLength(0);
+    expect(e.x402.quotes).toHaveLength(0);
+    expect(http.requests.length).toBeGreaterThanOrEqual(2);
+    const inf = listActions(e.rt.db).filter((a) => a.kind === "inference");
+    expect(inf.length).toBeGreaterThanOrEqual(1);
+    for (const row of inf) {
+      expect(row.verdict).toBe("allow");
+      expect((JSON.parse(row.json) as { x402Settlement?: { transaction?: string } }).x402Settlement?.transaction).toBe(SETTLE_TX);
+    }
+  });
+
+  it("disabled (default) ⇒ mocks used, the HttpClient is never touched", async () => {
+    const dir = tmp();
+    const http = x402Server({ payTo: PAYTO, answer, amount: 1n });
+    const e = await bootEnv({ dir, overrides: { http } });
+    const cycle = await e.rt.pulse();
+    expect(cycle.result.status).toBe("completed");
+    expect(http.requests).toHaveLength(0);
+    expect(e.llm.calls.length).toBeGreaterThan(0);
+  });
+
+  it("enabled without overrides.http ⇒ FetchHttpClient (https only): boots fine; allowInsecureHttp warns", async () => {
+    const dir = tmp();
+    const log = captureLogger();
+    await bootEnv({ dir, configPath: runtimeConfig(dir, { x402: { enabled: true, allowInsecureHttp: true } }), overrides: { logger: log } });
+    expect(log.warns.some((w) => /allowInsecureHttp/.test(w))).toBe(true);
+    expect(log.infos.some((m) => /real HTTP transport enabled/.test(m))).toBe(true);
+  });
+
+  it("schema: x402 is strict (unknown keys rejected)", async () => {
+    const dir = tmp();
+    await expect(bootEnv({ dir, configPath: runtimeConfig(dir, { x402: { enabled: true, bogus: 1 } }) })).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SPEC-M3 §3b — config split: frozen agent.json (hash-bound via the attested config-hash init param)
+// + mutable runtime.json (ops, unattested)
+// ---------------------------------------------------------------------------
+
+/** Deep copy with every object's keys in REVERSE order (same content, different serialization). */
+function reverseKeys(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(reverseKeys);
+  if (v !== null && typeof v === "object") {
+    return Object.fromEntries(Object.keys(v).reverse().map((k) => [k, reverseKeys((v as Record<string, unknown>)[k])]));
+  }
+  return v;
+}
+
+type FrozenMutator = (j: { platform: Record<string, unknown>; agent: Record<string, unknown> }) => void;
+
+/** Writes agent.json (+ optional mutation) and runtime.json (fixture runtime section + overrides) into dir. */
+function splitFiles(
+  dir: string,
+  opts: { runtime?: Record<string, unknown>; mutateAgent?: FrozenMutator } = {},
+): { agentPath: string; runtimePath: string } {
+  const a = JSON.parse(readFileSync(FIXTURE_AGENT, "utf8")) as { platform: Record<string, unknown>; agent: Record<string, unknown> };
+  opts.mutateAgent?.(a);
+  const r = JSON.parse(readFileSync(FIXTURE_RUNTIME, "utf8")) as Record<string, unknown>;
+  for (const [k, v] of Object.entries(opts.runtime ?? {})) {
+    if (v === undefined) delete r[k];
+    else r[k] = v;
+  }
+  const agentPath = join(dir, "agent.json");
+  const runtimePath = join(dir, "runtime.json");
+  writeFileSync(agentPath, JSON.stringify(a, null, 2));
+  writeFileSync(runtimePath, JSON.stringify(r, null, 2));
+  return { agentPath, runtimePath };
+}
+
+describe("SPEC-M3 §3b loadSplitConfig: frozen agent.json + ops runtime.json", () => {
+  it("GOLDEN frozenHash of the fixture agent.json; = the legacy fixture's { platform, agent } hash", () => {
+    const c = loadSplitConfig({ agentPath: FIXTURE_AGENT, runtimePath: FIXTURE_RUNTIME });
+    expect(c.frozenHash).toBe(FROZEN_HASH);
+    const legacy = JSON.parse(readFileSync(FIXTURE, "utf8")) as { platform: unknown; agent: unknown };
+    expect(frozenConfigHash(legacy)).toBe(FROZEN_HASH);
+    expect(configHash(legacy)).not.toBe(FROZEN_HASH); // the legacy whole-file hash also covers `runtime`
+    expect(frozenHashOfFile(FIXTURE_AGENT)).toBe(FROZEN_HASH); // main --print-config-hash
+  });
+
+  it("frozenHash is stable across key order and whitespace; any content change moves it", () => {
+    const dir = tmp();
+    const a = JSON.parse(readFileSync(FIXTURE_AGENT, "utf8")) as Record<string, unknown>;
+    const reordered = join(dir, "reordered.json");
+    writeFileSync(reordered, JSON.stringify(reverseKeys(a)));
+    expect(readFileSync(reordered, "utf8")).not.toBe(JSON.stringify(a));
+    expect(loadSplitConfig({ agentPath: reordered, runtimePath: FIXTURE_RUNTIME }).frozenHash).toBe(FROZEN_HASH);
+    const spaced = join(dir, "spaced.json");
+    writeFileSync(spaced, JSON.stringify(a, null, 7) + "\n\n");
+    expect(loadSplitConfig({ agentPath: spaced, runtimePath: FIXTURE_RUNTIME }).frozenHash).toBe(FROZEN_HASH);
+
+    const { agentPath } = splitFiles(dir, { mutateAgent: (j) => ((j.agent as { persona: string }).persona += ".") });
+    expect(loadSplitConfig({ agentPath, runtimePath: FIXTURE_RUNTIME }).frozenHash).not.toBe(FROZEN_HASH);
+  });
+
+  it("runtime.json does not move the frozenHash (ops changes never rotate keys)", () => {
+    const dir = tmp();
+    const { agentPath, runtimePath } = splitFiles(dir, { runtime: { rpc: { rh: "https://rpc.example" }, chatHost: "0.0.0.0", dbPath: "x.sqlite" } });
+    const c = loadSplitConfig({ agentPath, runtimePath });
+    expect(c.frozenHash).toBe(FROZEN_HASH);
+    expect(c.ops.rpc.rh).toBe("https://rpc.example");
+    expect(c.ops.tee).toBe(false); // defaults applied
+  });
+
+  it("resolve(ownAddresses) = resolveConfig over the frozen sections (ResolvedConfig shape unchanged)", () => {
+    const c = loadSplitConfig({ agentPath: FIXTURE_AGENT, runtimePath: FIXTURE_RUNTIME });
+    const own = { treasury: "0x1000000000000000000000000000000000000001", action: "0x2000000000000000000000000000000000000002" } as const;
+    const legacy = JSON.parse(readFileSync(FIXTURE, "utf8")) as { platform: unknown; agent: unknown };
+    expect(c.resolve(own as never)).toEqual(resolveConfig({ platform: legacy.platform, agent: legacy.agent, ownAddresses: own as never }));
+    expect(c.frozen.agent.agentId).toBe(1);
+    expect(c.frozen.platform.caps.maxPerCallUsd).toBe(500_000n);
+  });
+
+  it("agent.json must be exactly { platform, agent }: an ops/extra key is refused", () => {
+    const dir = tmp();
+    for (const extra of [{ runtime: {} }, { rpc: {} }, { note: "x" }]) {
+      const p = join(dir, "bad-agent.json");
+      writeFileSync(p, JSON.stringify({ ...(JSON.parse(readFileSync(FIXTURE_AGENT, "utf8")) as object), ...extra }));
+      expect(() => loadSplitConfig({ agentPath: p, runtimePath: FIXTURE_RUNTIME })).toThrow(/exactly \{ platform, agent \}/);
+    }
+  });
+
+  it("runtime.json is strict ops-only: it cannot smuggle platform/agent/money fields", () => {
+    const dir = tmp();
+    for (const smuggle of [{ platform: {} }, { agent: {} }, { x402Allowlist: [] }, { maxPerCallUsd: "999999999" }, { usdc: {} }]) {
+      const { agentPath, runtimePath } = splitFiles(dir, { runtime: smuggle });
+      expect(() => loadSplitConfig({ agentPath, runtimePath }), JSON.stringify(smuggle)).toThrow();
+    }
+  });
+
+  it("allowlistUpdatePubkey (04 §4 signer) is a FROZEN field: accepted in platform, covered by the hash", () => {
+    const dir = tmp();
+    const { agentPath, runtimePath } = splitFiles(dir, {
+      mutateAgent: (j) => (j.platform["allowlistUpdatePubkey"] = "0xa11ce00000000000000000000000000000000a11"),
+    });
+    const c = loadSplitConfig({ agentPath, runtimePath });
+    expect(c.frozen.platform.allowlistUpdatePubkey).toBe("0xa11ce00000000000000000000000000000000a11");
+    expect(c.frozenHash).not.toBe(FROZEN_HASH);
+    const bad = splitFiles(tmp(), { mutateAgent: (j) => (j.platform["allowlistUpdatePubkey"] = "0x1234") });
+    expect(() => loadSplitConfig(bad)).toThrow();
+  });
+
+  it("expectedHash is checked against frozenHash, before validation", () => {
+    expect(loadSplitConfig({ agentPath: FIXTURE_AGENT, runtimePath: FIXTURE_RUNTIME, expectedHash: FROZEN_HASH.toUpperCase().replace("0X", "0x") }).frozenHash).toBe(FROZEN_HASH);
+    expect(() => loadSplitConfig({ agentPath: FIXTURE_AGENT, runtimePath: FIXTURE_RUNTIME, expectedHash: `0x${"00".repeat(32)}` })).toThrow(ConfigHashMismatchError);
+  });
+});
+
+describe("SPEC-M3 §3b boot: split layout (--config agent.json --runtime runtime.json)", () => {
+  it("boots from the split fixtures; configHash = frozenHash = golden; same keys/cfg as the legacy single file", async () => {
+    const split = await bootEnv({ configPath: FIXTURE_AGENT, runtimeConfigPath: FIXTURE_RUNTIME });
+    expect(split.rt.configHash).toBe(FROZEN_HASH);
+    expect(split.rt.frozenHash).toBe(FROZEN_HASH);
+    const legacy = await bootEnv();
+    expect(legacy.rt.frozenHash).toBe(FROZEN_HASH);
+    expect(legacy.rt.configHash).toBe(configHash(JSON.parse(readFileSync(FIXTURE, "utf8")))); // legacy semantics unchanged
+    expect(split.rt.keyring.addresses()).toEqual(legacy.rt.keyring.addresses());
+    expect(split.rt.cfg).toEqual(legacy.rt.cfg);
+  });
+
+  it("expectedHash in split mode = frozenHash (the legacy whole-file hash is refused)", async () => {
+    await expect(bootEnv({ configPath: FIXTURE_AGENT, runtimeConfigPath: FIXTURE_RUNTIME, expectedHash: FROZEN_HASH })).resolves.toBeDefined();
+    const whole = configHash(JSON.parse(readFileSync(FIXTURE, "utf8")));
+    await expect(bootEnv({ configPath: FIXTURE_AGENT, runtimeConfigPath: FIXTURE_RUNTIME, expectedHash: whole })).rejects.toBeInstanceOf(ConfigHashMismatchError);
+  });
+
+  it("relative ops paths resolve against runtime.json's directory", async () => {
+    const dir = tmp();
+    const opsDir = join(dir, "ops");
+    mkdirSync(opsDir);
+    const { agentPath } = splitFiles(dir);
+    const { runtimePath } = splitFiles(opsDir, { runtime: { dbPath: "state/mem.sqlite", snapshotDir: "snaps" } });
+    mkdirSync(join(opsDir, "state"));
+    const rt = await boot({ configPath: agentPath, runtimeConfigPath: runtimePath, clock: () => NOW, overrides: { chain: new MockChainClient(), logger: quiet, timers: new FakeTimers() } });
+    runtimes.push(rt);
+    expect(existsSync(join(opsDir, "state", "mem.sqlite"))).toBe(true);
+  });
+
+  it("the legacy single-file layout passed as agent.json (with --runtime) is refused", async () => {
+    await expect(bootEnv({ configPath: FIXTURE, runtimeConfigPath: FIXTURE_RUNTIME })).rejects.toThrow(/exactly \{ platform, agent \}/);
+  });
+
+  it("tee:false + a present config-hash init param that does NOT match ⇒ refuses (the param is checked whenever present)", async () => {
+    const dir = tmp();
+    const { agentPath, runtimePath } = splitFiles(dir, { runtime: { initParamsDir: boundInitDir(dir, { configHash: `0x${"11".repeat(32)}` }) } });
+    await expect(bootEnv({ dir, configPath: agentPath, runtimeConfigPath: runtimePath })).rejects.toBeInstanceOf(InitParamConfigHashMismatchError);
+  });
+
+  it("checkInitParamConfigHash: absent / match / trailing newline ok / exact lowercase only", () => {
+    const d = tmp();
+    expect(checkInitParamConfigHash(boundInitDir(d, { configHash: null }), FROZEN_HASH)).toBe("absent");
+    expect(checkInitParamConfigHash(boundInitDir(d), FROZEN_HASH)).toBe("match");
+    expect(checkInitParamConfigHash(boundInitDir(d, { configHash: `${FROZEN_HASH}\n` }), FROZEN_HASH)).toBe("match");
+    for (const bad of [FROZEN_HASH.toUpperCase().replace("0X", "0x"), FROZEN_HASH.slice(2), ` ${FROZEN_HASH}`, `${FROZEN_HASH}\n\n`, "", `0x${"00".repeat(32)}`]) {
+      expect(() => checkInitParamConfigHash(boundInitDir(d, { configHash: bad }), FROZEN_HASH), JSON.stringify(bad)).toThrow(InitParamConfigHashMismatchError);
+    }
+  });
+});
+
+describe("SPEC-M3 §3b boot: tee:true binds to the attested config-hash (MockNautilus)", () => {
+  const IMAGE_ID = `0x${"28e981ac".repeat(8)}` as Hex;
+  const servers: MockNautilusServer[] = [];
+  afterEach(async () => {
+    for (const s of servers.splice(0)) await s.close();
+  });
+  async function nautilus(): Promise<MockNautilusServer> {
+    const s = new MockNautilusServer();
+    await s.start();
+    servers.push(s);
+    return s;
+  }
+  /** Split files for a tee:true boot + the init-params dir (passed as BootOptions.initParamsDir — never via runtime.json under tee). */
+  function teeSplit(dir: string, s: MockNautilusServer, init: { agentId?: string | null; configHash?: string | null }, mutateAgent?: FrozenMutator) {
+    const files = splitFiles(dir, {
+      runtime: { mockKms: undefined, tee: true, kmsUrl: s.baseUrl, attestationUrl: s.attestationUrl, imageId: IMAGE_ID },
+      ...(mutateAgent !== undefined ? { mutateAgent } : {}),
+    });
+    return { ...files, initParamsDir: boundInitDir(dir, init) };
+  }
+
+  it("agent-id + config-hash match ⇒ boots; the attestation report carries the attested frozenHash", async () => {
+    const s = await nautilus();
+    const dir = tmp();
+    const { agentPath, runtimePath, initParamsDir } = teeSplit(dir, s, {});
+    const e = await bootEnv({ dir, configPath: agentPath, runtimeConfigPath: runtimePath, initParamsDir });
+    expect(e.rt.frozenHash).toBe(FROZEN_HASH);
+    expect(s.derivePaths).toEqual(["treasury", "action", "fc", "mem", "chat"]);
+    expect(e.rt.cfg.registration?.codeHash).toBe(IMAGE_ID);
+    const report = JSON.parse(readFileSync(join(dir, "attestations", e.rt.attestationRef!), "utf8")) as Record<string, unknown>;
+    expect(report.configHash).toBe(FROZEN_HASH);
+  });
+
+  it("NO config-hash init param ⇒ refuses (no unbound TEE boots) before any KMS / attestation call or db open", async () => {
+    const s = await nautilus();
+    const dir = tmp();
+    const { agentPath, runtimePath, initParamsDir } = teeSplit(dir, s, { configHash: null });
+    await expect(bootEnv({ dir, configPath: agentPath, runtimeConfigPath: runtimePath, initParamsDir })).rejects.toBeInstanceOf(UnboundTeeBootError);
+    expect(s.requests).toEqual([]);
+    expect(existsSync(join(dir, "memory.sqlite"))).toBe(false);
+  });
+
+  it("runtime.json (unattested) cannot relocate the init-params dir under tee: a forged config-hash elsewhere is never read", async () => {
+    const s = await nautilus();
+    const dir = tmp();
+    // Attack: modified agent.json + a forged config-hash for it in an operator-chosen dir, named by runtime.json.
+    const mutate: FrozenMutator = (j) => ((j.platform["x402Allowlist"] as Array<Record<string, unknown>>)[0]!["payTo"] = "0xbad0000000000000000000000000000000000bad");
+    const probe = splitFiles(tmp(), { mutateAgent: mutate });
+    const forgedHash = loadSplitConfig(probe).frozenHash;
+    const forgedDir = boundInitDir(dir, { configHash: forgedHash });
+    const files = splitFiles(dir, {
+      runtime: { mockKms: undefined, tee: true, kmsUrl: s.baseUrl, attestationUrl: s.attestationUrl, imageId: IMAGE_ID, initParamsDir: forgedDir },
+      mutateAgent: mutate,
+    });
+    await expect(bootEnv({ dir, configPath: files.agentPath, runtimeConfigPath: files.runtimePath })).rejects.toThrow(/runtime\.tee forbids runtime\.initParamsDir/);
+    expect(s.requests).toEqual([]);
+    // tee:false still honours runtime.initParamsDir (non-Oyster dev runs)
+    const dev = splitFiles(tmp(), { runtime: { initParamsDir: boundInitDir(dir) } });
+    await expect(bootEnv({ configPath: dev.agentPath, runtimeConfigPath: dev.runtimePath })).resolves.toBeDefined();
+  });
+
+  it("same, in the legacy single-file layout (no bypass through the old CMD)", async () => {
+    const s = await nautilus();
+    const dir = tmp();
+    const cfg = runtimeConfig(dir, { mockKms: undefined, tee: true, kmsUrl: s.baseUrl, attestationUrl: s.attestationUrl, imageId: IMAGE_ID });
+    await expect(bootEnv({ dir, initParamsDir: boundInitDir(dir, { configHash: null }), configPath: cfg })).rejects.toBeInstanceOf(UnboundTeeBootError);
+    expect(s.requests).toEqual([]);
+  });
+
+  it("MODIFIED frozen config (e.g. a redirected payTo) vs the deployed config-hash ⇒ refuses before the KMS", async () => {
+    const s = await nautilus();
+    const dir = tmp();
+    const { agentPath, runtimePath, initParamsDir } = teeSplit(dir, s, {}, (j) => {
+      const al = j.platform["x402Allowlist"] as Array<Record<string, unknown>>;
+      al[0]!["payTo"] = "0xbad0000000000000000000000000000000000bad";
+    });
+    await expect(bootEnv({ dir, configPath: agentPath, runtimeConfigPath: runtimePath, initParamsDir })).rejects.toBeInstanceOf(InitParamConfigHashMismatchError);
+    expect(s.requests).toEqual([]);
+    expect(existsSync(join(dir, "memory.sqlite"))).toBe(false);
+  });
+
+  it("config-hash of another config ⇒ refuses; --expected-hash stays an additional check on top", async () => {
+    const s = await nautilus();
+    const dir = tmp();
+    const other = teeSplit(dir, s, { configHash: `0x${"ab".repeat(32)}` });
+    await expect(bootEnv({ dir, ...other, configPath: other.agentPath, runtimeConfigPath: other.runtimePath })).rejects.toBeInstanceOf(InitParamConfigHashMismatchError);
+    const dir2 = tmp();
+    const ok = teeSplit(dir2, s, {});
+    await expect(
+      bootEnv({ dir: dir2, initParamsDir: ok.initParamsDir, configPath: ok.agentPath, runtimeConfigPath: ok.runtimePath, expectedHash: `0x${"cd".repeat(32)}` }),
+    ).rejects.toBeInstanceOf(ConfigHashMismatchError);
+    expect(s.requests).toEqual([]);
+  });
+});
+
+describe("main: --runtime and --print-config-hash", () => {
+  it("parses --runtime into runtimeConfigPath", () => {
+    expect(parseArgs(["--config", "agent.json", "--runtime", "runtime.json", "--db", "/data/agent.db"])).toEqual({
+      configPath: "agent.json",
+      runtimeConfigPath: "runtime.json",
+      dbPath: "/data/agent.db",
+    });
+    expect(() => parseArgs(["--config", "a.json", "--runtime"])).toThrow(/requires a value/);
+  });
+  it("--print-config-hash takes exactly --config <agent.json>", () => {
+    expect(printConfigHashTarget(["--config", "a.json"])).toBeNull();
+    expect(printConfigHashTarget(["--print-config-hash", "--config", "a.json"])).toBe("a.json");
+    expect(() => printConfigHashTarget(["--print-config-hash"])).toThrow(/exactly --config/);
+    expect(() => printConfigHashTarget(["--print-config-hash", "--config", "a.json", "--runtime", "r.json"])).toThrow(/exactly --config/);
   });
 });

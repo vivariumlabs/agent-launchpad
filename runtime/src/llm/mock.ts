@@ -1,9 +1,10 @@
 // SPEC-M2B §5 test doubles: MockLlm (scripted) and MockX402Transport (captures K3 auths
-// instead of paying). No network.
+// instead of paying); SPEC-M3 §3 MockHttp (scripted HttpClient, records every request in
+// order). No network.
 
 import type { Address } from "viem";
 import type { SignedX402Auth } from "../keyring/keyring.js";
-import type { LlmClient, LlmRequest, LlmResponse, X402Quote, X402Transport } from "./types.js";
+import type { HttpClient, HttpRequest, HttpResponse, LlmClient, LlmRequest, LlmResponse, X402Quote, X402Transport } from "./types.js";
 
 /** A scripted response: text, a full response, an Error to throw, or a function of the request. */
 export type MockLlmItem = string | LlmResponse | Error | ((req: LlmRequest) => string | LlmResponse | Error);
@@ -83,5 +84,36 @@ export class MockX402Transport implements X402Transport {
 
   async pay(endpointId: string, auth: SignedX402Auth): Promise<void> {
     this.paid.push({ endpointId, auth });
+  }
+}
+
+/** A scripted HTTP reply: a response, an Error to reject with, or a function of the request (+ its 0-based index). */
+export type MockHttpItem = HttpResponse | Error | ((req: HttpRequest, index: number) => HttpResponse | Error);
+
+export class MockHttp implements HttpClient {
+  /** Every request received, in order (including ones answered by an Error). */
+  readonly requests: HttpRequest[] = [];
+  private readonly script: MockHttpItem[];
+
+  constructor(script: MockHttpItem[] = []) {
+    this.script = [...script];
+  }
+
+  push(...items: MockHttpItem[]): void {
+    this.script.push(...items);
+  }
+
+  remaining(): number {
+    return this.script.length;
+  }
+
+  async request(req: HttpRequest): Promise<HttpResponse> {
+    const index = this.requests.length;
+    this.requests.push({ ...req, headers: { ...req.headers } });
+    const next = this.script.shift();
+    if (next === undefined) throw new Error("MockHttp: script exhausted");
+    const r = typeof next === "function" ? next(req, index) : next;
+    if (r instanceof Error) throw r;
+    return r;
   }
 }

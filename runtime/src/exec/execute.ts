@@ -5,7 +5,9 @@
 //   2. applyApproved FIRST (budget consumed even if the tx later fails — conservative)
 //   3. by kind:
 //        tx kinds         ⇒ buildTx → nonce/fill from chain → keyring K2 → sendRaw
-//        inference        ⇒ keyring K3 (returns the signed EIP-3009 auth; no tx)
+//        inference        ⇒ keyring K3 (returns the signed EIP-3009 auth; no tx) — or, with
+//                            extras.meterOnly (free x402 endpoint), approval + ledger + log ONLY:
+//                            nothing is signed and no x402Auth is required
 //        castPost/Reply   ⇒ keyring K4 (ed25519 over messageBytes) → castSink
 //        journalWrite     ⇒ bytes checked vs contentHash/sizeBytes → journalSink (memory write)
 //   4. ExecResult {action, verdict, txHash?, error?, ...} — always passed to deps.log.
@@ -58,6 +60,12 @@ export interface ExecDeps {
   clock(): UnixSeconds;
   /** Memory log sink — every ExecResult (allow and deny) is passed here. */
   log?(result: ExecResult): void | Promise<void>;
+  /**
+   * Post-hoc annotation of an ALREADY-LOGGED ExecResult (same action) with info that only exists
+   * after execute() returned — today the x402 settlement (X-PAYMENT-RESPONSE), which arrives on the
+   * paid retry, after the approval row was written. Updates that row; never adds one.
+   */
+  annotate?(result: ExecResult): void | Promise<void>;
   castSink?: CastSink;
   journalSink?: JournalSink;
 }
@@ -69,6 +77,23 @@ export interface ExecExtras {
   journalBytes?: Uint8Array;
   /** inference: EIP-3009 auth fields from the x402 quote. */
   x402Auth?: X402AuthInput;
+  /**
+   * inference only: METER-ONLY (free endpoint answered 200 without a 402). The engine approval,
+   * ledger consumption and log happen exactly as for a paid call; K3 is NOT invoked and no
+   * x402Auth is required (passing one together with meterOnly is a programming error ⇒ throws).
+   */
+  meterOnly?: boolean;
+}
+
+/**
+ * x402 settlement info decoded from an X-PAYMENT-RESPONSE header (x402 spec v1) — SANITIZED fields
+ * only (the header is endpoint-controlled and the actions log feeds the pulse context).
+ */
+export interface X402SettlementInfo {
+  success?: boolean;
+  transaction?: string;
+  network?: string;
+  payer?: string;
 }
 
 export interface ExecResult {
@@ -77,6 +102,8 @@ export interface ExecResult {
   txHash?: Hex;
   error?: string;
   x402?: SignedX402Auth;
+  /** Paid inference: settlement from X-PAYMENT-RESPONSE (set post-hoc via ExecDeps.annotate). */
+  x402Settlement?: X402SettlementInfo;
   castSignature?: Hex;
   journalRef?: string;
 }
@@ -110,6 +137,10 @@ export async function execute(action: ProposedAction, deps: ExecDeps, extras: Ex
   if (kind === "actionLp") {
     throw new NotImplementedError("actionLp: no modifyLiquidityRouter in the deployments manifest");
   }
+  if (extras.meterOnly === true) {
+    if (kind !== "inference") throw new Error(`execute: meterOnly is for inference only (got ${String(kind)})`);
+    if (extras.x402Auth !== undefined) throw new Error("execute: meterOnly and x402Auth are mutually exclusive");
+  }
 
   const now = deps.clock();
   const state = await deps.getState();
@@ -125,6 +156,7 @@ export async function execute(action: ProposedAction, deps: ExecDeps, extras: Ex
   try {
     switch (action.kind) {
       case "inference": {
+        if (extras.meterOnly === true) break; // free endpoint: metered (approval + ledger + log), nothing signed
         if (extras.x402Auth === undefined) throw new Error("inference: x402Auth required");
         result.x402 = await deps.keyring.signX402AuthApproved(action, approval, extras.x402Auth, deps.clock());
         break;

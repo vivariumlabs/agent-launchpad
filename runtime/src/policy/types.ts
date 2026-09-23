@@ -50,6 +50,9 @@ export type ProposedAction =
       category: "pulse" | "chat" | "social";
       endpointId: string;
       maxCostUsd: bigint; // paid from Base USDC via x402
+      // SPEC-M3 §3: OPTIONAL per-call salt, exactly 16 bytes hex (G1). Deterministic at the call
+      // site; participates in canonicalEncode ⇒ actionHash ⇒ K3 x402 nonce (same-second uniqueness).
+      salt?: Hex;
     }
   | {
       kind: "actionTransfer"; // action EOA, RH only

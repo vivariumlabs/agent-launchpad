@@ -11,7 +11,7 @@ Streamlined and to the point. No verbosity: no restating what Juan said, no long
 The orchestrating model (Fable 5) does the thinking; subagents do the typing. Spawn subagents via the Agent tool with an explicit `model` override:
 
 - **Fable 5 (this session, no subagent):** architecture, logic and security decisions, anything touching money paths or the policy engine's design, hard debugging, code review/audit of subagent output, and all judgment calls.
-- **Opus 5 (`model: "opus"`):** harder implementation — contracts, policy engine code, tricky tests, multi-file refactors — against a Fable-written spec.
+- **Opus 5.5 (`model: "opus"`):** harder implementation — contracts, policy engine code, tricky tests, multi-file refactors — against a Fable-written spec.
 - **Sonnet 5 (`model: "sonnet"`):** routine implementation — boilerplate, config, scripts, simple tests, doc formatting, mechanical edits, repetitive file generation.
 
 Rules:

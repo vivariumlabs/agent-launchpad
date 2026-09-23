@@ -16,8 +16,13 @@
 //   1. balance gate, dual RPC, fail-closed, per message (gate.ts)   403 insufficient | 503 unavailable
 //   2. rate limit, check+insert 'in' row in ONE txn (rate.ts)       429
 //   3. inference: cheap-tier endpoint via EndpointManager → x402 quote → price ceiling →
-//      execute({kind:"inference", category:"chat", …}); deny ⇒ 200 friendly refusal WITH the
-//      deny reason, and NO LlmClient call
+//      execute({kind:"inference", category:"chat", …, salt}); deny ⇒ 200 friendly refusal WITH the
+//      deny reason, and NO LlmClient call. SPEC-M3 §3 salt = inferenceSalt(now, walletLower,
+//      rowId) — rowId = this message's `chats` row from the rate-limit insert (unique) ⇒ two
+//      same-second calls get distinct actionHashes ⇒ distinct approvals + x402 nonces.
+//      With the real x402 transport (deps.paidInference; boot runtime.x402.enabled) step 3+4 are ONE
+//      PaidInferenceClient.call (quote check on the 402 body → quote-aware execute → K3 → paid retry
+//      → envelope check); its failures are already counted on the endpoint, never re-recorded here.
 //   4. LLM call: system = chat guardrails + persona + public self-summary; messages = THIS
 //      wallet's last cfg.chatHistoryMax exchanges + the new text (never another wallet's chats);
 //      reply stored as dir 'out'.
@@ -35,7 +40,8 @@ import { actionHash } from "../policy/approval.js";
 import { runwayDays } from "../policy/runway.js";
 import type { ProposedAction, UnixSeconds } from "../policy/types.js";
 import { promptChars } from "../pulse/context.js";
-import { memoryExecDeps, X402_VALIDITY_SEC } from "../pulse/pulse.js";
+import { inferenceSalt, type PaidInferenceClient } from "../llm/x402Http.js";
+import { memoryExecDeps, PUBLIC_SUMMARY_KV_KEY, X402_VALIDITY_SEC } from "../pulse/pulse.js";
 import { tierOf, type Tier } from "../pulse/tier.js";
 import { createDualGate, type BalanceReader, type DualGate, type GateTimer } from "./gate.js";
 import { createNonceStore, type NonceStore, type RandomSource } from "./nonce.js";
@@ -67,6 +73,8 @@ export interface ChatServerDeps {
   db: MemoryDb;
   llm: LlmClient;
   x402: X402Transport;
+  /** SPEC-M3 §3 real x402 transport (boot: runtime.x402.enabled). Present ⇒ step 3+4 use it; llm/x402 unused. */
+  paidInference?: PaidInferenceClient;
   endpoints: EndpointManager;
   /** Two INDEPENDENT balance readers (cfg.chatRpc[0], cfg.chatRpc[1]). */
   readers: readonly [BalanceReader, BalanceReader];
@@ -100,8 +108,8 @@ export interface ChatServer {
 export const CHAT_MAX_TOKENS = 512;
 /** Raw HTTP body cap for listen() (chatMaxChars text + JSON escaping headroom). */
 export const MAX_BODY_BYTES = 64 * 1024;
-/** kv key holding the agent's PUBLIC self-summary (never the private rolling summary). */
-export const PUBLIC_SUMMARY_KV_KEY = "chat.publicSelfSummary";
+/** kv key holding the agent's PUBLIC self-summary (never the private rolling summary); written by the pulse. */
+export { PUBLIC_SUMMARY_KV_KEY };
 export const PUBLIC_SUMMARY_MAX_CHARS = 2000;
 export const TOKEN_HEADER = "x-chat-token";
 
@@ -196,30 +204,6 @@ export function createChatServer(deps: ChatServerDeps): ChatServer {
     ...(deps.timer !== undefined ? { timer: deps.timer } : {}),
   });
 
-  // Inference-action uniqueness per second: two chat calls in the same clock second with the
-  // same endpoint + cost estimate would produce the SAME actionHash + issuedAt, which keyring
-  // K1 rejects as a replay (and would reuse one x402 nonce). Bump maxCostUsd by 1 µUSD until
-  // unique (see report — flagged for Fable).
-  const reserved = new Map<bigint, Set<string>>();
-  function uniqueCost(endpointId: string, cost: bigint, t: UnixSeconds): bigint {
-    for (const s of reserved.keys()) if (s < t - 120n) reserved.delete(s);
-    let set = reserved.get(t);
-    if (set === undefined) {
-      set = new Set<string>();
-      reserved.set(t, set);
-    }
-    const cap = cfg.maxPerCallUsd;
-    let c = cost;
-    while (c <= cap && set.has(`${endpointId}:${c}`)) c += 1n;
-    if (c > cap) {
-      c = cost - 1n;
-      while (c >= 1n && set.has(`${endpointId}:${c}`)) c -= 1n;
-      if (c < 1n) c = cost; // exhausted: fall through; K1 will reject the duplicate (503)
-    }
-    set.add(`${endpointId}:${c}`);
-    return c;
-  }
-
   async function onNonce(): Promise<ChatHttpResponse> {
     const n = nonces.issue(clock());
     return json(200, { nonce: n.nonce, expiresAt: Number(n.expiresAt) });
@@ -285,6 +269,7 @@ export function createChatServer(deps: ChatServerDeps): ChatServer {
     const now = clock();
     const ep = deps.endpoints.select(now, { cheapOnly: true });
     if (ep === undefined) return json(503, { error: "no_endpoint", reply: "I have no model available right now. Please try again later." });
+    if (deps.paidInference !== undefined) return paidChat(ep, wallet, text, rate.rowId, deps.paidInference);
     let quoted: bigint;
     try {
       quoted = (await deps.x402.quote(ep.id)).pricePerMTokUsd;
@@ -297,10 +282,10 @@ export function createChatServer(deps: ChatServerDeps): ChatServer {
     const publicSummary = kvGet(deps.db, PUBLIC_SUMMARY_KV_KEY) ?? "";
     const history = walletHistory(deps.db, wallet, rate.rowId, cfg.chatHistoryMax);
     const { system, messages } = buildChatPrompt(cfg, publicSummary, history, text);
-    const est = estimateMaxCostUsd(promptChars(system, messages, []), ep.maxPricePerMTokUsd, cfg.maxPerCallUsd);
+    const maxCostUsd = estimateMaxCostUsd(promptChars(system, messages, []), CHAT_MAX_TOKENS, ep.maxPricePerMTokUsd, cfg.maxPerCallUsd);
     const t = clock();
-    const maxCostUsd = uniqueCost(ep.id, est, t);
-    const action: ProposedAction = { kind: "inference", category: "chat", endpointId: ep.id, maxCostUsd };
+    const salt = inferenceSalt(t, wallet.toLowerCase(), rate.rowId);
+    const action: ProposedAction = { kind: "inference", category: "chat", endpointId: ep.id, maxCostUsd, salt };
     const auth: X402AuthInput = {
       to: ep.payTo,
       value: maxCostUsd,
@@ -341,6 +326,40 @@ export function createChatServer(deps: ChatServerDeps): ChatServer {
     deps.endpoints.recordContractSuccess(ep.id);
     insertChat(deps.db, { ts: clock(), wallet: wallet.toLowerCase(), dir: "out", content: reply });
     return json(200, { reply });
+  }
+
+  /** Step 3+4 through the real x402 transport. Endpoint failures are counted by the transport. */
+  async function paidChat(
+    ep: { id: string; maxPricePerMTokUsd: bigint },
+    wallet: Address,
+    text: string,
+    rowId: number,
+    client: PaidInferenceClient,
+  ): Promise<ChatHttpResponse> {
+    const publicSummary = kvGet(deps.db, PUBLIC_SUMMARY_KV_KEY) ?? "";
+    const history = walletHistory(deps.db, wallet, rowId, cfg.chatHistoryMax);
+    const { system, messages } = buildChatPrompt(cfg, publicSummary, history, text);
+    const estimateUsd = estimateMaxCostUsd(promptChars(system, messages, []), CHAT_MAX_TOKENS, ep.maxPricePerMTokUsd, cfg.maxPerCallUsd);
+    const salt = inferenceSalt(clock(), wallet.toLowerCase(), rowId);
+    const r = await client.call({ endpointId: ep.id, category: "chat", estimateUsd, salt, system, messages, maxTokens: CHAT_MAX_TOKENS }, ex);
+    switch (r.kind) {
+      case "ok":
+        deps.endpoints.recordContractSuccess(ep.id);
+        insertChat(deps.db, { ts: clock(), wallet: wallet.toLowerCase(), dir: "out", content: r.text });
+        return json(200, { reply: r.text });
+      case "denied":
+        return json(200, { reply: `I'd love to, but my policy engine says no: ${r.code}: ${r.detail}`, refused: true, denyCode: r.code });
+      case "quoteRejected":
+        return json(503, { error: "price_ceiling", reply: "My model provider is over its price ceiling right now. Please try again later." });
+      case "httpError":
+        return json(503, { error: "quote_failed", reply: "My model provider isn't answering right now. Please try again later.", detail: r.detail });
+      case "payError":
+        return json(503, { error: "inference_failed", reply: "Something went wrong on my side. Please try again later.", detail: r.detail });
+      case "paymentRejected":
+        return json(503, { error: "payment_failed", reply: "I couldn't pay for my thinking just now. Please try again later.", detail: r.detail });
+      case "contract":
+        return json(503, { error: "llm_contract", reply: "I lost my train of thought. Please try again." });
+    }
   }
 
   async function onHealth(): Promise<ChatHttpResponse> {

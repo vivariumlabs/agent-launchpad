@@ -16,7 +16,8 @@ import { createKeyring, type Keyring } from "../../src/keyring/keyring.js";
 import { MockKms } from "../../src/keyring/mockKms.js";
 import { EndpointManager } from "../../src/llm/endpoints.js";
 import { MockLlm, MockX402Transport } from "../../src/llm/mock.js";
-import type { LlmRequest, LlmResponse } from "../../src/llm/types.js";
+import type { HttpClient, LlmRequest, LlmResponse } from "../../src/llm/types.js";
+import { X402HttpInference } from "../../src/llm/x402Http.js";
 import { openMemory, type MemoryDb } from "../../src/memory/db.js";
 import type { BudgetLedger, WalletState } from "../../src/policy/types.js";
 import { E18, E6, NOW, PAYTO_INF_CHEAP, PAYTO_INF_STD, addr, agentJson, mkLedger, mkState, platformJson } from "../policy/helpers.js";
@@ -133,6 +134,10 @@ export interface ChatHarnessOpts {
   llm?: (req: LlmRequest) => string | LlmResponse | Error;
   /** MockKms agent id (different ⇒ different chat session key). */
   kmsAgent?: string;
+  /** Share a memory db (e.g. with a pulse harness). */
+  db?: MemoryDb;
+  /** Real x402 transport over this HttpClient (deps.paidInference); llm/x402 mocks then unused. */
+  x402Http?: HttpClient;
 }
 
 export interface ChatHarness {
@@ -212,7 +217,7 @@ export async function makeChatHarness(opts: ChatHarnessOpts = {}): Promise<ChatH
   let L = opts.ledger ?? mkLedger({ feeIncome7d: [100n * E6, 100n * E6, 100n * E6] });
   const state = opts.state ?? mkState();
   const chain = new MockChainClient();
-  const db = openMemory(":memory:");
+  const db = opts.db ?? openMemory(":memory:");
   const llm = new MockLlm(opts.llm ?? echo);
   const x402 = new MockX402Transport([
     { id: EP_STD, payTo: PAYTO_INF_STD, price: PRICE_STD },
@@ -232,6 +237,7 @@ export async function makeChatHarness(opts: ChatHarnessOpts = {}): Promise<ChatH
     clock: () => now,
   };
   const deps: ChatServerDeps = { exec, db, llm, x402, endpoints, readers: [readerA, readerB], tier: undefined };
+  if (opts.x402Http !== undefined) deps.paidInference = new X402HttpInference({ http: opts.x402Http, exec, endpoints });
   if (opts.realTimer !== true) deps.timer = timer;
   const server = createChatServer(deps);
 

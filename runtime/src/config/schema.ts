@@ -12,6 +12,7 @@
 // per-chain maps (`cfg.poolManager.rh`), not bare addresses. The engine author
 // should confirm this against SPEC-M2's usage before wiring rules to it.
 
+import { readFileSync } from "node:fs";
 import { isAddress, keccak256, stringToBytes, type Address, type Hex } from "viem";
 import { z } from "zod";
 import { canonicalEncode } from "../policy/approval.js";
@@ -186,6 +187,9 @@ export const CapsSchema = z
     chatNonceTtlSec: bigintCoerce.default(300n),
     /** Dual-RPC balance read timeout (both reads), ms. */
     chatGateTimeoutMs: z.number().int().positive().default(3000),
+    // ---- SPEC-M3 §3 x402 HTTP transport (ADDITIVE, Job J) ----
+    /** Per-request timeout of the x402 inference HTTP transport, ms (30 s DEFAULT). */
+    x402HttpTimeoutMs: z.number().int().positive().default(30_000),
   })
   .default({});
 
@@ -255,6 +259,13 @@ export const PlatformConfigSchema = z.object({
   chatRpc: z.array(z.string().min(1)).length(2).optional(),
   /** Platform token ($TOKEN) address on RH — second leg of the D9 chat gate. */
   platformTokenAddress: addressSchema.optional(),
+  // ---- SPEC-M3 §3b (ADDITIVE, rev 1) ----
+  /**
+   * Platform signer for 04 §4 signed allowlist updates (opt-in adoption; verifier not built yet).
+   * Lives in the FROZEN config, so it is covered by the attested config-hash binding. Typed as the
+   * signer's EVM address (secp256k1; verification = signature recovery, as everywhere else in the stack).
+   */
+  allowlistUpdatePubkey: addressSchema.optional(),
 });
 
 export type PlatformConfig = z.infer<typeof PlatformConfigSchema>;
@@ -290,4 +301,157 @@ export function resolveConfig(input: ResolveConfigInput): ResolvedConfig {
 /** Same canonical encoding as approval.ts, for hashing the stored config JSON. */
 export function configHash(json: unknown): Hex {
   return keccak256(stringToBytes(canonicalEncode(json)));
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-M3 §3b — config split: FROZEN identity config (agent.json) + mutable ops config (runtime.json)
+// ---------------------------------------------------------------------------
+//
+// agent.json = { platform, agent } — everything money/authority-bearing: addresses, x402 allowlist,
+// caps, agent identity/persona/models/social, allowlistUpdatePubkey. Its frozenHash =
+// keccak256(canonicalEncode(file JSON)) is passed as the ATTESTED Oyster init param `config-hash`, so
+// the KMS keys bind to (codeHash, agentId, configHash); boot refuses when the file hashes differently.
+// runtime.json = the ops section (RPC urls, ports, dirs, KMS/attestation urls, x402 toggle, hosting
+// stand-in, dbPath…): unattested, not hash-bound, and must carry NO spend authority — a hostile
+// runtime.json can lie about chain state (waste/denial) but cannot redirect funds.
+
+const optionalUrl = z.string().url().optional();
+
+/** runtime.json — mutable ops config (was the `runtime` section of the single-file config). */
+export const RuntimeOpsConfigSchema = z
+  .object({
+    /** M2 MockKms derivation inputs (fixture). Real Nautilus KMS = M3; opts.kms overrides. */
+    mockKms: z.object({ imageId: z.string().min(1), agentId: z.string().min(1) }).strict().optional(),
+    /** Memory DB path, relative to the ops config file (DEFAULT "memory.sqlite"); opts.dbPath overrides. */
+    dbPath: z.string().min(1).optional(),
+    /** Snapshot dir (mock Arweave), relative to the ops config file (DEFAULT "snapshots"). */
+    snapshotDir: z.string().min(1).optional(),
+    /** Per-chain RPC urls. Any set ⇒ RealChainClient (src/exec/chainViem.ts) over those chains. */
+    rpc: z.object({ rh: optionalUrl, base: optionalUrl, arbitrum: optionalUrl, optimism: optionalUrl }).strict().default({}),
+    /**
+     * M2 stand-in for the Oyster rental reader (no Marlin reads in ChainClient yet):
+     * current rental expiry (unix s) + live rate (USDC(6)/day). Absent ⇒ rate 0 (infinite runway).
+     */
+    hosting: z.object({ paidUntil: bigintCoerce, ratePerDay: bigintCoerce }).strict().optional(),
+    /** Chat server bind address (DEFAULT "127.0.0.1"; the enclave passes its ingress address). */
+    chatHost: z.string().min(1).optional(),
+    // ---- SPEC-M3 §2 (ADDITIVE, Job I) ----
+    /** true ⇒ NautilusKms + boot attestation → cfg.registration (DEFAULT false: MockKms, no attestation). */
+    tee: z.boolean().default(false),
+    /** Nautilus KMS base URL (DEFAULT http://127.0.0.1:1100); localhost only (constructor refuses others). */
+    kmsUrl: z.string().url().optional(),
+    /** Raw attestation URL (DEFAULT http://127.0.0.1:1300/attestation/raw); localhost only. */
+    attestationUrl: z.string().url().optional(),
+    /**
+     * Enclave image id (32-byte hex) = the registry codeHash. REQUIRED when tee: true. Supplied by
+     * the deployer (scripts/compute-image-id.sh): the enclave cannot self-derive its own
+     * measurement before attestation, and parsing the quote in-enclave is out of scope (§2).
+     */
+    imageId: z.string().regex(/^0x[0-9a-fA-F]{64}$/, "must be 32-byte hex").optional(),
+    /** Container image digest (e.g. "sha256:…") recorded in the attestation report (04 §5). */
+    imageDigest: z.string().min(1).optional(),
+    /** Attestation report dir (LocalDirSink), relative to the ops config file (DEFAULT "attestations"). */
+    attestationDir: z.string().min(1).optional(),
+    // ---- M3 s1 review (ADDITIVE) ----
+    /**
+     * Oyster init-params dir (DEFAULT "/init-params"; relative ⇒ to the ops config file). If
+     * <dir>/agent-id exists, boot refuses unless it equals "agent-<agent.agentId>"; <dir>/config-hash
+     * must equal the frozen config hash (REQUIRED when tee: true — SPEC-M3 §3b). tee: true ⇒ must be
+     * unset (or "/init-params"): this file is unattested and may not relocate the attested params.
+     */
+    initParamsDir: z.string().min(1).optional(),
+    /**
+     * Real x402 HTTP transport (SPEC-M3 §3). DEFAULT disabled ⇒ overrides.x402/llm (mocks).
+     * allowInsecureHttp: permit http:// endpoint URLs (local testing ONLY; DEFAULT false).
+     */
+    x402: z.object({ enabled: z.boolean(), allowInsecureHttp: z.boolean().optional() }).strict().default({ enabled: false }),
+  })
+  .strict()
+  .default({});
+
+export type RuntimeOpsConfig = z.infer<typeof RuntimeOpsConfigSchema>;
+
+/** agent.json envelope — exactly { platform, agent } (strict: no ops keys, no extras). */
+export const FrozenConfigFileSchema = z.object({ platform: z.unknown(), agent: z.unknown() }).strict();
+
+/** Validated frozen config (defaults applied). */
+export interface FrozenConfig {
+  platform: PlatformConfig;
+  agent: AgentConfig;
+}
+
+/**
+ * keccak256(canonicalEncode(frozen JSON)) over the RAW parsed file (before zod defaults), so the
+ * value is independent of whitespace and key order and reproducible by anyone holding the file.
+ * In legacy single-file mode it is computed over { platform, agent } of that file — the same value
+ * the split agent.json of identical content yields.
+ */
+export function frozenConfigHash(frozenJson: { platform: unknown; agent: unknown }): Hex {
+  return configHash({ platform: frozenJson.platform, agent: frozenJson.agent });
+}
+
+/** Refuse-to-boot on a config hash mismatch (03 §10). Legacy: whole file; split: the frozen agent.json. */
+export class ConfigHashMismatchError extends Error {
+  constructor(
+    readonly expected: string,
+    readonly actual: Hex,
+  ) {
+    super(`config hash mismatch: expected ${expected}, file hashes to ${actual} — refusing to boot (03 §10)`);
+    this.name = "ConfigHashMismatchError";
+  }
+}
+
+export interface LoadSplitConfigInput {
+  /** Frozen identity config (agent.json). */
+  agentPath: string;
+  /** Mutable ops config (runtime.json). */
+  runtimePath: string;
+  /** Optional extra check (orchestrator convenience): must equal frozenHash, checked BEFORE schema validation. */
+  expectedHash?: string;
+}
+
+export interface SplitConfig {
+  /** Raw parsed agent.json (what frozenHash is computed over). */
+  frozenJson: { platform: unknown; agent: unknown };
+  frozen: FrozenConfig;
+  ops: RuntimeOpsConfig;
+  frozenHash: Hex;
+  /**
+   * ResolvedConfig (unchanged shape) for the KMS-derived OwnAddresses. A function rather than a value:
+   * the addresses come from the KMS, which boot must not touch before the hash checks pass.
+   */
+  resolve(ownAddresses: OwnAddresses): ResolvedConfig;
+}
+
+function readJson(path: string, what: string): unknown {
+  const text = readFileSync(path, "utf8");
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    throw new Error(`${what} ${path}: invalid JSON: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** Loads + validates agent.json (frozen) and runtime.json (ops). Throws on any invalid file or hash mismatch. */
+export function loadSplitConfig(input: LoadSplitConfigInput): SplitConfig {
+  const rawFrozen = readJson(input.agentPath, "agent config");
+  const rawOps = readJson(input.runtimePath, "runtime config");
+  const envelope = FrozenConfigFileSchema.safeParse(rawFrozen);
+  if (!envelope.success) {
+    throw new Error(`agent config ${input.agentPath}: must be exactly { platform, agent } (ops settings belong in runtime.json): ${envelope.error.message}`);
+  }
+  const frozenJson = { platform: envelope.data.platform, agent: envelope.data.agent };
+  const frozenHash = frozenConfigHash(frozenJson);
+  if (input.expectedHash !== undefined && input.expectedHash.toLowerCase() !== frozenHash.toLowerCase()) {
+    throw new ConfigHashMismatchError(input.expectedHash, frozenHash);
+  }
+  const frozen: FrozenConfig = { platform: PlatformConfigSchema.parse(frozenJson.platform), agent: AgentConfigSchema.parse(frozenJson.agent) };
+  const ops = RuntimeOpsConfigSchema.parse(rawOps);
+  return {
+    frozenJson,
+    frozen,
+    ops,
+    frozenHash,
+    resolve: (ownAddresses) => resolveConfig({ platform: frozenJson.platform, agent: frozenJson.agent, ownAddresses }),
+  };
 }
