@@ -1,10 +1,13 @@
 {
   "tee": true,
-  "imageId": "0x72461bb5adadc06544f2f5960c124b90f12be8cb64acabe9dfc0e9dabd6a4839",
+  "imageId": "0xab792b20ba3bdf6b2e53fd9845faacacdbabb88ee6a64a2d8a43aca037b9383e",
   "dbPath": "/data/agent.db",
   "snapshotDir": "/data/snapshots",
   "rpc": {
-    "rh": "https://rpc.testnet.chain.robinhood.com"
+    "rh": "https://rpc.testnet.chain.robinhood.com",
+    "base": "https://base-rpc.publicnode.com",
+    "arbitrum": "https://arbitrum-one-rpc.publicnode.com",
+    "optimism": "https://optimism-rpc.publicnode.com"
   },
   "hosting": {
     "paidUntil": "1791028800",
