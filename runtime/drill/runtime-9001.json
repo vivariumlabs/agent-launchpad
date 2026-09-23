@@ -1,0 +1,16 @@
+{
+  "tee": true,
+  "imageId": "0x72461bb5adadc06544f2f5960c124b90f12be8cb64acabe9dfc0e9dabd6a4839",
+  "dbPath": "/data/agent.db",
+  "snapshotDir": "/data/snapshots",
+  "rpc": {
+    "rh": "https://rpc.testnet.chain.robinhood.com"
+  },
+  "hosting": {
+    "paidUntil": "1791028800",
+    "ratePerDay": "1700000"
+  },
+  "x402": {
+    "enabled": false
+  }
+}
