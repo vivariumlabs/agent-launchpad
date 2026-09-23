@@ -5,3 +5,4 @@ contracts/cache/
 .secrets/
 contracts/out-*/
 contracts/cache-*/
+backups/
