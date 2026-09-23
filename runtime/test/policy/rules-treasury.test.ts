@@ -16,6 +16,8 @@ const CHAINS: Chain[] = ["rh", "base", "arbitrum", "optimism"];
 function tt(purpose: TreasuryPurpose, chain: Chain, asset: TT["asset"], to: `0x${string}`, amount: bigint, recipient?: `0x${string}`): TT {
   const a: TT = { kind: "treasuryTransfer", purpose, chain, asset, to, amount };
   if (recipient !== undefined) a.recipient = recipient;
+  // SPEC-M2B §3: acrossBridge requires destChain (≠ source chain); default to a different chain.
+  if (purpose === "acrossBridge") a.destChain = chain === "rh" ? "base" : "rh";
   return a;
 }
 
@@ -260,13 +262,33 @@ describe("T0: runway gate on treasury outflows", () => {
     return s;
   };
 
-  it("T0: gasTopUp (no fundable effect) at exactly 45d ⇒ allow; at 44d ⇒ RUNWAY", () => {
-    expectAllow(ev(tt("gasTopUp", "base", "ETH", ACTION, 1n), { state: at45() }));
-    expectDeny(ev(tt("gasTopUp", "base", "ETH", ACTION, 1n), { state: at44() }), "RUNWAY");
+  // T0 rev 2: ONLY allowance and USDG/USDC acrossBridge are gated.
+  const at1d = (): ReturnType<typeof mkState> => {
+    const s = mkRunwayState(1_700_000n); // 0 paid + 1 funded day
+    s.treasury.base = { native: E18, USDC: 50n * E6 };
+    return s;
+  };
+
+  it("T0 rev 2: gasTopUp is exempt — allowed at 44d and at 1d runway", () => {
+    expectAllow(ev(tt("gasTopUp", "base", "ETH", ACTION, 1n), { state: at44() }));
+    expect(runwayDays(at1d(), NOW, undefined, 50)).toBe(1n);
+    expectAllow(ev(tt("gasTopUp", "rh", "ETH", ACTION, 10n ** 15n), { state: at1d() }));
   });
-  it("T0: x402Data (Base USDC, no fundable effect) at 45d ⇒ allow; at 44d ⇒ RUNWAY", () => {
-    expectAllow(ev(tt("x402Data", "base", "USDC", PAYTO_DATA, E6), { state: at45() }));
-    expectDeny(ev(tt("x402Data", "base", "USDC", PAYTO_DATA, E6), { state: at44() }), "RUNWAY");
+  it("T0 rev 2: gasTopUp at negative runway (hosting lapsed, nothing funded) ⇒ still allowed", () => {
+    expectAllow(ev(tt("gasTopUp", "rh", "ETH", ACTION, 1n), { state: mkRunwayState(0n, 0n, NOW - 10n * DAY) }));
+  });
+  it("T0 rev 2: ETH-asset acrossBridge at 1d ⇒ allowed (caps permitting); over the gasTopUp cap ⇒ DAILY_CAP, not RUNWAY", () => {
+    const cap = cfg.gasTopUpDailyCapWeiPerChain;
+    expectAllow(ev(tt("acrossBridge", "rh", "ETH", SPOKE.rh, cap, TREASURY), { state: at1d() }));
+    expectDeny(ev(tt("acrossBridge", "rh", "ETH", SPOKE.rh, cap + 1n, TREASURY), { state: at1d() }), "DAILY_CAP");
+  });
+  it("T0 rev 2: x402Data is exempt — allowed at 44d and at 1d", () => {
+    expectAllow(ev(tt("x402Data", "base", "USDC", PAYTO_DATA, E6), { state: at44() }));
+    expectAllow(ev(tt("x402Data", "base", "USDC", PAYTO_DATA, E6), { state: at1d() }));
+  });
+  it("T0 rev 2: arweaveFunding is exempt — spending across the 45d haircut boundary and at 0d funded ⇒ allow", () => {
+    expectAllow(ev(tt("arweaveFunding", "rh", "USDG", ARWEAVE, 1n), { state: mkRunwayState(0n, 76_884_423n) }));
+    expectAllow(ev(tt("arweaveFunding", "rh", "USDG", ARWEAVE, 10n * E6), { state: mkRunwayState(0n, 10n * E6) }));
   });
   it("T0: acrossBridge of arbitrum USDC that drops runway 45 → 44 ⇒ RUNWAY", () => {
     expectDeny(ev(tt("acrossBridge", "arbitrum", "USDC", SPOKE.arbitrum, 1n, TREASURY), { state: at45() }), "RUNWAY");
@@ -276,11 +298,18 @@ describe("T0: runway gate on treasury outflows", () => {
     expectAllow(ev(tt("acrossBridge", "arbitrum", "USDC", SPOKE.arbitrum, 1_700_000n, TREASURY), { state: s }));
     expectDeny(ev(tt("acrossBridge", "arbitrum", "USDC", SPOKE.arbitrum, 1_700_001n, TREASURY), { state: s }), "RUNWAY");
   });
-  it("T0: arweaveFunding (rh USDG) respects the haircut boundary: 76_884_423 ⇒ spending 1 drops to 44d ⇒ RUNWAY", () => {
-    expectDeny(ev(tt("arweaveFunding", "rh", "USDG", ARWEAVE, 1n), { state: mkRunwayState(0n, 76_884_423n) }), "RUNWAY");
+  it("T0 rev 2: USDG acrossBridge at 44d ⇒ RUNWAY; haircut boundary 76_884_423 ⇒ spending 1 drops to 44d ⇒ RUNWAY", () => {
+    const s44 = mkRunwayState(0n, 76_884_422n);
+    expect(runwayDays(s44, NOW, undefined, 50)).toBe(44n);
+    expectDeny(ev(tt("acrossBridge", "rh", "USDG", SPOKE.rh, 1n, TREASURY), { state: s44 }), "RUNWAY");
+    expectDeny(ev(tt("acrossBridge", "rh", "USDG", SPOKE.rh, 1n, TREASURY), { state: mkRunwayState(0n, 76_884_423n) }), "RUNWAY");
   });
-  it("T0: arweaveFunding with runway to spare ⇒ allow", () => {
-    expectAllow(ev(tt("arweaveFunding", "rh", "USDG", ARWEAVE, 1n), { state: mkRunwayState(0n, 78_000_000n) }));
+  it("T0 rev 2: USDG acrossBridge with runway to spare ⇒ allow", () => {
+    expectAllow(ev(tt("acrossBridge", "rh", "USDG", SPOKE.rh, 1n, TREASURY), { state: mkRunwayState(0n, 78_000_000n) }));
+  });
+  it("T0 rev 2: base-chain USDC acrossBridge (no fundable effect) is still gated: 44d ⇒ RUNWAY, 45d ⇒ allow", () => {
+    expectDeny(ev(tt("acrossBridge", "base", "USDC", SPOKE.base, E6, TREASURY), { state: at44() }), "RUNWAY");
+    expectAllow(ev(tt("acrossBridge", "base", "USDC", SPOKE.base, E6, TREASURY), { state: at45() }));
   });
   it("T0: oysterRental is exempt (runway negative, still allowed)", () => {
     const s = mkRunwayState(50n * E6, 0n, NOW - 10n * DAY);
@@ -288,15 +317,23 @@ describe("T0: runway gate on treasury outflows", () => {
     expectAllow(ev(tt("oysterRental", "arbitrum", "USDC", MARLIN_PAY, 50n * E6), { state: s }));
   });
   it("T0: hostingPaidUntil in the past counts negative (paid −1d + 46d funded = 45 ⇒ allow; −2d ⇒ RUNWAY)", () => {
-    expectAllow(ev(tt("gasTopUp", "rh", "ETH", ACTION, 1n), { state: mkRunwayState(46n * 1_700_000n, 0n, NOW - 1n) }));
-    expectDeny(ev(tt("gasTopUp", "rh", "ETH", ACTION, 1n), { state: mkRunwayState(46n * 1_700_000n, 0n, NOW - DAY - 1n) }), "RUNWAY");
+    const bridge = tt("acrossBridge", "base", "USDC", SPOKE.base, E6, TREASURY);
+    const withBase = (st: ReturnType<typeof mkState>): ReturnType<typeof mkState> => {
+      st.treasury.base = { native: E18, USDC: 50n * E6 };
+      return st;
+    };
+    expectAllow(ev(bridge, { state: withBase(mkRunwayState(46n * 1_700_000n, 0n, NOW - 1n)) }));
+    expectDeny(ev(bridge, { state: withBase(mkRunwayState(46n * 1_700_000n, 0n, NOW - DAY - 1n)) }), "RUNWAY");
   });
   it("T0: hostingRatePerDay = 0 ⇒ infinite runway ⇒ allow even with no fundable balance", () => {
-    expectAllow(ev(tt("gasTopUp", "rh", "ETH", ACTION, 1n), { state: mkRunwayState(0n, 0n, 0n, 0n) }));
+    const s = mkRunwayState(0n, 0n, 0n, 0n);
+    s.treasury.base = { native: E18, USDC: 50n * E6 };
+    expectAllow(ev(tt("acrossBridge", "base", "USDC", SPOKE.base, E6, TREASURY), { state: s }));
   });
   it("T0: minRunwayDays is read from config", () => {
-    const s = mkRunwayState(76_500_000n);
-    expectDeny(ev(tt("gasTopUp", "rh", "ETH", ACTION, 1n), { state: s, cfg: { ...cfg, minRunwayDays: 46 } }), "RUNWAY");
+    const bridge = tt("acrossBridge", "base", "USDC", SPOKE.base, E6, TREASURY);
+    expectAllow(ev(bridge, { state: at45() }));
+    expectDeny(ev(bridge, { state: at45(), cfg: { ...cfg, minRunwayDays: 46 } }), "RUNWAY");
   });
 });
 

@@ -108,7 +108,7 @@ describe("G3: action-wallet balances", () => {
 });
 
 // ---------------------------------------------------------------------------
-// A2 per-counterparty daily cap (actionTransfer only)
+// A2 per-counterparty daily cap (actionTransfer; actionMint since A2 rev 2)
 // ---------------------------------------------------------------------------
 
 describe("A2: per-counterparty daily cap", () => {
@@ -176,12 +176,33 @@ describe("A2: per-counterparty daily cap", () => {
     const L = mkLedger({ dayKey: "2026-09-22", counterpartySpent: { [CP]: { ETH: 3n * 10n ** 17n, "ETH:denom": 1n } } });
     expectAllow(ev(xfer("ETH", CP, 2n * 10n ** 17n), { ledger: L }));
   });
-  it("A2: swaps / LP / mints are exempt (huge counterparty spend recorded, still allowed)", () => {
+  it("A2: swaps / LP are exempt (huge counterparty spend recorded, still allowed)", () => {
     const big = { USDG: 10n ** 30n, ETH: 10n ** 30n, [TOKEN_X.toLowerCase()]: 10n ** 30n };
     const L = mkLedger({ counterpartySpent: { [CP]: big, [cfg.poolManager.rh.toLowerCase()]: big } });
     expectAllow(ev({ kind: "actionSwap", tokenIn: "USDG", tokenOut: TOKEN_X, amountIn: E6, minOut: 0n }, { ledger: L }));
     expectAllow(ev({ kind: "actionLp", pool: POOL, usdgAmount: E6, tokenAmount: E18, token: TOKEN_X }, { ledger: L }));
-    expectAllow(ev({ kind: "actionMint", target: CP, value: 1n }, { ledger: L }));
+  });
+
+  // A2 rev 2: actionMint is counterparty-capped (target-keyed, "ETH" asset key).
+  const mint = (target: Address, value: bigint): ProposedAction => ({ kind: "actionMint", target, value });
+  it("A2 rev 2: actionMint without snapshot — denominator = current native balance (1 ETH ⇒ 0.3): 0.2 + 0.1 allow, +1 wei deny", () => {
+    const L = mkLedger({ counterpartySpent: { [CP]: { ETH: 2n * 10n ** 17n } } });
+    expectAllow(ev(mint(CP, 10n ** 17n), { ledger: L }));
+    expectDeny(ev(mint(CP, 10n ** 17n + 1n), { ledger: L }), "COUNTERPARTY_CAP");
+  });
+  it("A2 rev 2: actionMint with snapshot — denominator = snapshot (0.5 ETH ⇒ 0.15)", () => {
+    const L = mkLedger({ counterpartySpent: { [CP]: { ETH: 10n ** 17n, "ETH:denom": 5n * 10n ** 17n } } });
+    expectAllow(ev(mint(CP, 5n * 10n ** 16n), { ledger: L }));
+    expectDeny(ev(mint(CP, 5n * 10n ** 16n + 1n), { ledger: L }), "COUNTERPARTY_CAP");
+  });
+  it("A2 rev 2: actionMint shares the ETH bucket with actionTransfer to the same address (case-insensitive)", () => {
+    const L = mkLedger({ counterpartySpent: { [getAddress(CP)]: { ETH: 3n * 10n ** 17n } } });
+    expectDeny(ev(mint(CP, 1n), { ledger: L }), "COUNTERPARTY_CAP");
+    expectAllow(ev(mint(CP2, 10n ** 17n), { ledger: L }));
+  });
+  it("A2 rev 2: actionMint check order — A1 PER_TX_CAP before COUNTERPARTY_CAP", () => {
+    const L = mkLedger({ counterpartySpent: { [CP]: { ETH: 3n * 10n ** 17n } } });
+    expectDeny(ev(mint(CP, E18 / 5n + 1n), { ledger: L }), "PER_TX_CAP");
   });
 });
 
@@ -279,8 +300,8 @@ describe("A4: swaps, LP, mints, chain binding", () => {
   it("A4: token → USDG swap ⇒ allow", () => {
     expectAllow(ev({ kind: "actionSwap", tokenIn: TOKEN_X, tokenOut: "USDG", amountIn: E18, minOut: 5n }));
   });
-  it("A4: token → token (both RH tokens) ⇒ allow", () => {
-    expectAllow(ev({ kind: "actionSwap", tokenIn: TOKEN_X, tokenOut: TOKEN_Y, amountIn: E18, minOut: 0n }));
+  it("A4 rev 2: token → token (no USDG leg) ⇒ NO_RULE (unbuildable, pools are TOKEN/USDG)", () => {
+    expectDeny(ev({ kind: "actionSwap", tokenIn: TOKEN_X, tokenOut: TOKEN_Y, amountIn: E18, minOut: 0n }), "NO_RULE");
   });
   it("A4: tokenIn == tokenOut ⇒ NO_RULE (also across casing)", () => {
     expectDeny(ev({ kind: "actionSwap", tokenIn: TOKEN_X, tokenOut: getAddress(TOKEN_X), amountIn: E18, minOut: 0n }), "NO_RULE");

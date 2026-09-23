@@ -1,38 +1,48 @@
-# BUILD STATE — updated 2026-09-23 (session 4)
+# BUILD STATE — updated 2026-09-23 (session 5)
 
-## Milestone: **M2 — session 1 done.** Policy engine (the security core) implemented + 461/461 tests green, incl. Fable-authored property/invariant suite. All four M2/M3 carry-overs addressed. Next: M2 session 2 (pulse machine, memory, daemon).
+## Milestone: **M2 — session 2 done.** Full runtime core implemented locally: executors, pulse machine, LLM client, memory+snapshot, treasury daemon. 837/837 tests green incl. BOTH M2 exit-gate artifacts (adversarial mock-LLM suite, snapshot→restore identity). Next: M2 session 3 (chat server + gating tests, anvil integration, wiring/composition root) → close M2.
 
-## Done
-- **`runtime/SPEC-M2.md`** (Fable): normative spec for policy engine, keyring, ledger — types, rules G1–G4/T0–T5/I1–I2/A1–A4, 16 DenyCodes, invariants INV1–7, model-identity check design (§7). Rev 1 applied same session (see decisions).
-- **Runtime scaffold** (Sonnet): TS strict/Node22/ESM, vitest + fast-check + viem + zod; `src/config/schema.ts` (zod, configHash), `src/policy/types.ts`, `src/policy/approval.ts` (canonical encode + keccak Approval, 60s TTL).
-- **Keyring + mock KMS** (Sonnet): `MockKms` reproduces the Nautilus (image, agentId, path) binding semantics (mirrors M0 A/B/C drill in tests); `withRetry` boot pattern (carry-over 2, the M0 derive-server gotcha); keyring's ONLY signing entry is `signApproved(action, approval, now)` — hash + TTL checked, wallet chosen by `walletForAction`.
-- **Policy engine** (Opus, vs Fable spec; Fable-reviewed line-by-line): `evaluate()` pure/deterministic/default-deny, never throws, zod G1 gate, wallet isolation (treasury rules never see action balances and vice versa), runway math (floor, 0-rate ⇒ infinite sentinel), Hinnant civil-from-days dayKey (no Date anywhere). Pure ledger reducers shared by engine view + apply path.
-- **Tests: 461 green, 10 files** (`npm test` in `runtime/`): 424 unit (every rule × allow/deny/boundary), 26 keyring, 11 property/invariant (Fable): INV1 no-treasury-outflow-outside-whitelist (single-shot 2k runs + 500 mixed 40-step sequences with evolving ledger/clock), INV2 allowance cadence/size, INV3 per-day per-category inference budget, INV4 45d hosting reserve, INV5 20% per-tx cap, INV6 determinism + never-throws on junk, INV7 metamorphic default-deny (mutate any allowed action's destination ⇒ deny). Hygiene test greps sources for Date.now/Math.random/fetch/process.env/`any`.
-- **Carry-over (1)** TLS chat ingress: designed — in-enclave ACME (TLS-ALPN-01), KMS-derived ACME account key, per-agent subdomain, platform holds only DNS; attestation-bound cert fallback. `runtime/docs/TLS-INGRESS.md`; verify on real CVM = M3 gate item.
-- **Carry-over (3)** x402 allowlist curation: process doc `docs/ops/X402-ALLOWLIST-PROCESS.md` (admission criteria, probes, weekly monitoring, EIP-712-signed opt-in updates, bootstrap target 4–5 entries).
-- **Carry-over (4)** model-identity checks: spec'd in SPEC-M2 §7 (price ceiling, per-response contract checks, daily deterministic canaries; self-ID explicitly untrusted) — implement with LLM client in session 2.
+## Done (session 2; sessions 1–4 summaries in git history of this file)
+- **`runtime/SPEC-M2B.md`** (Fable): normative spec for executors, keyring gates K1–K4, engine social/journal/approve extensions, LLM client, pulse, memory, daemon, and the 13-scenario adversarial suite.
+- **Engine extensions:** kinds castPost/castReply/journalWrite/actionApprove/treasuryApprove; rules S1/S2/J1/AP1/AP2; DenyCodes PACE_CAP/APPROVE_SPENDER; acrossBridge gained required `destChain`; wallets now treasury|action|fc|journal.
+- **Keyring gates:** K1 single-use approvals (replay protection, keyed hash+issuedAt); K2 signTxApproved (tx content rebuilt from config — LLM/executor can never supply to/data/value/chainId; gas/fee ceilings); K3 EIP-3009 x402 auth (deterministic nonce = keccak(actionHash‖"x402"), value ≤ approved max); K4 cast signing (ed25519 via @noble, contentHash-bound).
+- **Executors:** buildTx per kind from real ABIs (transcribed from contracts/ with source line refs); PoolSwapTest swap path mirroring M1 Lifecycle; Across depositV3 (interface from public spec — VERIFY vs live contract in session 3); MockChainClient; execute() with budget-consumed-before-send; composite swaps DRY-RUN the swap verdict before approving (no stranded approvals).
+- **Memory:** better-sqlite3, 7 tables per 03 §7; lossless BudgetLedger serialization; AES-256-GCM snapshots (deterministic IV), LocalDirSink (mock Arweave); restoreLatest = newest decryptable. **Gate test green: populate→snapshot→destroy→restore→identical dumps**; corruption fallback + wrong-agentId-key rejection proven.
+- **LLM client:** EndpointManager (health states, rotation, attested-first); SPEC-M2 §7 identity checks implemented — price ceiling, contract checks (3-strikes), daily deterministic canaries; self-ID never consulted. MockLlm + MockX402Transport.
+- **Pulse machine:** tierOf (01 §6, unified impl, Evicted wakes like Dormant), deterministic context bundle (full/trimmed/minimal), THE tool table (data-exported; provably no treasury kind reachable), runPulse (inference gate → LLM → K=5 cap → map→evaluate→execute → diary/journal/posts → heartbeat → persist), scheduler with budget stretch, intra-pulse dedup of identical actions.
+- **Treasury daemon:** tick() steps 1–9 per 03 §8, all through execute(); golden ordered-action test; Conserving skips allowance; Dormant runs survival steps + distribute/convert (fee-income wake path).
+- **Adversarial suite (gate): 13 scenarios green** — drains, lookalikes (incl. allowed 3-byte near-miss documented as D13 game bound), counterparty drip, tool flood (K cap), treasury-tool absence, malformed outputs, social flood, approve abuse, K1 replay, bounded-loss computation, canary-failure rotation, budget exhaustion. Suite validated by deliberate mutations (3 planted bugs each caught).
+- **SPEC rev 2 (Fable review rulings, from subagent-surfaced spec bugs):** see decisions below.
 
 ## In progress / next steps
-- **M2 session 2:** executors (engine→keyring→viem tx assembly), pulse state machine vs scripted-adversarial mock LLM + anvil fork of testnet contracts, LLM client with SPEC-M2 §7 identity checks + endpoint rotation, memory (SQLite + encrypted snapshot/restore), treasury daemon (6h loop per 03 §8). Then M2 exit gate: adversarial mock-LLM suite green; snapshot→restore identity proven locally.
-- A2 note for daemon design: USDG counterparty cap denominator is the day's allowance, so the daemon should pull the allowance early in the agent's UTC day (accepted behavior, see decisions).
+- **M2 session 3 (close-out):** chat server (SIWE + dual-RPC balance gate + rate limits per 03 §5, TLS deferred to M3) + its attack tests (signature spoofing, balance-flash, rate-limit races); composition root wiring (deps.log → insertAction, ledger history rows for daemon burn calc, announceTierTransition into scheduler loop); install foundry in sandbox → anvil integration tests for executors (real ABIs vs deployed bytecode; verify Across depositV3 signature); update hygiene/invariants if wiring adds src dirs; M2 exit-gate checklist against 07 §M2 and close.
+- Carry into M3: real x402 HTTP transport; real Farcaster message framing (parentHash is 20B there, we hold 32B); real Across quotes (M2 uses 1% bps bound, amounts not grossed-up for fees); WETH unwrap after ETH bridges; real viem ChainClient; receipts→trades P&L (currently minOut placeholder); mainnet-grade swap router (PoolSwapTest has NO on-chain minOut — slippage advisory only; MUST fix before real money).
 
 ## Blocked on Juan
-- Nothing for M2 session 2. Still queued: platform multisig (M6), dedicated RPC key (nice-to-have), legal/audit sourcing from ~M3 (07 §4).
+- Nothing for session 3. Queued: multisig (M6), RPC key, legal/audit sourcing (~M3).
 
 ## Known issues / debt
-- `applyApproved` needs `stateAtApproval` to snapshot A2 denominators for non-USDG assets; omitted ⇒ documented live-balance fallback. Executors MUST pass it (wire in session 2).
-- treasurySwap slippage honesty (minOut vs real quote) lives in the deterministic daemon, not the engine — both attested; noted in spec T5.
-- Engine trusts executor binding for zero-value calls (heartbeat/registerInstance/distribute target+selector hardcoded from config) and for actionSwap/LP routing via PoolManager — structural, revisit when executors exist (session 2).
-- Prior M1 debt unchanged (HookDeployer mainnet runbook item, factory bytecode headroom, vendored lib/, minor knowns).
+- Swap slippage unenforced on-chain (router limitation) — hard blocker before mainnet real-money swaps, listed above.
+- registerInstance needs codeHash+attestationRef (cfg.registration optional; belongs to M3 attestation boot).
+- distribute uses minConversionOut=0 (hook's own impact bound is the guard).
+- Approvals are process-internal (not cryptographically authenticated); execute() is the sole policy path; guarantee is structural + attested code hash. Documented.
+- Dedup edge: identical-second duplicate approve from two same-amount swaps K1-throws (caught+logged, small budget waste). Envelope-vs-tool duplicate posts same. Acceptable noise.
+- Bridge amounts not fee-grossed (arrive ~1% short of target); refill/gas targets tolerate.
+- M1 debt unchanged (HookDeployer runbook, bytecode headroom, vendored lib/).
 
-## Decisions made this session (build-level)
-- Stack: TypeScript strict/Node 22/vitest/fast-check/viem/zod (Fable).
-- **SPEC rev 1 (Fable, from review of Opus's security concerns):** (a) G4 — daily budget buckets reset forward only; a rewound (host-influenced) clock can never refresh caps; (b) removed `x402Inference` as a treasuryTransfer purpose — it duplicated the `inference` kind's I1 budget (2× daily inference spend possible); inference is paid exclusively via the metered `inference` kind.
-- Engine caps are per-asset (no price oracle inside the engine); A2 counterparty cap applies to raw transfers only (swaps/LP via canonical PoolManager exempt, still A1-capped); A3 look-alike = exact or 4-byte prefix/suffix collision with the protected set.
-- Accepted behaviors: USDG counterparty cap is 0 until the day's allowance is pulled (conservative); zero-amount anything is MALFORMED; USDG referenced by token address in action kinds is denied (single asset key for A2).
-- Delegation worked as designed: Fable spec+review+invariants, Opus engine+unit tests (2 passes), Sonnet scaffold+keyring.
+## Decisions made this session (build-level; 01 §5 parameter table edited with changelog lines)
+- **T0 rev 2:** the 45d hosting reserve gates ONLY fundable-draining outflows (allowance, stable-asset bridges). gasTopUp/ETH-bridges/arweave/x402Data/inference exempt (survival infra or already-bridged funds, all daily-capped). Fixes a real contradiction: rev 1 made Conserving agents unable to think and starved heartbeat gas. 01 §5 table updated with changelog (values unchanged, semantics made precise).
+- **I1 rev 2:** floor (5 USDG) applies only at runway ≥ 45d; 3–45d ⇒ income-only budget min(raw, 60); < 3d ⇒ no LLM (Dormant hard cutoff). New cfg `dormantRunwayDays 3 DEFAULT`.
+- **A2 rev 2:** actionMint now counterparty-capped (was a K×20% ETH/pulse drain vector — caught in review).
+- **A4 rev 2:** actionSwap must have a USDG leg (token↔token unbuildable, stranded approvals).
+- Composite swaps dry-run the swap verdict pre-approve; every deny (incl. dry-run) memory-logged.
+- tierOf unified (pulse/tier.ts canonical); Evicted wake requires >5d like Dormant.
+- Daemon: refill target max(10×burn, 15); snapshot due at ≥24h; allowance precheck on 24h not dayKey; Dormant collects fee income.
+- Output-token bridge mapping: stables → USDG on rh / USDC elsewhere; ETH → WETH (unwrap = M3).
+- INV4 rewritten to rev 2 oracle + new INV4b (Dormant never infers; floorless budget bound fuzzed).
 
-## Evidence links (test runs, tx hashes, attestation refs)
-- `cd runtime && npm run typecheck && npm test`: 10 files, 461/461 green, ~7s (2026-09-23). Invariant suite ≈7.5k generated cases, 0 violations.
-- Session 3 (M1/testnet) evidence unchanged: `contracts/deployments/testnet-46630.json`, `testnet-46630-lifecycle.md`, 309/309 forge tests.
-- M0 evidence unchanged: `runtime/spikes/m0-marlin-kms/RESULTS.md`; Base txs `0x9373bb0b…3636`, `0x40d4f6fa…8dd4`.
+## Evidence links
+- `cd runtime && npm run typecheck && npm test`: 24 files, **837/837 green** (2026-09-23). Gate artifacts: `test/pulse/adversarial.test.ts` (13 scenarios), `test/memory/snapshot.test.ts` ("gate: snapshot→restore identity").
+- Adversarial-suite mutation validation: 3 planted bugs (K=6, unlogged denies, treasury-mapped tool) each caught by ≥1 scenario.
+- Sessions 1–4 evidence unchanged (M0 spike, M1 testnet lifecycle, policy-engine invariants).
+- Git: `3d8056f` (M2 s1) → this commit.

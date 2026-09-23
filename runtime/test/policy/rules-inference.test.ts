@@ -1,4 +1,5 @@
-// SPEC-M2 §3 Inference: I1 (daily budget), I2 (endpoint + per-call cap), T0/G3 for inference.
+// SPEC-M2 §3 Inference: I1 rev 2 (runway-tiered daily budget + dormant gate), I2 (endpoint + per-call cap), G3.
+// T0 rev 2: inference is T0-exempt.
 
 import { describe, expect, it } from "vitest";
 import { categoryBudget, inferenceBudget } from "../../src/policy/rules/inference.js";
@@ -115,7 +116,7 @@ describe("I2: endpoint allowlist + per-call cap", () => {
   it("I2: ENDPOINT is reported before PER_CALL_CAP", () => expectDeny(ev(inf("pulse", 10n * E6, "nope")), "ENDPOINT"));
 });
 
-describe("G3 + T0 for inference", () => {
+describe("G3 + T0 rev 2 exemption for inference", () => {
   it("G3: treasury base USDC < maxCostUsd ⇒ INSUFFICIENT_BALANCE", () => {
     const s = mkState();
     s.treasury.base = { native: 0n, USDC: 99_999n };
@@ -127,19 +128,74 @@ describe("G3 + T0 for inference", () => {
     s.treasury.base = { native: 0n };
     expectDeny(ev(inf("pulse", 1n), { state: s }), "INSUFFICIENT_BALANCE");
   });
-  it("T0: runway exactly 45d ⇒ allow; 44d ⇒ RUNWAY (Base USDC does not count toward fundable)", () => {
-    const s45 = mkRunwayState(76_500_000n);
-    s45.treasury.base = { native: 0n, USDC: 1_000_000n * E6 };
-    expectAllow(ev(inf("pulse", 1n), { state: s45 }));
+  it("T0 rev 2: inference is T0-exempt — 44d runway ⇒ allow (Base USDC does not count toward fundable)", () => {
     const s44 = mkRunwayState(76_499_999n);
     s44.treasury.base = { native: 0n, USDC: 1_000_000n * E6 };
-    expectDeny(ev(inf("pulse", 1n), { state: s44 }), "RUNWAY");
-  });
-  it("T0: hostingPaidUntil in the past drags runway below 45d ⇒ RUNWAY", () => {
-    expectDeny(ev(inf("pulse", 1n), { state: { ...mkState(), hostingPaidUntil: NOW - 6000n * DAY } }), "RUNWAY");
+    expectAllow(ev(inf("pulse", 1n), { state: s44 }));
   });
   it("T0: hostingRatePerDay = 0 ⇒ infinite runway ⇒ allow", () => {
     const s = mkRunwayState(0n, 0n, 0n, 0n);
     expectAllow(ev(inf("pulse", 1n), { state: s }));
+  });
+});
+
+describe("I1 rev 2: runway-tiered budget + dormant gate", () => {
+  const RATE = 1_700_000n; // mkRunwayState default hosting rate / day
+  /** runway = floor(arbUsdc / rate) days (paidUntil = now); Base USDC plentiful. */
+  const atDays = (arbUsdc: bigint): ReturnType<typeof mkState> => {
+    const s = mkRunwayState(arbUsdc);
+    s.treasury.base = { native: 0n, USDC: 1_000_000n * E6 };
+    return s;
+  };
+  const d = (n: bigint): ReturnType<typeof mkState> => atDays(n * RATE);
+  // feeIncome7d = [70] ⇒ avg 10 ⇒ raw 2.5 USDG (< floor 5) ⇒ pulse share 60%.
+  const lowIncome = (pulseSpent: bigint): ReturnType<typeof mkLedger> =>
+    mkLedger({ feeIncome7d: [70n * E6], inferenceSpent: { pulse: pulseSpent, chat: 0n, social: 0n } });
+
+  it("I1: inferenceBudget(floorApplies=false) = min(raw, cap) — no floor", () => {
+    expect(inferenceBudget({ feeIncome7d: [70n * E6] }, cfg, false)).toBe(2_500_000n);
+    expect(inferenceBudget({ feeIncome7d: [] }, cfg, false)).toBe(0n);
+    expect(inferenceBudget({ feeIncome7d: fee7(10_000n * E6) }, cfg, false)).toBe(60n * E6);
+    expect(inferenceBudget({ feeIncome7d: [70n * E6] }, cfg, true)).toBe(5n * E6);
+  });
+  it("I1: Conserving (10d) agent with income CAN think: budget = raw 2.5 ⇒ pulse 1.5 (spent+cost == 1.5 allow, +1 deny)", () => {
+    expectAllow(ev(inf("pulse", 500_000n), { state: d(10n), ledger: lowIncome(1_000_000n) }));
+    expectDeny(ev(inf("pulse", 500_000n), { state: d(10n), ledger: lowIncome(1_000_001n) }), "INFERENCE_BUDGET");
+  });
+  it("I1: same ledger at ≥ 45d ⇒ floor applies (B = 5 ⇒ pulse 3)", () => {
+    expectAllow(ev(inf("pulse", 500_000n), { state: d(45n), ledger: lowIncome(2_500_000n) }));
+    expectDeny(ev(inf("pulse", 500_000n), { state: d(45n), ledger: lowIncome(2_500_001n) }), "INFERENCE_BUDGET");
+  });
+  it("I1: 44d is below minRunwayDays ⇒ floor withdrawn (pulse 1.5, not 3)", () => {
+    expectDeny(ev(inf("pulse", 500_000n), { state: d(44n), ledger: lowIncome(1_000_001n) }), "INFERENCE_BUDGET");
+    expectAllow(ev(inf("pulse", 500_000n), { state: d(44n), ledger: lowIncome(1_000_000n) }));
+  });
+  it("I1: Conserving with high income ⇒ cap 60 still binds (pulse 36)", () => {
+    const L = (spent: bigint) => mkLedger({ feeIncome7d: fee7(10_000n * E6), inferenceSpent: { pulse: spent, chat: 0n, social: 0n } });
+    expectAllow(ev(inf("pulse", 500_000n), { state: d(10n), ledger: L(35_500_000n) }));
+    expectDeny(ev(inf("pulse", 500_000n), { state: d(10n), ledger: L(35_500_001n) }), "INFERENCE_BUDGET");
+  });
+  it("I1: Conserving with no income ⇒ B = 0 ⇒ INFERENCE_BUDGET", () => {
+    expectDeny(ev(inf("pulse", 1n), { state: d(10n), ledger: mkLedger({ feeIncome7d: [] }) }), "INFERENCE_BUDGET");
+  });
+  it("I1: runway exactly 3d ⇒ allow (Conserving, floor-free)", () => {
+    expectAllow(ev(inf("pulse", 500_000n), { state: d(3n), ledger: lowIncome(0n) }));
+  });
+  it("I1: runway 2.9d (floors to 2) ⇒ RUNWAY (Dormant: no LLM calls)", () => {
+    const s = atDays((29n * RATE) / 10n);
+    const v = ev(inf("pulse", 1n), { state: s, ledger: lowIncome(0n) });
+    expectDeny(v, "RUNWAY");
+    if (!v.allow) expect(v.detail).toContain("Dormant: no LLM calls");
+  });
+  it("I1: hostingPaidUntil in the past drags runway negative ⇒ RUNWAY", () => {
+    expectDeny(ev(inf("pulse", 1n), { state: { ...mkState(), hostingPaidUntil: NOW - 6000n * DAY } }), "RUNWAY");
+  });
+  it("I1: dormantRunwayDays comes from config", () => {
+    expectDeny(ev(inf("pulse", 1n), { state: d(5n), ledger: lowIncome(0n), cfg: { ...cfg, dormantRunwayDays: 6n } }), "RUNWAY");
+    expectAllow(ev(inf("pulse", 1n), { state: d(5n), ledger: lowIncome(0n), cfg: { ...cfg, dormantRunwayDays: 5n } }));
+    expect(cfg.dormantRunwayDays).toBe(3n);
+  });
+  it("I1: check order — budget (INFERENCE_BUDGET) is reported before the dormant RUNWAY deny", () => {
+    expectDeny(ev(inf("pulse", 1n), { state: d(1n), ledger: mkLedger({ feeIncome7d: [] }) }), "INFERENCE_BUDGET");
   });
 });

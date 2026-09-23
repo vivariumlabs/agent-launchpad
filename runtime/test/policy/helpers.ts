@@ -35,6 +35,24 @@ export const CP = addr("12345678", "87654321");
 export const CP2 = addr("23456789", "98765432");
 export const TOKEN_X = addr("7070aaaa", "7070bbbb");
 export const TOKEN_Y = addr("7171aaaa", "7171bbbb");
+// SPEC-M2B §9 fixture addresses
+export const SWAP_ROUTER = addr("5a000001", "000005a1");
+export const USDC = {
+  rh: addr("5c000001", "000005c1"),
+  base: addr("5c000002", "000005c2"),
+  arbitrum: addr("5c000003", "000005c3"),
+  optimism: addr("5c000004", "000005c4"),
+} as const;
+export const WETH = {
+  rh: addr("5e000001", "000005e1"),
+  base: addr("5e000002", "000005e2"),
+  arbitrum: addr("5e000003", "000005e3"),
+  optimism: addr("5e000004", "000005e4"),
+} as const;
+export const USDC_BASE_DOMAIN = { name: "USD Coin", version: "2", chainId: 8453, verifyingContract: USDC.base } as const;
+export const AGENT_TOKEN = TOKEN_X;
+export const AGENT_POOL_ID = `0x${"9d".repeat(32)}` as `0x${string}`;
+export const CODE_HASH = `0x${"c0de".repeat(16)}` as `0x${string}`;
 
 export const DAY = 86_400n;
 /** 2026-09-23T00:00:00Z */
@@ -69,6 +87,15 @@ export function platformJson(capsOverride: Record<string, unknown> = {}): Record
       { id: "data-1", kind: "data", operator: "op", url: "https://c", payTo: PAYTO_DATA, model: "search", tier: "cheap", maxPricePerMTokUsd: "1000000", attested: false },
     ],
     caps: capsOverride,
+    // SPEC-M2B §9
+    usdc: USDC,
+    weth: WETH,
+    chainIds: { rh: 46630 },
+    swapRouter: { rh: SWAP_ROUTER },
+    usdcDomain: { base: USDC_BASE_DOMAIN },
+    agentTokenAddress: AGENT_TOKEN,
+    agentPoolId: AGENT_POOL_ID,
+    registration: { codeHash: CODE_HASH, attestationRef: "mock-attestation" },
   };
 }
 

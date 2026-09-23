@@ -13,6 +13,12 @@
 // - Addresses validated with viem isAddress (mixed-case must be a valid checksum).
 // - `recipient` on a treasuryTransfer whose purpose is not acrossBridge is an
 //   extra field ⇒ MALFORMED.
+// SPEC-M2B §1/§3 (additive):
+// - `destChain` is REQUIRED for acrossBridge, forbidden for every other purpose,
+//   and must differ from the source `chain` ⇒ else MALFORMED.
+// - castPost/castReply: contentHash (and parentHash) 32-byte hex.
+// - journalWrite: contentHash 32-byte hex, sizeBytes bigint > 0n.
+// - actionApprove/treasuryApprove: token/spender addresses, amount bigint > 0n.
 
 import type { Hex } from "viem";
 import { z } from "zod";
@@ -43,6 +49,7 @@ export const ProposedActionSchema = z.discriminatedUnion("kind", [
       to: addressSchema,
       amount: positive,
       recipient: addressSchema.optional(),
+      destChain: chainSchema.optional(),
     })
     .strict(),
   z.object({ kind: z.literal("allowance"), amount: positive }).strict(),
@@ -75,6 +82,12 @@ export const ProposedActionSchema = z.discriminatedUnion("kind", [
     })
     .strict(),
   z.object({ kind: z.literal("actionMint"), target: addressSchema, value: positive }).strict(),
+  // SPEC-M2B §1
+  z.object({ kind: z.literal("castPost"), contentHash: bytes32 }).strict(),
+  z.object({ kind: z.literal("castReply"), contentHash: bytes32, parentHash: bytes32 }).strict(),
+  z.object({ kind: z.literal("journalWrite"), contentHash: bytes32, sizeBytes: positive }).strict(),
+  z.object({ kind: z.literal("actionApprove"), token: addressSchema, spender: addressSchema, amount: positive }).strict(),
+  z.object({ kind: z.literal("treasuryApprove"), token: addressSchema, spender: addressSchema, amount: positive }).strict(),
 ]);
 
 export type ValidationResult = { ok: true; action: ProposedAction } | { ok: false; detail: string };
@@ -90,6 +103,15 @@ export function validateAction(input: unknown): ValidationResult {
   const a: ProposedAction = r.data;
   if (a.kind === "treasuryTransfer" && a.purpose !== "acrossBridge" && "recipient" in a && a.recipient !== undefined) {
     return { ok: false, detail: `G1: recipient is only permitted for acrossBridge (purpose=${a.purpose})` };
+  }
+  if (a.kind === "treasuryTransfer") {
+    const hasDest = "destChain" in a && a.destChain !== undefined;
+    if (a.purpose === "acrossBridge") {
+      if (!hasDest) return { ok: false, detail: `G1: destChain is required for acrossBridge` };
+      if (a.destChain === a.chain) return { ok: false, detail: `G1: destChain must differ from source chain (${a.chain})` };
+    } else if (hasDest) {
+      return { ok: false, detail: `G1: destChain is only permitted for acrossBridge (purpose=${a.purpose})` };
+    }
   }
   return { ok: true, action: a };
 }

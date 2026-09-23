@@ -39,6 +39,24 @@ const chainAddressMapSchema = z.object({
   optimism: addressSchema,
 });
 
+export const bytes32Schema = z.custom<Hex>((v) => typeof v === "string" && /^0x[0-9a-fA-F]{64}$/.test(v), {
+  message: "must be 32-byte hex",
+});
+
+const GWEI = 1_000_000_000n;
+
+/** Per-chain bigint map with an `rh` default and a shared default for the other chains. */
+function chainBigintMapSchema(rhDefault: bigint, otherDefault: bigint) {
+  return z
+    .object({
+      rh: bigintCoerce.default(rhDefault),
+      base: bigintCoerce.default(otherDefault),
+      arbitrum: bigintCoerce.default(otherDefault),
+      optimism: bigintCoerce.default(otherDefault),
+    })
+    .default({});
+}
+
 // ---------------------------------------------------------------------------
 // AgentConfig — docs/03-AGENT-RUNTIME.md §10
 // ---------------------------------------------------------------------------
@@ -95,6 +113,8 @@ export const InferenceCategoryWeightsSchema = z
 export const CapsSchema = z
   .object({
     minRunwayDays: z.number().int().positive().default(45),
+    /** I1 rev 2: runwayDays < this ⇒ inference deny(RUNWAY) (Dormant = no LLM calls, 01 §6). */
+    dormantRunwayDays: bigintCoerce.default(3n),
     bridgeHaircutBps: z.number().int().nonnegative().default(50),
     allowancePctBps: z.number().int().nonnegative().default(500),
     allowanceCapUsdg: bigintCoerce.default(500_000000n),
@@ -110,6 +130,42 @@ export const CapsSchema = z
     gasTopUpDailyCapWeiPerChain: bigintCoerce.default(10n ** 16n),
     x402DataDailyCapUsdc: bigintCoerce.default(2_000000n),
     inferenceCategoryWeightsBps: InferenceCategoryWeightsSchema,
+    // ---- SPEC-M2B §9 additions (all DEFAULTs Juan-revisable) ----
+    /** §1 S1/S2: platform upper bounds on the agent's social.postsPerDay / repliesPerDay. */
+    postsPerDayMax: z.number().int().nonnegative().default(8),
+    repliesPerDayMax: z.number().int().nonnegative().default(30),
+    /** §1 J1 */
+    journalDailyCap: z.number().int().nonnegative().default(4),
+    journalMaxBytes: bigintCoerce.default(65_536n),
+    /** §2 K2 fill bounds */
+    maxGasLimit: bigintCoerce.default(2_000_000n),
+    maxFeePerGasWei: chainBigintMapSchema(GWEI, 10n * GWEI),
+    /** §3 acrossBridge outputAmount = amount × (10000 − bps) / 10000 */
+    bridgeMaxFeeBps: z.number().int().nonnegative().max(10_000).default(100),
+    /** §6 pulse */
+    toolCallCap: z.number().int().positive().default(5),
+    stretchThresholdBps: z.number().int().nonnegative().default(2000),
+    postMaxBytes: z.number().int().positive().default(320),
+    /** §5 LLM endpoint health */
+    contractFailureLimit: z.number().int().positive().default(3),
+    unhealthyCooldownSec: z
+      .object({
+        price: bigintCoerce.default(21_600n),
+        contract: bigintCoerce.default(3_600n),
+        canary: bigintCoerce.default(86_400n),
+      })
+      .default({}),
+    /** §7 daemon */
+    rentalTargetDays: z.number().int().positive().default(60),
+    inferenceRefillDaysMin: z.number().int().positive().default(3),
+    inferenceRefillDaysTarget: z.number().int().positive().default(10),
+    inferenceMinRefillUsd: bigintCoerce.default(15_000000n),
+    distributeThresholdUsdg: bigintCoerce.default(50_000000n),
+    swapSlippageBps: z.number().int().nonnegative().max(10_000).default(200),
+    gasFloorWei: chainBigintMapSchema(10n ** 15n, 3n * 10n ** 15n),
+    gasTargetWei: chainBigintMapSchema(3n * 10n ** 15n, 10n ** 16n),
+    /** ADDITIVE (Job D): daemon tick interval, seconds (6 h DEFAULT). */
+    daemonIntervalSec: bigintCoerce.default(21_600n),
   })
   .default({});
 
@@ -129,6 +185,49 @@ export const PlatformConfigSchema = z.object({
   arweaveFundingAddress: addressSchema,
   x402Allowlist: z.array(X402AllowlistEntrySchema),
   caps: CapsSchema,
+  // ---- SPEC-M2B §9 additions ----
+  /** Per-chain USDC token addresses (treasuryTransfer USDC, acrossBridge). */
+  usdc: chainAddressMapSchema,
+  /**
+   * ADDITIVE (Job A, flagged): per-chain wrapped-native token — Across depositV3
+   * takes inputToken = WETH with msg.value for native ETH bridges. Optional:
+   * buildTx throws for an ETH bridge when absent.
+   */
+  weth: chainAddressMapSchema.optional(),
+  /** EVM chain ids; testnet overrides via config file. */
+  chainIds: z
+    .object({
+      rh: z.number().int().positive().default(4663),
+      base: z.number().int().positive().default(8453),
+      arbitrum: z.number().int().positive().default(42161),
+      optimism: z.number().int().positive().default(10),
+    })
+    .default({}),
+  /** RH PoolSwapTest router (contracts/deployments/*.json "swapRouter"). */
+  swapRouter: z.object({ rh: addressSchema }),
+  /** Absent in contracts/deployments/testnet-46630.json ⇒ actionLp NotImplemented. */
+  modifyLiquidityRouter: z.object({ rh: addressSchema.optional() }).default({}),
+  /** contracts/script/support/LaunchpadScript.sol:28-29 (POOL_FEE = 0, TICK_SPACING = 60). */
+  poolFee: z.number().int().nonnegative().max(1_000_000).default(0),
+  tickSpacing: z.number().int().positive().max(32_767).default(60),
+  /** EIP-712 domain of Base USDC (EIP-3009 TransferWithAuthorization, K3). */
+  usdcDomain: z.object({
+    base: z.object({
+      name: z.string(),
+      version: z.string(),
+      chainId: z.number().int().positive(),
+      verifyingContract: addressSchema,
+    }),
+  }),
+  /** Set at genesis; test fixtures provide. */
+  agentTokenAddress: addressSchema.optional(),
+  agentPoolId: bytes32Schema.optional(),
+  /**
+   * ADDITIVE (Job A, flagged): AgentRegistry.registerInstance also takes
+   * (codeHash, attestationRef) — contracts/src/AgentRegistry.sol:68. Optional;
+   * buildTx(registerInstance) throws when absent.
+   */
+  registration: z.object({ codeHash: bytes32Schema, attestationRef: z.string() }).optional(),
 });
 
 export type PlatformConfig = z.infer<typeof PlatformConfigSchema>;

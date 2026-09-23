@@ -36,6 +36,7 @@ export type ProposedAction =
       to: Address;
       amount: bigint;
       recipient?: Address; // recipient: bridge final recipient (acrossBridge only)
+      destChain?: Chain; // SPEC-M2B §3: REQUIRED for acrossBridge (≠ chain), forbidden otherwise (G1)
     }
   | { kind: "allowance"; amount: bigint } // treasury -> action EOA, USDG on RH
   | {
@@ -64,7 +65,13 @@ export type ProposedAction =
       minOut: bigint;
     }
   | { kind: "actionLp"; pool: Hex; usdgAmount: bigint; tokenAmount: bigint; token: Address }
-  | { kind: "actionMint"; target: Address; value: bigint }; // NFT mint, value = ETH sent
+  | { kind: "actionMint"; target: Address; value: bigint } // NFT mint, value = ETH sent
+  // SPEC-M2B §1 (additive):
+  | { kind: "castPost"; contentHash: Hex } // Farcaster post (fc key)
+  | { kind: "castReply"; contentHash: Hex; parentHash: Hex } // Farcaster reply
+  | { kind: "journalWrite"; contentHash: Hex; sizeBytes: bigint } // Arweave journal entry
+  | { kind: "actionApprove"; token: Address; spender: Address; amount: bigint } // action EOA, RH
+  | { kind: "treasuryApprove"; token: Address; spender: Address; amount: bigint }; // treasury EOA, RH (for T5 swaps)
 
 // WalletBalances: the per-chain balance shape referenced by WalletState's
 // `treasury` and `action` fields ("(shape above, per wallet)" in SPEC-M2 §2).
@@ -98,6 +105,10 @@ export interface BudgetLedger {
   treasurySpent: Partial<Record<TreasurySpentKey, bigint>>; // today, per purpose, in the purpose's asset units
   counterpartySpent: Record<Address /* lowercase */, Record<string /* assetKey */, bigint>>; // action wallet, today
   feeIncome7d: bigint[]; // last 7 complete UTC days of treasury fee income, USDG(6)
+  // SPEC-M2B §1: social/journal pace counters (today; reset on forward roll per G4).
+  castPostsToday: bigint;
+  castRepliesToday: bigint;
+  journalToday: bigint;
 }
 
 // DenyCode: stable strings (logged + surfaced in chat per 03 §3).
@@ -117,7 +128,10 @@ export type DenyCode =
   | "CHAIN"
   | "PER_TX_CAP"
   | "COUNTERPARTY_CAP"
-  | "LOOKALIKE";
+  | "LOOKALIKE"
+  // SPEC-M2B §1:
+  | "PACE_CAP"
+  | "APPROVE_SPENDER";
 
 export interface Approval {
   actionHash: Hex;
@@ -135,6 +149,7 @@ const TREASURY_KINDS: ReadonlySet<ProposedAction["kind"]> = new Set([
   "allowance",
   "treasurySwap",
   "inference",
+  "treasuryApprove",
 ]);
 
 const ACTION_KINDS: ReadonlySet<ProposedAction["kind"]> = new Set([
@@ -142,10 +157,19 @@ const ACTION_KINDS: ReadonlySet<ProposedAction["kind"]> = new Set([
   "actionSwap",
   "actionLp",
   "actionMint",
+  "actionApprove",
 ]);
 
-export function walletForAction(kind: ProposedAction["kind"]): "treasury" | "action" {
+// SPEC-M2B §1: social kinds route to the fc key; journal to the arweave/mem path.
+const FC_KINDS: ReadonlySet<ProposedAction["kind"]> = new Set(["castPost", "castReply"]);
+const JOURNAL_KINDS: ReadonlySet<ProposedAction["kind"]> = new Set(["journalWrite"]);
+
+export type WalletKind = "treasury" | "action" | "fc" | "journal";
+
+export function walletForAction(kind: ProposedAction["kind"]): WalletKind {
   if (TREASURY_KINDS.has(kind)) return "treasury";
   if (ACTION_KINDS.has(kind)) return "action";
+  if (FC_KINDS.has(kind)) return "fc";
+  if (JOURNAL_KINDS.has(kind)) return "journal";
   throw new Error(`walletForAction: unknown kind ${String(kind)}`);
 }

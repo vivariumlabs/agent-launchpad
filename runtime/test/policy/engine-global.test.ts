@@ -13,7 +13,7 @@ import { evaluateTreasury } from "../../src/policy/rules/treasury.js";
 import { walletForAction, type ProposedAction, type WalletState } from "../../src/policy/types.js";
 import { ProposedActionSchema } from "../../src/policy/validate.js";
 import {
-  ACTION, CP, DAY, E18, E6, MARLIN_PAY, NOW, SPOKE, TOKEN_X, TREASURY,
+  ACTION, CP, DAY, E18, E6, MARLIN_PAY, NOW, SPOKE, SWAP_ROUTER, TOKEN_X, TREASURY,
   cfg, ev, expectAllow, expectDeny, mkLedger, mkState, raw,
 } from "./helpers.js";
 
@@ -33,6 +33,12 @@ const VALID: Record<ProposedAction["kind"], ProposedAction> = {
   actionSwap: { kind: "actionSwap", tokenIn: "USDG", tokenOut: TOKEN_X, amountIn: 10n * E6, minOut: 0n },
   actionLp: { kind: "actionLp", pool: `0x${"ab".repeat(32)}`, usdgAmount: 10n * E6, tokenAmount: E18, token: TOKEN_X },
   actionMint: { kind: "actionMint", target: CP, value: E18 / 100n },
+  // SPEC-M2B §1
+  castPost: { kind: "castPost", contentHash: `0x${"11".repeat(32)}` },
+  castReply: { kind: "castReply", contentHash: `0x${"22".repeat(32)}`, parentHash: `0x${"33".repeat(32)}` },
+  journalWrite: { kind: "journalWrite", contentHash: `0x${"44".repeat(32)}`, sizeBytes: 1024n },
+  actionApprove: { kind: "actionApprove", token: TOKEN_X, spender: SWAP_ROUTER, amount: E18 },
+  treasuryApprove: { kind: "treasuryApprove", token: TOKEN_X, spender: SWAP_ROUTER, amount: E18 },
 };
 
 describe("sanity: every VALID fixture is allowed under defaults", () => {
@@ -67,7 +73,7 @@ describe("G1: shape validation ⇒ MALFORMED", () => {
     ["treasuryTransfer unknown asset", { ...tt, asset: "DAI" }],
     ["treasuryTransfer extra field", { ...tt, memo: "x" }],
     ["treasuryTransfer recipient on non-bridge purpose", { ...tt, recipient: TREASURY }],
-    ["acrossBridge malformed recipient", { kind: "treasuryTransfer", purpose: "acrossBridge", chain: "rh", asset: "USDG", to: SPOKE.rh, amount: E6, recipient: "0xdead" }],
+    ["acrossBridge malformed recipient", { kind: "treasuryTransfer", purpose: "acrossBridge", chain: "rh", asset: "USDG", to: SPOKE.rh, amount: E6, recipient: "0xdead", destChain: "base" }],
     ["allowance amount 0n", { kind: "allowance", amount: 0n }],
     ["allowance amount negative", { kind: "allowance", amount: -5n }],
     ["allowance extra field", { kind: "allowance", amount: E6, to: CP }],
@@ -107,7 +113,7 @@ describe("G1: shape validation ⇒ MALFORMED", () => {
     expectDeny(evaluate(VALID.heartbeat, mkState(), mkLedger(), cfg, -1n), "MALFORMED");
   });
   it("G1: acrossBridge with recipient: undefined is accepted as absent (⇒ BRIDGE_RECIPIENT, not MALFORMED)", () => {
-    const a = raw({ kind: "treasuryTransfer", purpose: "acrossBridge", chain: "rh", asset: "USDG", to: SPOKE.rh, amount: E6, recipient: undefined });
+    const a = raw({ kind: "treasuryTransfer", purpose: "acrossBridge", chain: "rh", asset: "USDG", to: SPOKE.rh, amount: E6, recipient: undefined, destChain: "base" });
     expectDeny(ev(a), "BRIDGE_RECIPIENT");
   });
 });
@@ -116,12 +122,12 @@ describe("G2: default-deny dispatch", () => {
   it("G2: every schema kind maps to exactly one wallet", () => {
     const kinds = ProposedActionSchema.options.map((o) => o.shape.kind.value);
     expect(new Set(kinds)).toEqual(new Set(Object.keys(VALID)));
-    for (const k of kinds) expect(["treasury", "action"]).toContain(walletForAction(k));
+    for (const k of kinds) expect(["treasury", "action", "fc", "journal"]).toContain(walletForAction(k));
   });
 
   it("G2: treasury rule module denies every action-wallet kind with NO_RULE", () => {
     const s = mkState();
-    for (const k of ["actionTransfer", "actionSwap", "actionLp", "actionMint"] as const) {
+    for (const k of ["actionTransfer", "actionSwap", "actionLp", "actionMint", "actionApprove", "castPost", "castReply", "journalWrite"] as const) {
       const v = evaluateTreasury(VALID[k], s, mkLedger(), cfg, NOW);
       expectDeny(v, "NO_RULE");
     }
@@ -129,7 +135,7 @@ describe("G2: default-deny dispatch", () => {
 
   it("G2: action rule module denies every treasury kind with NO_RULE", () => {
     const s = mkState();
-    for (const k of ["heartbeat", "registerInstance", "distribute", "treasuryTransfer", "allowance", "treasurySwap", "inference"] as const) {
+    for (const k of ["heartbeat", "registerInstance", "distribute", "treasuryTransfer", "allowance", "treasurySwap", "inference", "treasuryApprove", "castPost", "castReply", "journalWrite"] as const) {
       const v = evaluateActionWallet(VALID[k], s.action, mkLedger(), cfg, NOW);
       expectDeny(v, "NO_RULE");
     }
@@ -150,7 +156,7 @@ describe("G2: default-deny dispatch", () => {
 
 describe("G3: balance checks at evaluation time", () => {
   it("G3: treasuryTransfer asset missing on that chain ⇒ INSUFFICIENT_BALANCE", () => {
-    const a: ProposedAction = { kind: "treasuryTransfer", purpose: "acrossBridge", chain: "optimism", asset: "USDC", to: SPOKE.optimism, amount: 1n, recipient: TREASURY };
+    const a: ProposedAction = { kind: "treasuryTransfer", purpose: "acrossBridge", chain: "optimism", asset: "USDC", to: SPOKE.optimism, amount: 1n, recipient: TREASURY, destChain: "base" };
     expectDeny(ev(a), "INSUFFICIENT_BALANCE");
   });
   it("G3: actionTransfer token not held ⇒ INSUFFICIENT_BALANCE", () => {
@@ -262,7 +268,7 @@ describe("G4: stale ledger dayKey ⇒ empty daily buckets, forward only (engine 
   });
 });
 
-describe("§6 hygiene: src/policy and src/ledger", () => {
+describe("§6 hygiene: src/policy, src/ledger and src/exec (SPEC-M2B §10)", () => {
   function walk(dir: string): string[] {
     const out: string[] = [];
     for (const name of readdirSync(dir)) {
@@ -276,11 +282,11 @@ describe("§6 hygiene: src/policy and src/ledger", () => {
   function stripComments(src: string): string {
     return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
   }
-  const files = [...walk(join(SRC, "policy")), ...walk(join(SRC, "ledger"))];
+  const files = [...walk(join(SRC, "policy")), ...walk(join(SRC, "ledger")), ...walk(join(SRC, "exec")), ...walk(join(SRC, "daemon")), ...walk(join(SRC, "llm")), ...walk(join(SRC, "pulse"))];
 
   it("covers the expected files", () => {
     const rel = files.map((f) => f.slice(SRC.length + 1)).sort();
-    for (const must of ["policy/engine.ts", "policy/runway.ts", "policy/rules/treasury.ts", "policy/rules/action.ts", "policy/rules/inference.ts", "ledger/ledger.ts"]) {
+    for (const must of ["policy/engine.ts", "policy/runway.ts", "policy/rules/treasury.ts", "policy/rules/action.ts", "policy/rules/inference.ts", "policy/rules/social.ts", "ledger/ledger.ts", "exec/abi.ts", "exec/build.ts", "exec/chain.ts", "exec/execute.ts", "llm/types.ts", "llm/endpoints.ts", "llm/canaries.ts", "llm/checks.ts", "llm/mock.ts", "pulse/tier.ts", "pulse/context.ts", "pulse/tools.ts", "pulse/pulse.ts", "pulse/scheduler.ts"]) {
       expect(rel).toContain(must);
     }
   });
@@ -297,7 +303,7 @@ describe("§6 hygiene: src/policy and src/ledger", () => {
     expect(hits).toEqual([]);
   });
 
-  it("no `any` type in src/policy or src/ledger", () => {
+  it("no `any` type in src/policy, src/ledger or src/exec", () => {
     const bad = /(:\s*any\b|\bas\s+any\b|<any>|any\[\])/;
     const hits = files.filter((f) => bad.test(stripComments(readFileSync(f, "utf8"))));
     expect(hits).toEqual([]);

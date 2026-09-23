@@ -51,10 +51,12 @@ const arbTreasuryTransfer: fc.Arbitrary<ProposedAction> = fc
     to: arbTo,
     amount: fc.oneof(arbAmount6, arbAmountWei),
     recipient: fc.option(fc.constantFrom(TREASURY, ACTION, CP), { nil: undefined }),
+    destChain: arbChain, // SPEC-M2B: acrossBridge-only field (mechanical fix, Job A)
   })
   .map((r) => {
     const a: Record<string, unknown> = { kind: "treasuryTransfer", ...r };
     if (r.recipient === undefined) delete a["recipient"];
+    if (r.purpose !== "acrossBridge") delete a["destChain"];
     return a as ProposedAction;
   });
 
@@ -258,8 +260,11 @@ describe("INV3: inference budget", () => {
 // INV4 — runway ≥ 45d after any approved non-hosting treasury spend
 // ---------------------------------------------------------------------------
 
-describe("INV4: hosting reserve", () => {
-  it("any allowed non-oysterRental treasury spend leaves runway ≥ minRunwayDays", () => {
+describe("INV4: hosting reserve (T0 rev 2)", () => {
+  // Rev 2: the 45d reserve gates exactly the outflows that drain `fundable`:
+  // allowance, and acrossBridge with a stable asset. Everything else is exempt
+  // by design (survival infrastructure / already-bridged funds) — see SPEC-M2 T0 rev 2.
+  it("any allowed fundable-draining spend (allowance, stable bridge) leaves runway ≥ minRunwayDays", () => {
     fc.assert(
       fc.property(
         fc.record({
@@ -273,15 +278,52 @@ describe("INV4: hosting reserve", () => {
           const state = mkRunwayState(arbUsdc, rhUsdg, NOW + paidAhead, rate);
           const v = evaluate(action, state, mkLedger(), cfg, NOW);
           if (!v.allow) return;
-          if (action.kind === "treasuryTransfer" && action.purpose === "oysterRental") return; // T0-exempt
-          let spend: { chain: "rh" | "base" | "arbitrum" | "optimism"; asset: "USDG" | "USDC" | "ETH"; amount: bigint };
-          if (action.kind === "treasuryTransfer") spend = { chain: action.chain, asset: action.asset, amount: action.amount };
-          else if (action.kind === "allowance") spend = { chain: "rh", asset: "USDG", amount: action.amount };
-          else if (action.kind === "inference") spend = { chain: "base", asset: "USDC", amount: action.maxCostUsd };
-          else return;
+          const gated =
+            action.kind === "allowance" ||
+            (action.kind === "treasuryTransfer" && action.purpose === "acrossBridge" && action.asset !== "ETH");
+          if (!gated) return;
+          const spend =
+            action.kind === "allowance"
+              ? { chain: "rh" as const, asset: "USDG" as const, amount: action.amount }
+              : { chain: action.chain, asset: action.asset, amount: action.amount };
           const days = runwayDays(state, NOW, spend, cfg.bridgeHaircutBps);
           if (days < BigInt(cfg.minRunwayDays)) {
             throw new Error(`INV4 violated: ${action.kind} allowed with post-spend runway ${days}d`);
+          }
+        },
+      ),
+      { numRuns: 2000 },
+    );
+  });
+
+  it("INV4b (I1 rev 2): below dormantRunwayDays NO inference is ever allowed; below minRunwayDays the floor is gone", () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          arbUsdc: fc.bigInt({ min: 0n, max: 500n * E6 }),
+          paidAhead: fc.bigInt({ min: -10n * DAY, max: 90n * DAY }),
+          rate: fc.bigInt({ min: 1n, max: 5_000_000n }),
+          action: arbInference,
+          income: fc.bigInt({ min: 0n, max: 200n * E6 }),
+        }),
+        ({ arbUsdc, paidAhead, rate, action, income }) => {
+          if (action.kind !== "inference") return;
+          const state = mkRunwayState(arbUsdc, 0n, NOW + paidAhead, rate);
+          const ledger = mkLedger({ feeIncome7d: Array.from({ length: 7 }, () => income) });
+          const v = evaluate(action, state, ledger, cfg, NOW);
+          if (!v.allow) return;
+          const days = runwayDays(state, NOW, undefined, cfg.bridgeHaircutBps);
+          if (days < cfg.dormantRunwayDays) {
+            throw new Error(`INV4b violated: inference allowed at runway ${days}d (< dormant ${cfg.dormantRunwayDays}d)`);
+          }
+          if (days < BigInt(cfg.minRunwayDays)) {
+            // Floor withdrawn: allowed spend must fit inside the income-only budget.
+            // feeIncome7d is `income` on all 7 days ⇒ avg = income exactly (integer).
+            const budget = (income * 2500n) / 10_000n;
+            const capped = budget > 60n * E6 ? 60n * E6 : budget;
+            if (action.maxCostUsd > capped) {
+              throw new Error(`INV4b violated: floorless budget ${capped} but spend ${action.maxCostUsd} allowed at ${days}d`);
+            }
           }
         },
       ),
@@ -377,7 +419,7 @@ describe("INV7: metamorphic default-deny", () => {
     { kind: "treasuryTransfer", purpose: "arweaveFunding", chain: "rh", asset: "USDG", to: ARWEAVE, amount: 5n * E6 },
     { kind: "treasuryTransfer", purpose: "gasTopUp", chain: "rh", asset: "ETH", to: TREASURY, amount: E18 / 200n },
     { kind: "treasuryTransfer", purpose: "x402Data", chain: "base", asset: "USDC", to: PAYTO_DATA, amount: E6 },
-    { kind: "treasuryTransfer", purpose: "acrossBridge", chain: "rh", asset: "USDG", to: SPOKE.rh, amount: 100n * E6, recipient: TREASURY },
+    { kind: "treasuryTransfer", purpose: "acrossBridge", chain: "rh", asset: "USDG", to: SPOKE.rh, amount: 100n * E6, recipient: TREASURY, destChain: "base" },
     { kind: "allowance", amount: 100n * E6 },
     { kind: "inference", category: "pulse", endpointId: "inf-std", maxCostUsd: 400_000n },
     { kind: "actionTransfer", asset: TOKEN_X, to: CP, amount: 50n * E18 },

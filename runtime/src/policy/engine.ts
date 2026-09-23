@@ -6,7 +6,8 @@
 //   3. Roll the ledger view forward to dayKeyOf(now) (G4: only a LATER day empties
 //      daily buckets; same day or a rewound clock keeps the ledger as-is)
 //   4. Wallet inferred from kind (walletForAction); treasury kinds are evaluated
-//      with ONLY treasury balances, action kinds with ONLY action balances.
+//      with ONLY treasury balances, action kinds with ONLY action balances,
+//      fc/journal kinds (SPEC-M2B §1) with NO balances at all (pace caps only).
 //   5. Rule modules; each ends in an explicit allow or a coded deny.
 //   G2: every switch has a NO_RULE default; there is no generic allow path.
 //   Any exception while evaluating (e.g. structurally broken state/config) ⇒
@@ -19,6 +20,7 @@ import type { ResolvedConfig } from "../config/schema.js";
 import { rollLedger } from "../ledger/ledger.js";
 import { deny } from "./rules/common.js";
 import { evaluateActionWallet } from "./rules/action.js";
+import { evaluateSocial } from "./rules/social.js";
 import { evaluateTreasury } from "./rules/treasury.js";
 import { walletForAction, type BudgetLedger, type ProposedAction, type UnixSeconds, type Verdict, type WalletState } from "./types.js";
 import { validateAction, validNow } from "./validate.js";
@@ -50,6 +52,9 @@ export function evaluate(
     }
     if (wallet === "action") {
       return evaluateActionWallet(a, state.action, L, cfg, now);
+    }
+    if (wallet === "fc" || wallet === "journal") {
+      return evaluateSocial(a, L, cfg, now);
     }
     return deny("NO_RULE", `G2: no wallet for kind "${a.kind}"`);
   } catch (e) {

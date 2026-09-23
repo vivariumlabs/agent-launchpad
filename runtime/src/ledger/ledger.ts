@@ -4,7 +4,7 @@
 
 import type { Address } from "viem";
 import type { BudgetLedger, ProposedAction, TreasurySpentKey, UnixSeconds, WalletState } from "../policy/types.js";
-import { assetKeyOf, floorDiv, lower, rhBalanceOf, SECONDS_PER_DAY } from "../policy/util.js";
+import { assetKeyOf, floorDiv, lower, rhBalanceOf, SECONDS_PER_DAY, type ActionAsset } from "../policy/util.js";
 
 // ---------------------------------------------------------------------------
 // UTC day key (no Date object): Howard Hinnant's civil_from_days.
@@ -39,6 +39,9 @@ export function emptyLedger(now: UnixSeconds): BudgetLedger {
     treasurySpent: {},
     counterpartySpent: {},
     feeIncome7d: [],
+    castPostsToday: 0n,
+    castRepliesToday: 0n,
+    journalToday: 0n,
   };
 }
 
@@ -49,8 +52,10 @@ export function emptyLedger(now: UnixSeconds): BudgetLedger {
  * (lexicographic compare on "YYYY-MM-DD"), the ledger is treated as current-day
  * and the same object is returned — a rewound (host-influenced) clock must never
  * refresh daily caps. Only dayKeyOf(now) > ledger.dayKey rolls: inferenceSpent,
- * treasurySpent, counterpartySpent (incl. A2 denominator snapshots) and
- * allowanceAmountToday → empty/0n; lastAllowanceAt and feeIncome7d are kept.
+ * treasurySpent, counterpartySpent (incl. A2 denominator snapshots),
+ * allowanceAmountToday and the SPEC-M2B pace counters (castPostsToday,
+ * castRepliesToday, journalToday) → empty/0n; lastAllowanceAt and feeIncome7d
+ * are kept.
  *
  * Used by BOTH the engine (read view) and applyApproved (write path), so the
  * two can never disagree on rollover semantics.
@@ -67,6 +72,9 @@ export function rollLedger(ledger: BudgetLedger, now: UnixSeconds): BudgetLedger
     treasurySpent: {},
     counterpartySpent: {},
     feeIncome7d: ledger.feeIncome7d,
+    castPostsToday: 0n,
+    castRepliesToday: 0n,
+    journalToday: 0n,
   };
 }
 
@@ -93,7 +101,8 @@ export function denomKey(assetKey: string): string {
  *
  * `stateAtApproval` is the WalletState the engine evaluated against. It is
  * needed ONLY to snapshot the A2 denominator (action-wallet balance of the
- * asset at first send of the day) for non-USDG `actionTransfer`s. If it is
+ * asset at first send of the day) for non-USDG `actionTransfer`s and (A2 rev 2)
+ * `actionMint`s (target-keyed, asset "ETH"). If it is
  * omitted, no snapshot is written and the engine keeps using the live
  * balance as denominator for that counterparty/asset (documented fallback).
  */
@@ -120,26 +129,47 @@ export function applyApproved(
         inferenceSpent: { ...L.inferenceSpent, [cat]: L.inferenceSpent[cat] + action.maxCostUsd },
       };
     }
-    case "actionTransfer": {
-      const to = lower(action.to) as Address;
-      const ak = assetKeyOf(action.asset);
-      const prevRec: Record<string, bigint> = L.counterpartySpent[to] ?? {};
-      const rec: Record<string, bigint> = { ...prevRec, [ak]: (prevRec[ak] ?? 0n) + action.amount };
-      if (ak !== "USDG" && prevRec[denomKey(ak)] === undefined && stateAtApproval !== undefined) {
-        rec[denomKey(ak)] = rhBalanceOf(stateAtApproval.action, action.asset);
-      }
-      return { ...L, counterpartySpent: { ...L.counterpartySpent, [to]: rec } };
-    }
+    case "actionTransfer":
+      return recordCounterparty(L, action.to, action.asset, action.amount, stateAtApproval);
+    case "actionMint":
+      // A2 rev 2: actionMint is counterparty-capped (target-keyed, "ETH").
+      return recordCounterparty(L, action.target, "ETH", action.value, stateAtApproval);
+    // SPEC-M2B §1 pace counters.
+    case "castPost":
+      return { ...L, castPostsToday: L.castPostsToday + 1n };
+    case "castReply":
+      return { ...L, castRepliesToday: L.castRepliesToday + 1n };
+    case "journalWrite":
+      return { ...L, journalToday: L.journalToday + 1n };
     case "heartbeat":
     case "registerInstance":
     case "distribute":
     case "treasurySwap":
     case "actionSwap":
     case "actionLp":
-    case "actionMint":
-      // No budget buckets for these kinds (A2-exempt / zero-value / income).
+    case "actionApprove":
+    case "treasuryApprove":
+      // No budget buckets for these kinds (A2-exempt / zero-value / income / approvals).
       return L;
   }
+}
+
+/** A2 bookkeeping: add `amount` to counterpartySpent[cp][asset]; snapshot the non-USDG denominator on first send. */
+function recordCounterparty(
+  L: BudgetLedger,
+  counterparty: Address,
+  asset: ActionAsset,
+  amount: bigint,
+  stateAtApproval: Pick<WalletState, "action"> | undefined,
+): BudgetLedger {
+  const to = lower(counterparty) as Address;
+  const ak = assetKeyOf(asset);
+  const prevRec: Record<string, bigint> = L.counterpartySpent[to] ?? {};
+  const rec: Record<string, bigint> = { ...prevRec, [ak]: (prevRec[ak] ?? 0n) + amount };
+  if (ak !== "USDG" && prevRec[denomKey(ak)] === undefined && stateAtApproval !== undefined) {
+    rec[denomKey(ak)] = rhBalanceOf(stateAtApproval.action, asset);
+  }
+  return { ...L, counterpartySpent: { ...L.counterpartySpent, [to]: rec } };
 }
 
 // ---------------------------------------------------------------------------

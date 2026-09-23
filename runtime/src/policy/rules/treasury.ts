@@ -3,10 +3,14 @@
 // kind can never be evaluated against action-wallet balances.
 //
 // Check orders:
-//   treasuryTransfer: T2 WHITELIST → T2 BRIDGE_RECIPIENT → G3 → T3 DAILY_CAP → T0 RUNWAY (not oysterRental)
+//   treasuryTransfer: T2 WHITELIST → T2 BRIDGE_RECIPIENT → G3 → T3 DAILY_CAP → T0 RUNWAY
+//                     (T0 rev 2: ONLY acrossBridge with asset USDG/USDC; oysterRental, gasTopUp,
+//                     ETH bridges, arweaveFunding and x402Data are T0-exempt)
 //   allowance:        T4 ALLOWANCE_EARLY → G3 → T4 ALLOWANCE_AMOUNT → T0 RUNWAY
 //   treasurySwap:     T5 (tokenIn ≠ USDG ⇒ NO_RULE) → G3 (held on RH, amountIn ≤ balance). T0-exempt.
 //   heartbeat / registerInstance / distribute: T1 allow.
+//   treasuryApprove:  AP2 APPROVE_SPENDER (spender == cfg.swapRouter.rh) → token ≠ USDG (NO_RULE)
+//                     → G3 (held on RH, amount ≤ balance). T0-exempt (no outflow).
 
 import type { ResolvedConfig } from "../../config/schema.js";
 import { treasurySpentKey } from "../../ledger/ledger.js";
@@ -19,6 +23,7 @@ import { evaluateInference } from "./inference.js";
 type TreasuryTransfer = Extract<ProposedAction, { kind: "treasuryTransfer" }>;
 type Allowance = Extract<ProposedAction, { kind: "allowance" }>;
 type TreasurySwap = Extract<ProposedAction, { kind: "treasurySwap" }>;
+type TreasuryApprove = Extract<ProposedAction, { kind: "treasuryApprove" }>;
 
 export function evaluateTreasury(
   a: ProposedAction,
@@ -41,6 +46,8 @@ export function evaluateTreasury(
       return evaluateTreasurySwap(a, s, cfg, now);
     case "inference":
       return evaluateInference(a, s, L, cfg, now);
+    case "treasuryApprove":
+      return evaluateTreasuryApprove(a, s, cfg, now);
     default:
       // G2: nothing else may come from the treasury wallet.
       return deny("NO_RULE", `G2: kind "${a.kind}" has no treasury rule`);
@@ -145,7 +152,8 @@ function evaluateTreasuryTransfer(
     return deny("DAILY_CAP", `T3[${key}]: spent today ${spent} + ${a.amount} > cap ${cap}`);
   }
 
-  if (a.purpose !== "oysterRental") {
+  // T0 rev 2: the reserve gates only outflows that drain `fundable` — USDG/USDC bridges.
+  if (a.purpose === "acrossBridge" && (a.asset === "USDG" || a.asset === "USDC")) {
     const r = runwayGate(s, now, { chain: a.chain, asset: a.asset, amount: a.amount }, cfg);
     if (r !== null) return r;
   }
@@ -200,5 +208,26 @@ function evaluateTreasurySwap(a: TreasurySwap, s: RunwayState, cfg: ResolvedConf
     return deny("INSUFFICIENT_BALANCE", `G3/T5: treasury rh ${a.tokenIn} balance ${held} < amountIn ${a.amountIn}`);
   }
   // minOut > 0 is enforced at G1 (MALFORMED).
+  return allow(a, now);
+}
+
+// ---------------------------------------------------------------------------
+// AP2 treasuryApprove (SPEC-M2B §1) — for T5 income-conversion swaps
+// ---------------------------------------------------------------------------
+
+function evaluateTreasuryApprove(a: TreasuryApprove, s: RunwayState, cfg: ResolvedConfig, now: UnixSeconds): Verdict {
+  if (!sameAddress(a.spender, cfg.swapRouter.rh)) {
+    return deny("APPROVE_SPENDER", `AP2: spender ${a.spender} is not the configured swap router`);
+  }
+  if (sameAddress(a.token, cfg.usdg.rh)) {
+    return deny("NO_RULE", `AP2: token must not be USDG`);
+  }
+  const held = lookupToken(s.treasury.rh?.tokens, a.token);
+  if (held === undefined) {
+    return deny("INSUFFICIENT_BALANCE", `G3/AP2: treasury holds no ${a.token} on rh`);
+  }
+  if (held < a.amount) {
+    return deny("INSUFFICIENT_BALANCE", `G3/AP2: treasury rh ${a.token} balance ${held} < amount ${a.amount}`);
+  }
   return allow(a, now);
 }

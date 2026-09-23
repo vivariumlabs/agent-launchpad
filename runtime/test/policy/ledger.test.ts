@@ -59,6 +59,9 @@ describe("emptyLedger / rollLedger", () => {
       treasurySpent: {},
       counterpartySpent: {},
       feeIncome7d: [],
+      castPostsToday: 0n,
+      castRepliesToday: 0n,
+      journalToday: 0n,
     });
   });
   it("rollLedger same day ⇒ same object", () => {
@@ -89,6 +92,9 @@ describe("emptyLedger / rollLedger", () => {
       treasurySpent: {},
       counterpartySpent: {},
       feeIncome7d: [1n, 2n, 3n],
+      castPostsToday: 0n,
+      castRepliesToday: 0n,
+      journalToday: 0n,
     });
   });
 });
@@ -97,7 +103,9 @@ describe("applyApproved", () => {
   const tt = (purpose: Extract<ProposedAction, { kind: "treasuryTransfer" }>["purpose"], chain: "rh" | "base" | "arbitrum" | "optimism", asset: "USDG" | "USDC" | "ETH", to: `0x${string}`, amount: bigint, recipient?: `0x${string}`): ProposedAction =>
     recipient === undefined
       ? { kind: "treasuryTransfer", purpose, chain, asset, to, amount }
-      : { kind: "treasuryTransfer", purpose, chain, asset, to, amount, recipient };
+      : purpose === "acrossBridge" // SPEC-M2B: acrossBridge requires destChain ≠ chain
+        ? { kind: "treasuryTransfer", purpose, chain, asset, to, amount, recipient, destChain: chain === "rh" ? "base" : "rh" }
+        : { kind: "treasuryTransfer", purpose, chain, asset, to, amount, recipient };
 
   const bucketCases: Array<[string, ProposedAction, string]> = [
     ["oysterRental", tt("oysterRental", "arbitrum", "USDC", MARLIN_PAY, 5n), "oysterRental"],
@@ -148,6 +156,23 @@ describe("applyApproved", () => {
     const k = TOKEN_X.toLowerCase();
     expect(L.counterpartySpent[CP]).toEqual({ [k]: 2n, [`${k}:denom`]: 500n * E18 });
   });
+  it("A2 rev 2: actionMint records counterpartySpent[target].ETH (lowercased) + ETH denom snapshot on first send", () => {
+    const s = mkState(); // action native 1 ETH
+    const T = CP.toUpperCase().replace("0X", "0x") as `0x${string}`;
+    const L1 = applyApproved(mkLedger(), { kind: "actionMint", target: T, value: 10n }, NOW, s);
+    expect(L1.counterpartySpent).toEqual({ [CP.toLowerCase()]: { ETH: 10n, "ETH:denom": E18 } });
+    const s2 = mkState();
+    s2.action.rh = { ...s2.action.rh, native: 5n };
+    const L2 = applyApproved(L1, { kind: "actionMint", target: CP, value: 1n }, NOW, s2);
+    expect(L2.counterpartySpent[CP]).toEqual({ ETH: 11n, "ETH:denom": E18 });
+    // an ETH actionTransfer to the same address accumulates into the same bucket
+    const L3 = applyApproved(L2, { kind: "actionTransfer", asset: "ETH", to: CP, amount: 2n }, NOW, s);
+    expect(L3.counterpartySpent[CP]).toEqual({ ETH: 13n, "ETH:denom": E18 });
+  });
+  it("A2 rev 2: actionMint without stateAtApproval: spend recorded, no snapshot", () => {
+    const L = applyApproved(mkLedger(), { kind: "actionMint", target: CP, value: 7n }, NOW);
+    expect(L.counterpartySpent[CP]).toEqual({ ETH: 7n });
+  });
   it("actionTransfer without stateAtApproval: spend recorded, no snapshot (documented fallback)", () => {
     const L = applyApproved(mkLedger(), { kind: "actionTransfer", asset: "ETH", to: CP, amount: 10n }, NOW);
     expect(L.counterpartySpent[CP]).toEqual({ ETH: 10n });
@@ -160,7 +185,6 @@ describe("applyApproved", () => {
     { kind: "treasurySwap", tokenIn: TOKEN_X, amountIn: 1n, minOut: 1n },
     { kind: "actionSwap", tokenIn: "USDG", tokenOut: TOKEN_X, amountIn: 1n, minOut: 0n },
     { kind: "actionLp", pool: `0x${"ab".repeat(32)}`, usdgAmount: 1n, tokenAmount: 1n, token: TOKEN_X },
-    { kind: "actionMint", target: CP, value: 1n },
   ];
   for (const a of noOps) {
     it(`${a.kind}: no budget bucket changes (same day ⇒ same object)`, () => {
@@ -267,6 +291,22 @@ describe("engine + reducer sequences", () => {
     s.action.rh = { ...s.action.rh, native: 10n * E18 };
     expectAllow(evaluate(send(10n ** 17n), s, L, cfg, NOW));
     expectDeny(evaluate(send(10n ** 17n + 1n), s, L, cfg, NOW), "COUNTERPARTY_CAP");
+  });
+
+  it("A2 rev 2: repeated actionMints to one target cross 30% of the snapshot ⇒ COUNTERPARTY_CAP; ledger records them", () => {
+    const s = mkState(); // 1 ETH ⇒ per-tx 0.2, per-counterparty 0.3
+    const m = (v: bigint): ProposedAction => ({ kind: "actionMint", target: CP, value: v });
+    let L = mkLedger();
+    const step = 10n ** 17n; // 0.1 ETH
+    for (let i = 0; i < 3; i++) {
+      expectAllow(evaluate(m(step), s, L, cfg, NOW));
+      L = applyApproved(L, m(step), NOW, s);
+    }
+    expect(L.counterpartySpent[CP]).toEqual({ ETH: 3n * step, "ETH:denom": E18 });
+    expectDeny(evaluate(m(1n), s, L, cfg, NOW), "COUNTERPARTY_CAP");
+    // a different target is unaffected; next UTC day resets
+    expectAllow(evaluate({ kind: "actionMint", target: `0x${"12".repeat(20)}`, value: step }, s, L, cfg, NOW));
+    expectAllow(evaluate(m(step), s, L, cfg, DAY0 + DAY));
   });
 
   it("A2: USDG counterparty cap is 30% of today's allowance, set by the allowance reducer", () => {
