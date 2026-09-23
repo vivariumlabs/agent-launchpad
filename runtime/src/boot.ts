@@ -32,8 +32,29 @@
 //       start/stop-able setTimeout loops driven by nextPulse / nextTickAt (timers injectable),
 //       serialized by one mutex (no concurrent nonce use). Tier changes: ONE shared kv tier
 //       store for both detectors, and announcements deduped by (from,to,dayKey) in kv.
-//   (6) Runtime.stop(): timers off → chat close → wait for in-flight tick/pulse → FINAL
-//       snapshot (03 §7 "before planned shutdowns") → db close.
+//   (6) Runtime.stop(): timers off → TLS issuance loop off → chat close → wait for in-flight
+//       tick/pulse → FINAL snapshot (03 §7 "before planned shutdowns") → db close.
+//   SPEC-M3B §2 TLS ingress (runtime.tls.enabled; DEFAULT off): domain a<agentId>.<platform.agentDnsRoot>
+//       (frozen); placeholder cert from KMS derive("tls") + persisted issued cert loaded at boot; chat
+//       listens with TLS (DEFAULT :443, 0.0.0.0) and the ACME first-issuance loop starts in the
+//       background (placeholder served meanwhile); daemon step 10 renews (< 30 d). GET /attestation =
+//       boot report + served-cert SPKI sha256 (provider wired iff a tee report or TLS exists).
+//   SPEC-M3B §3 Turbo (runtime.arweave.enabled; DEFAULT off): TurboArweaveSink over the in-house
+//       TurboHttpUploader (ANS-104 data items signed by the treasury turboSigner) replaces LocalDirSink for attestation AND snapshots; LocalDirSink kept as a mirror
+//       (runtime.arweave.localMirror DEFAULT true); restore reads [turbo, local].
+//   SPEC-M3B §4 signed allowlist updates: after (3) memory and BEFORE any deps/pulse exist, the newest
+//       adopted signed allowlist in kv is re-verified and applied onto the genesis cfg (reapplyAdoptedAllowlist).
+//       cfg is then MUTABLE in exactly one way: applyCfg(next) swaps the single cfg object on every ExecDeps
+//       view (baseExec / exec / daemonDeps; pulse + chat derive theirs per call), the keyring's K3 allowlist
+//       and the EndpointManager (reload). Daemon step 11 (fetchAndAdopt) is wired ONLY when the agent opted
+//       in at genesis (frozen agent.adoptAllowlistUpdates, DEFAULT true) AND runtime.allowlistUpdateUrl AND
+//       the frozen platform.allowlistUpdateSigner are set; opted out ⇒ no fetcher is ever constructed.
+//   Boot auto-registration (tee + cfg.registration): at the END of boot (after keyring + attestation +
+//       every component, before start() arms the schedulers) read registry.instanceOf(agentId); unregistered
+//       OR stale (now − lastHeartbeat > the contract's REVIVAL_WINDOW: a REVIVED instance ⇒ generation++ and
+//       the new attestationRef) ⇒ execute({kind:"registerInstance"}) through the normal deps (engine T1 →
+//       keyring K2). Registered + fresh ⇒ skip (logged). Read or send failure ⇒ LOUD warning and boot continues (heartbeats keep failing
+//       visibly; the genesis orchestrator watches registration and owns retry/timeout).
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -41,9 +62,10 @@ import type { Address, Hex } from "viem";
 import { parseAbi } from "viem";
 import { z } from "zod";
 import type { BalanceReader, Holdings } from "./chat/gate.js";
-import { createChatServer, type ChatServer } from "./chat/server.js";
+import { createChatServer, TLS_DEFAULT_PORT, type AttestationPayload, type ChatServer } from "./chat/server.js";
 import { systemClock, type Clock } from "./clock.js";
 import {
+  adoptsAllowlistUpdates,
   AgentConfigSchema,
   ConfigHashMismatchError,
   configHash,
@@ -55,9 +77,18 @@ import {
   type ResolvedConfig,
   type RuntimeOpsConfig,
 } from "./config/schema.js";
-import { kvTierStore, KV_LAST_SNAPSHOT_AT, tick, type ChainReader, type DaemonDeps, type TickReport, type TierStore } from "./daemon/daemon.js";
+import {
+  kvTierStore,
+  KV_LAST_SNAPSHOT_AT,
+  tick,
+  type AllowlistUpdateHook,
+  type ChainReader,
+  type DaemonDeps,
+  type TickReport,
+  type TierStore,
+} from "./daemon/daemon.js";
 import { nextTickAt } from "./daemon/scheduler.js";
-import { erc20Abi, feeSplitHookAbi } from "./exec/abi.js";
+import { agentRegistryAbi, erc20Abi, feeSplitHookAbi } from "./exec/abi.js";
 import { MockChainClient, type ChainClient } from "./exec/chain.js";
 import { execute, type ExecDeps, type ExecResult, type LedgerStore } from "./exec/execute.js";
 import { RealChainClient } from "./exec/chainViem.js";
@@ -72,15 +103,29 @@ import {
   LocalDirSink as AttestationDirSink,
   type AttestationSink,
 } from "./attestation/attestation.js";
+import { MirroredAttestationSink, MirroredSnapshotSink, TurboArweaveSink, type TurboUploader } from "./attestation/turbo.js";
+import { createHttpTurboUploader, DEFAULT_TURBO_UPLOAD_URL } from "./attestation/turboHttp.js";
+import { agentDomain, LETS_ENCRYPT_PRODUCTION, type AcmeApi } from "./tls/acme.js";
+import { acmeAccountKeyPem, ed25519KeyFromSeed } from "./tls/keys.js";
+import { CertStore, placeholderMaterial, TlsManager } from "./tls/server.js";
 import { dayKeyOf, emptyLedger } from "./ledger/ledger.js";
 import { EndpointManager } from "./llm/endpoints.js";
+import { FetchAllowlistSource } from "./llm/allowlistFetch.js";
+import {
+  ALLOWLIST_CHECK_INTERVAL_SEC,
+  allowlistCheckDue,
+  reapplyAdoptedAllowlist,
+  runAllowlistCheck,
+  type AllowlistSource,
+  type AllowlistUpdateDeps,
+} from "./llm/allowlistUpdate.js";
 import { FetchHttpClient } from "./llm/httpFetch.js";
 import type { HttpClient, LlmClient, X402Transport } from "./llm/types.js";
 import { X402HttpInference, type PaidInferenceClient } from "./llm/x402Http.js";
 import { kvGet, kvSet, loadLedger, openMemory, saveLedger, type MemoryDb } from "./memory/db.js";
 import { LocalDirSink, restoreLatest, writeSnapshot, type SnapshotSink } from "./memory/snapshot.js";
 import { runwayDays } from "./policy/runway.js";
-import type { BudgetLedger, Chain, UnixSeconds, WalletBalances, WalletState } from "./policy/types.js";
+import type { BudgetLedger, Chain, OwnAddresses, UnixSeconds, WalletBalances, WalletState } from "./policy/types.js";
 import { tierOf } from "./pulse/tier.js";
 import type { ContextSources } from "./pulse/context.js";
 import { annotateExecResult, memoryCastSink, memoryJournalSink, recordExecResult, runPulse, type PulseResult } from "./pulse/pulse.js";
@@ -228,6 +273,12 @@ export interface BootOverrides {
   paidInference?: PaidInferenceClient;
   /** HttpClient for the real x402 transport when runtime.x402.enabled (DEFAULT FetchHttpClient). */
   http?: HttpClient;
+  /** SPEC-M3B §3: Turbo uploader used when runtime.arweave.enabled (DEFAULT TurboHttpUploader — in-house ANS-104, attestation/turboHttp.ts). */
+  turboUploader?: TurboUploader;
+  /** SPEC-M3B §2: acme-client seam for runtime.tls (DEFAULT the real acme-client). */
+  acme?: AcmeApi;
+  /** SPEC-M3B §4: signed-allowlist transport (DEFAULT FetchAllowlistSource(runtime.allowlistUpdateUrl)). */
+  allowlistSource?: AllowlistSource;
 }
 
 export interface BootOptions {
@@ -266,6 +317,7 @@ export interface Runtime {
   start(): Promise<void>;
   stop(): Promise<void>;
   // ---- ADDITIVE (Job F): introspection + manual drive (tests / ops) ----
+  /** Current effective config (genesis cfg, or with an adopted signed allowlist — SPEC-M3B §4). */
   readonly cfg: ResolvedConfig;
   readonly configHash: Hex;
   readonly db: MemoryDb;
@@ -282,6 +334,8 @@ export interface Runtime {
   readonly chat: ChatServer | null;
   /** Bound chat address once start() has listened, else null. */
   chatAddress(): { host: string; port: number } | null;
+  /** SPEC-M3B §2: TLS ingress manager (null ⇒ runtime.tls disabled). */
+  readonly tls: TlsManager | null;
   /** One daemon tick now (serialized with the loops). */
   daemonTick(): Promise<TickReport>;
   /** One pulse cycle now: tier detection (+announce) → runPulse → reschedule data. */
@@ -684,6 +738,113 @@ function kvBigint(db: MemoryDb, key: string): UnixSeconds | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// (7) boot auto-registration
+// ---------------------------------------------------------------------------
+
+export type RegistrationOutcome = "registered" | "revived" | "alreadyRegistered" | "keyMismatch" | "readFailed" | "sendFailed";
+
+/** Parsed registry.instanceOf(agentId) (contracts/src/interfaces/ILaunchpad.sol:11-18). */
+interface RegistryInstance {
+  treasuryEOA: Address;
+  actionEOA: Address;
+  codeHash: Hex;
+  lastHeartbeat: bigint;
+  generation: number;
+}
+
+function parseInstance(v: unknown): RegistryInstance {
+  const o = (v !== null && typeof v === "object" ? v : {}) as Record<string, unknown>;
+  const { treasuryEOA, actionEOA, codeHash, lastHeartbeat, generation } = o;
+  if (typeof treasuryEOA !== "string" || typeof actionEOA !== "string" || typeof codeHash !== "string") throw new Error("instanceOf: malformed record");
+  if (typeof lastHeartbeat !== "bigint") throw new Error(`instanceOf: lastHeartbeat is ${typeof lastHeartbeat}, expected bigint`);
+  if (typeof generation !== "number" && typeof generation !== "bigint") throw new Error("instanceOf: malformed generation");
+  return { treasuryEOA: treasuryEOA as Address, actionEOA: actionEOA as Address, codeHash: codeHash as Hex, lastHeartbeat, generation: Number(generation) };
+}
+
+/**
+ * Boot registration gate (revival-aware). Reads registry.instanceOf(agentId) on rh
+ * (lastHeartbeat == 0 ⇔ unregistered, = the contract's isRegistered):
+ *   - unregistered                                     ⇒ registerInstance (genesis; generation := 1)
+ *   - registered AND now − lastHeartbeat > REVIVAL_WINDOW ⇒ registerInstance (REVIVAL: the contract bumps
+ *     generation and replaces attestationRef with this boot's report; AgentRegistry.sol:96-105)
+ *   - registered and fresh                             ⇒ skip (normal restart; a send would revert
+ *     RevivalWindowNotElapsed and burn gas)
+ * REVIVAL_WINDOW is read from the contract's public constant (AgentRegistry.sol:13, 7 days) — never
+ * assumed — and the comparison is the contract's own (strictly greater). A stale record whose pinned
+ * (treasury, action, codeHash) differ from ours would revert MismatchedRevivalKeys ⇒ LOUD warning, nothing
+ * sent. Registration goes through the normal deps (engine T1 → keyring K2 rebuilds the tx from its attached
+ * cfg). Never throws: a failed read or send is a LOUD warning and boot continues (heartbeats will keep
+ * failing visibly; the genesis orchestrator / reviver watches registration). A failed read sends nothing.
+ */
+export async function ensureRegistered(
+  cfg: ResolvedConfig,
+  agentId: number,
+  chain: ChainClient,
+  exec: ExecDeps,
+  logger: BootLogger,
+  now: UnixSeconds,
+): Promise<RegistrationOutcome> {
+  let inst: RegistryInstance;
+  let windowSec: bigint | null = null;
+  try {
+    inst = parseInstance(
+      await chain.readContract("rh", { address: cfg.registry.rh, abi: agentRegistryAbi, functionName: "instanceOf", args: [BigInt(agentId)] }),
+    );
+    if (inst.lastHeartbeat !== 0n) {
+      const w = await chain.readContract("rh", { address: cfg.registry.rh, abi: agentRegistryAbi, functionName: "REVIVAL_WINDOW", args: [] });
+      if (typeof w !== "bigint" || w <= 0n) throw new Error(`REVIVAL_WINDOW returned ${typeof w === "bigint" ? w.toString(10) : typeof w}, expected a positive uint64`);
+      windowSec = w;
+    }
+  } catch (e) {
+    logger.warn(`!!! registration: registry.instanceOf(${agentId}) / REVIVAL_WINDOW read FAILED (${errMsg(e)}) — NOT registering at boot; heartbeats will fail until the instance is registered !!!`);
+    return "readFailed";
+  }
+
+  let revival = false;
+  if (windowSec !== null) {
+    const age = now - inst.lastHeartbeat;
+    if (age <= windowSec) {
+      logger.info(`registration: agent ${agentId} already registered (generation ${inst.generation}, heartbeat ${age}s ago ≤ revival window ${windowSec}s) — skipping registerInstance`);
+      return "alreadyRegistered";
+    }
+    const own = keyringAddresses(exec);
+    const reg = cfg.registration;
+    if (
+      own === null ||
+      reg === undefined ||
+      inst.treasuryEOA.toLowerCase() !== own.treasury.toLowerCase() ||
+      inst.actionEOA.toLowerCase() !== own.action.toLowerCase() ||
+      inst.codeHash.toLowerCase() !== reg.codeHash.toLowerCase()
+    ) {
+      logger.warn(
+        `!!! registration: agent ${agentId} is registered to a DIFFERENT instance (treasury ${inst.treasuryEOA}, codeHash ${inst.codeHash}) and stale — ` +
+          "revival requires identical pinned keys + codeHash (MismatchedRevivalKeys); NOT sending !!!",
+      );
+      return "keyMismatch";
+    }
+    revival = true;
+    logger.info(`registration: agent ${agentId} heartbeat stale (${age}s > revival window ${windowSec}s) — REVIVING (generation ${inst.generation} → ${inst.generation + 1})`);
+  }
+
+  const r = await execute({ kind: "registerInstance" }, exec);
+  if (r.verdict.allow && r.error === undefined) {
+    logger.info(`registration: registerInstance sent for agent ${agentId}${revival ? " (revival)" : ""} (tx ${r.txHash ?? "?"})`);
+    return revival ? "revived" : "registered";
+  }
+  const why = r.verdict.allow ? (r.error ?? "unknown error") : `${r.verdict.code}: ${r.verdict.detail}`;
+  logger.warn(`!!! registration: registerInstance FAILED for agent ${agentId}${revival ? " (revival)" : ""} (${why}) — boot continues UNREGISTERED; heartbeats will fail visibly !!!`);
+  return "sendFailed";
+}
+
+function keyringAddresses(exec: ExecDeps): OwnAddresses | null {
+  try {
+    return exec.keyring.addresses();
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // boot
 // ---------------------------------------------------------------------------
 
@@ -720,6 +881,14 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
   if (hashParam === "match") logger.info(`init param config-hash matches the frozen config (${loaded.frozenHash})`);
   else if (rt.tee) throw new UnboundTeeBootError(resolve(initParamsDir, "config-hash"));
 
+  // (1c) SPEC-M3B §2 TLS config checks (before the KMS).
+  let tlsDomain: string | undefined;
+  if (rt.tls.enabled) {
+    const root = PlatformConfigSchema.parse(loaded.platform).agentDnsRoot;
+    if (root === undefined) throw new Error("boot: runtime.tls.enabled requires platform.agentDnsRoot (frozen) — the agent's domain is a<agentId>.<agentDnsRoot>");
+    tlsDomain = agentDomain(agentId, root);
+  }
+
   // (2) keyring
   // tee: validate everything that can fail fast BEFORE touching the KMS (no retry loop on a bad config).
   let teeImageId: Hex | undefined;
@@ -743,9 +912,27 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
   const keyring = await createKeyring(kms, opts.kmsRetry !== undefined ? { retry: opts.kmsRetry } : undefined);
   const resolved = resolveConfig({ platform: loaded.platform, agent: loaded.agent, ownAddresses: keyring.addresses() });
 
+  // (2a) SPEC-M3B §3 Turbo/Arweave sink (treasury-signed via keyring.turboSigner; no raw key leaves the keyring).
+  let turboSink: TurboArweaveSink | null = null;
+  if (rt.arweave.enabled) {
+    const uploader =
+      ov.turboUploader ??
+      createHttpTurboUploader(keyring.turboSigner(), {
+        ...(rt.arweave.uploadUrl !== undefined ? { uploadUrl: rt.arweave.uploadUrl } : {}),
+        ...(rt.arweave.paymentUrl !== undefined ? { paymentUrl: rt.arweave.paymentUrl } : {}),
+        ...(rt.arweave.gatewayUrl !== undefined ? { gatewayUrl: rt.arweave.gatewayUrl } : {}),
+      });
+    turboSink = new TurboArweaveSink({ uploader, agentId, owner: keyring.addresses().treasury, logger });
+    logger.info(
+      `arweave: Turbo sink enabled for attestation + snapshots (owner ${keyring.addresses().treasury}; ` +
+        `uploader ${ov.turboUploader !== undefined ? "override" : (rt.arweave.uploadUrl ?? DEFAULT_TURBO_UPLOAD_URL)}; local mirror ${rt.arweave.localMirror ? "on" : "off"})`,
+    );
+  }
+
   // (2b) SPEC-M3 §2 attestation: quote → report → sink → cfg.registration (real registerInstance values,
   // replacing any fixture registration from the platform config).
   let attestationRef: string | null = null;
+  let attestationReport: string | null = null;
   let registration = resolved.registration;
   if (teeImageId !== undefined) {
     const quote = await withRetry(() => fetchAttestation(attestationUrl), opts.kmsRetry);
@@ -759,24 +946,52 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
       generation: null, // assigned by AgentRegistry.registerInstance; unknown pre-registration
       now,
     });
-    const sink = ov.attestationSink ?? new AttestationDirSink(resolve(baseDir, rt.attestationDir ?? "attestations"));
+    const localAtt = new AttestationDirSink(resolve(baseDir, rt.attestationDir ?? "attestations"));
+    const sink: AttestationSink =
+      ov.attestationSink ??
+      (turboSink === null ? localAtt : rt.arweave.localMirror ? new MirroredAttestationSink(turboSink, [localAtt], logger) : turboSink);
     if (sink instanceof AttestationDirSink) {
       logger.warn(
         "!!! attestationRef is a LOCAL file — not publishable on-chain; wire Turbo (s2) before registering for real !!!",
       );
     }
     attestationRef = await sink.upload(report, now);
+    attestationReport = report;
     registration = { codeHash: teeImageId, attestationRef };
     logger.info(`attestation report published: ${attestationRef} (imageId ${teeImageId})`);
   }
-  const cfg: ResolvedConfig = teeImageId !== undefined ? { ...resolved, registration } : resolved;
-  keyring.attachConfig(cfg);
+  const genesisCfg: ResolvedConfig = teeImageId !== undefined ? { ...resolved, registration } : resolved;
+  keyring.attachConfig(genesisCfg);
 
   // (3) memory
   const dbPath = opts.dbPath ?? (rt.dbPath === ":memory:" ? ":memory:" : resolve(baseDir, rt.dbPath ?? "memory.sqlite"));
-  const snapshotSink = ov.snapshotSink ?? new LocalDirSink(opts.snapshotDir ?? resolve(baseDir, rt.snapshotDir ?? "snapshots"));
-  const opened = await openOrRestoreMemory(dbPath, [snapshotSink], keyring.memKeyForMemoryModule(), clock(), logger);
+  const localSnapshots = new LocalDirSink(opts.snapshotDir ?? resolve(baseDir, rt.snapshotDir ?? "snapshots"));
+  let snapshotSink: SnapshotSink;
+  let restoreSinks: SnapshotSink[];
+  if (ov.snapshotSink !== undefined) {
+    snapshotSink = ov.snapshotSink;
+    restoreSinks = [ov.snapshotSink];
+  } else if (turboSink !== null) {
+    // SPEC-M3B §3: Turbo first (wins createdAt ties), local mirror second.
+    snapshotSink = rt.arweave.localMirror ? new MirroredSnapshotSink(turboSink, [localSnapshots], logger) : turboSink;
+    restoreSinks = rt.arweave.localMirror ? [turboSink, localSnapshots] : [turboSink];
+  } else {
+    snapshotSink = localSnapshots;
+    restoreSinks = [localSnapshots];
+  }
+  const opened = await openOrRestoreMemory(dbPath, restoreSinks, keyring.memKeyForMemoryModule(), clock(), logger);
   const db = opened.db;
+
+  // (3b) SPEC-M3B §4: re-apply the newest adopted signed allowlist (fully re-verified) BEFORE any
+  // deps / endpoints / pulse exist. `cfg` is the ONE mutable config slot from here on (applyCfg).
+  const allowlistOptedIn = adoptsAllowlistUpdates(genesisCfg.agent);
+  const allowlistSigner = genesisCfg.allowlistUpdateSigner;
+  let cfg: ResolvedConfig = genesisCfg;
+  const reapplied = await reapplyAdoptedAllowlist({ optedIn: allowlistOptedIn, signer: allowlistSigner, db, base: genesisCfg, logger });
+  if (reapplied !== null) {
+    cfg = reapplied.cfg;
+    keyring.updateAllowlist(cfg.x402Allowlist);
+  }
 
   // (4) ExecDeps
   const rpcUrls = definedUrls(rt.rpc);
@@ -840,7 +1055,96 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
       }
     },
   };
-  const daemonDeps: DaemonDeps = { ...exec, chainReader, memory: db, snapshotSink, tierStore: daemonTiers };
+  // (5b) SPEC-M3B §2 TLS ingress: placeholder (KMS-derived Ed25519, deterministic) + persisted cert.
+  let tlsManager: TlsManager | null = null;
+  if (tlsDomain !== undefined) {
+    if (cfg.chatDomain === undefined) {
+      db.close();
+      throw new Error("boot: runtime.tls.enabled requires the chat server (platform.chatDomain) — TLS ingress fronts chat");
+    }
+    const tlsDir = rt.tls.dir !== undefined ? resolve(baseDir, rt.tls.dir) : dbPath === ":memory:" ? resolve(baseDir, "tls") : resolve(dirname(dbPath), "tls");
+    const placeholder = placeholderMaterial(tlsDomain, ed25519KeyFromSeed(await keyring.tlsPlaceholderKey()));
+    const store = new CertStore({ domain: tlsDomain, dir: tlsDir, placeholder });
+    const loadedCert = store.loadPersisted(clock(), logger);
+    tlsManager = new TlsManager({
+      store,
+      directoryUrl: rt.tls.acmeDirectoryUrl ?? LETS_ENCRYPT_PRODUCTION,
+      accountKeyPem: async () => acmeAccountKeyPem(await keyring.acmeAccountKey()),
+      clock,
+      timers,
+      logger,
+      ...(ov.acme !== undefined ? { acme: ov.acme } : {}),
+      ...(rt.tls.retrySec !== undefined ? { retrySec: BigInt(rt.tls.retrySec) } : {}),
+    });
+    logger.info(`tls: ${tlsDomain} — ${loadedCert ? "persisted certificate loaded" : "placeholder until first issuance"} (spki ${store.current().spkiSha256}, dir ${tlsDir})`);
+  }
+  const tls = tlsManager;
+
+  /**
+   * SPEC-M3B §4 single cfg swap: every long-lived ExecDeps view gets the SAME new object (pulse and chat
+   * build their memory-logged views from baseExec per call), plus keyring K3 + EndpointManager reload.
+   */
+  function applyCfg(next: ResolvedConfig): void {
+    keyring.updateAllowlist(next.x402Allowlist);
+    cfg = next;
+    baseExec.cfg = next;
+    exec.cfg = next;
+    daemonDeps.cfg = next;
+    endpoints.reload(next);
+  }
+
+  // SPEC-M3B §4 daemon step 11 (opted-in agents only; opted out ⇒ no fetcher is ever constructed).
+  let allowlistHook: AllowlistUpdateHook | undefined;
+  if (!allowlistOptedIn) {
+    logger.info("allowlist updates: opted out at genesis (frozen agent.adoptAllowlistUpdates=false) — never fetching");
+  } else if (allowlistSigner === undefined) {
+    logger.warn("allowlist updates: no frozen platform.allowlistUpdateSigner — signed updates cannot be verified; not checking");
+  } else if (ov.allowlistSource === undefined && rt.allowlistUpdateUrl === undefined) {
+    logger.info("allowlist updates: runtime.allowlistUpdateUrl unset — not checking");
+  } else {
+    const source = ov.allowlistSource ?? new FetchAllowlistSource(rt.allowlistUpdateUrl!);
+    const intervalSec = rt.allowlistUpdateIntervalSec !== undefined ? BigInt(rt.allowlistUpdateIntervalSec) : ALLOWLIST_CHECK_INTERVAL_SEC;
+    const updateDeps: AllowlistUpdateDeps = {
+      optedIn: allowlistOptedIn,
+      signer: allowlistSigner,
+      source,
+      db,
+      clock,
+      cfg: () => cfg,
+      apply: applyCfg,
+      journal: async (text) => {
+        const j = contentAction("journalWrite", text, cfg);
+        return j.ok ? execute(j.action, exec, j.extras) : null;
+      },
+    };
+    allowlistHook = { due: (now) => allowlistCheckDue(db, now, intervalSec), run: (now) => runAllowlistCheck(updateDeps, now) };
+    logger.info(`allowlist updates: checking every ${intervalSec}s (signer ${allowlistSigner})`);
+  }
+
+  const daemonDeps: DaemonDeps = {
+    ...exec,
+    chainReader,
+    memory: db,
+    snapshotSink,
+    tierStore: daemonTiers,
+    ...(tls !== null ? { tlsRenewal: tls } : {}),
+    ...(allowlistHook !== undefined ? { allowlistUpdate: allowlistHook } : {}),
+  };
+
+  /** SPEC-M3B §2 GET /attestation (wired iff there is a tee report or a TLS cert to pin). */
+  const attestationProvider =
+    attestationReport !== null || tls !== null
+      ? async (): Promise<AttestationPayload> => {
+          const cur = tls?.store.current();
+          return {
+            report: attestationReport,
+            attestationRef,
+            certSpkiSha256: cur?.spkiSha256 ?? null,
+            certKind: cur?.kind ?? null,
+            domain: tls?.store.domain ?? null,
+          };
+        }
+      : undefined;
 
   let chat: ChatServer | null = null;
   if (cfg.chatDomain !== undefined) {
@@ -867,6 +1171,7 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
       endpoints,
       readers,
       tier: async () => sharedTiers.get() ?? tierOf(runwayDays(await getState(), clock(), undefined, cfg.bridgeHaircutBps)),
+      ...(attestationProvider !== undefined ? { attestation: attestationProvider } : {}),
     });
   }
 
@@ -962,8 +1267,15 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
   let chatAddr: { host: string; port: number } | null = null;
   let stopping: Promise<void> | null = null;
 
+  // (7) Boot auto-registration (tee + cfg.registration), after every component exists and before start().
+  if (teeImageId !== undefined && cfg.registration !== undefined) {
+    await ensureRegistered(cfg, agentId, chain, exec, logger, clock());
+  }
+
   const runtime: Runtime = {
-    cfg,
+    get cfg(): ResolvedConfig {
+      return cfg;
+    },
     configHash: loaded.hash,
     frozenHash: loaded.frozenHash,
     db,
@@ -974,12 +1286,22 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
     attestationRef,
     chat,
     chatAddress: () => chatAddr,
+    tls,
 
     async start(): Promise<void> {
       if (closed) throw new Error("runtime stopped");
       if (started) return;
       started = true;
-      if (chat !== null) {
+      if (chat !== null && tls !== null) {
+        const addr = await chat.listen({
+          tls: tls.listenMode(),
+          port: ov.chatPort ?? rt.tls.port ?? TLS_DEFAULT_PORT,
+          host: rt.chatHost ?? "0.0.0.0",
+        });
+        chatAddr = addr;
+        logger.info(`chat listening with TLS on ${addr.host}:${addr.port} (${tls.store.domain})`);
+        tls.start(); // background first issuance (placeholder served meanwhile)
+      } else if (chat !== null) {
         const addr = await chat.listen({
           ...(ov.chatPort !== undefined ? { port: ov.chatPort } : {}),
           ...(rt.chatHost !== undefined ? { host: rt.chatHost } : {}),
@@ -1002,6 +1324,7 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
         daemonLoop.stop();
         pulseLoop.stop();
         const errors: string[] = [];
+        if (tls !== null) await tls.stop();
         if (chat !== null) {
           try {
             await chat.close();

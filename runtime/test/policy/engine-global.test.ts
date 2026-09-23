@@ -301,7 +301,7 @@ describe("§6 hygiene: src/policy, src/ledger and src/exec (SPEC-M2B §10)", () 
       ["process.env", /process\.env/],
       ["randomBytes", /randomBytes|randomUUID|getRandomValues/],
     ];
-    const allow: Record<string, readonly string[]> = { "clock.ts": ["Date.now"], "chat/nonce.ts": ["randomBytes"], "llm/httpFetch.ts": ["fetch("] /* SPEC-M3 §3: the ONLY x402 network file */ };
+    const allow: Record<string, readonly string[]> = { "clock.ts": ["Date.now"], "chat/nonce.ts": ["randomBytes"], "llm/httpFetch.ts": ["fetch("] /* SPEC-M3 §3: the ONLY x402 network file */, "llm/allowlistFetch.ts": ["fetch("] /* SPEC-M3B §4: signed-allowlist fetcher (untrusted transport) */, "attestation/turboHttp.ts": ["fetch("] /* M3 s2 close: the ONLY Turbo/Arweave network file */ };
     const hits: string[] = [];
     for (const f of walk(SRC)) {
       const rel = f.slice(SRC.length + 1);
@@ -342,6 +342,27 @@ describe("§6 hygiene: src/policy, src/ledger and src/exec (SPEC-M2B §10)", () 
       if (/new Date\(/.test(code)) hits.push(`${rel}: new Date(`);
       if (/from\s+["'](node:)?(https|net|dgram|tls|child_process|worker_threads)["']/.test(code)) hits.push(`${rel}: import`);
       if (/from\s+["'](node:)?http["']/.test(code) && !httpAllow.includes(rel)) hits.push(`${rel}: http`);
+    }
+    expect(hits).toEqual([]);
+  });
+
+  it("src/tls + Turbo (SPEC-M3B §2/§3): network ONLY via acme-client in tls/acme.ts; node:https/tls/fs ONLY in tls/server.ts; @ardrive/turbo-sdk NOWHERE (rejected), arbundles NOWHERE in src (dev-only cross-verification); no `any`, no new Date(", () => {
+    // Allowlist: tls/acme.ts = the ACME directory (+ acme-client's own TLS-ALPN pre-flight); acme-client's
+    // key/CSR generation uses its internal randomness — our code adds none (global ban above still applies).
+    const tlsFiles = walk(join(SRC, "tls"));
+    expect(tlsFiles.map((f) => f.slice(SRC.length + 1)).sort()).toEqual(["tls/acme.ts", "tls/keys.ts", "tls/server.ts", "tls/x509.ts"]);
+    const hits: string[] = [];
+    for (const f of walk(SRC)) {
+      const rel = f.slice(SRC.length + 1);
+      const code = stripComments(readFileSync(f, "utf8"));
+      if (/from\s+["']acme-client["']/.test(code) && rel !== "tls/acme.ts") hits.push(`${rel}: acme-client`);
+      if (/@ardrive\/turbo-sdk/.test(code)) hits.push(`${rel}: turbo-sdk`);
+      if (/arbundles/.test(code)) hits.push(`${rel}: arbundles (dev-only)`);
+      if (!rel.startsWith("tls/")) continue;
+      if (/(:\s*any\b|\bas\s+any\b|<any>|any\[\])/.test(code)) hits.push(`${rel}: any`);
+      if (/new Date\(|Date\.parse/.test(code)) hits.push(`${rel}: Date`);
+      if (/from\s+["'](node:)?(http|net|dgram|child_process|worker_threads)["']/.test(code)) hits.push(`${rel}: import`);
+      if (/from\s+["'](node:)?(https|tls|fs)["']/.test(code) && rel !== "tls/server.ts") hits.push(`${rel}: https/tls/fs`);
     }
     expect(hits).toEqual([]);
   });

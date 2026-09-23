@@ -34,6 +34,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { resolveConfig, type ResolvedConfig } from "../../src/config/schema.js";
+import { ensureRegistered } from "../../src/boot.js";
 import { acrossSpokePoolAbi, agentRegistryAbi, erc20Abi, feeSplitHookAbi, MIN_SQRT_PRICE, poolSwapTestAbi } from "../../src/exec/abi.js";
 import { buildTx, poolKeyFor, swapCalldata } from "../../src/exec/build.js";
 import { RealChainClient } from "../../src/exec/chainViem.js";
@@ -458,6 +459,24 @@ describe.skipIf(bins === undefined)("SPEC-M2C §4 chain integration (anvil 46630
     );
     expect(built.data.toLowerCase()).toBe(ref);
     expect(built.data.slice(0, 10)).toBe("0x7b939232");
+  });
+
+  it("[bytecode] boot revival gate (ensureRegistered) vs the REAL registry: fresh ⇒ skip; stale past REVIVAL_WINDOW (read from the contract) ⇒ revival registerInstance, generation 1 → 2", async () => {
+    const lines: string[] = [];
+    const log = { info: (m: string) => lines.push(m), warn: (m: string) => lines.push(m), error: (m: string) => lines.push(m) };
+    const blockNow = async (): Promise<bigint> => (await pub.getBlock()).timestamp;
+    const readInst = async () =>
+      (await pub.readContract({ address: m.registry, abi: A.AgentRegistry!, functionName: "instanceOf", args: [MY_AGENT_ID] })) as { generation: number | bigint; lastHeartbeat: number | bigint; attestationRef: string };
+    expect(await chain.readContract("rh", { address: m.registry, abi: agentRegistryAbi, functionName: "REVIVAL_WINDOW", args: [] })).toBe(604_800n);
+    expect(await ensureRegistered(cfg, Number(MY_AGENT_ID), chain, deps, log, await blockNow())).toBe("alreadyRegistered");
+    expect(BigInt((await readInst()).generation)).toBe(1n);
+    await increaseTime(anvil!.url, 7 * 86_400 + 60);
+    expect(await ensureRegistered(cfg, Number(MY_AGENT_ID), chain, deps, log, await blockNow())).toBe("revived");
+    const after = await readInst();
+    expect(BigInt(after.generation)).toBe(2n);
+    expect(after.attestationRef).toBe(ATTESTATION);
+    expect(BigInt(after.lastHeartbeat)).toBe(await blockNow());
+    expect(lines.join("\n")).toMatch(/REVIVING \(generation 1 → 2\)/);
   });
 
   it("every executed tx was logged, and every tx-kind result came from a real receipt", () => {

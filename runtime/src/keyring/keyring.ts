@@ -17,8 +17,8 @@
 // carry exactly this keyring's own addresses. K2/K3 throw until a config is attached.
 
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
-import { concat, keccak256, stringToHex, type Address, type Hex } from "viem";
-import type { ResolvedConfig } from "../config/schema.js";
+import { concat, hexToBytes, keccak256, stringToBytes, stringToHex, type Address, type Hex } from "viem";
+import type { ResolvedConfig, X402AllowlistEntry } from "../config/schema.js";
 import { buildTx } from "../exec/build.js";
 import type { TxFill } from "../exec/chain.js";
 import { transferWithAuthorizationTypes } from "../exec/abi.js";
@@ -57,6 +57,12 @@ export interface Keyring {
   addresses(): OwnAddresses;
   /** Bind the resolved config (once). Its treasury/action must equal addresses(). */
   attachConfig(cfg: ResolvedConfig): void;
+  /**
+   * SPEC-M3B §4: replace ONLY the attached config's x402 allowlist (K3's payTo source) after a verified
+   * signed-allowlist adoption. Nothing else of the attached config can change (K2 bounds, addresses).
+   * Throws when no config is attached.
+   */
+  updateAllowlist(entries: readonly X402AllowlistEntry[]): void;
   /** SPEC-M2 §1 entry point (kept for tests); K1-gated. Signs the raw actionHash. */
   signApproved(action: ProposedAction, approval: Approval, now: UnixSeconds): Promise<Hex>;
   /** K2: serialized signed EIP-1559 tx. */
@@ -71,6 +77,76 @@ export interface Keyring {
   memKeyForMemoryModule(): Hex;
   /** Scoped to the chat module only (SPEC-M2C §1): raw 32-byte HMAC key for chat session tokens. */
   chatSessionKey(): Hex;
+  /**
+   * Scoped to src/tls only (SPEC-M3B §2): raw 32-byte seed of the ACME account key, KMS derive("acme").
+   * LAZY (first call derives, withRetry; memoized): the boot derive order is unchanged and the KMS is
+   * never asked for TLS keys unless ops.tls.enabled.
+   */
+  acmeAccountKey(): Promise<Hex>;
+  /** Scoped to src/tls only: raw 32-byte seed of the placeholder-cert Ed25519 key, KMS derive("tls"). Lazy, as acmeAccountKey. */
+  tlsPlaceholderKey(): Promise<Hex>;
+  /**
+   * SPEC-M3B §3: treasury-backed ANS-104 (Ethereum, signatureType 3) signer for Turbo uploads.
+   * The returned object holds NO key material — sign() closes over the keyring's treasury account.
+   */
+  turboSigner(): TurboSigner;
+  /**
+   * GET /attestation response signer (closes the MITM gap on the attestation route): signs ONLY
+   * keccak256(utf8(ATTESTATION_SIG_DOMAIN) ‖ payloadBytes) with the TREASURY key (EIP-191 over that
+   * 32-byte digest). The domain prefix is prepended HERE, never by the caller. Holds NO key material.
+   */
+  attestationSigner(): AttestationSigner;
+}
+
+/**
+ * Minimal ANS-104 Ethereum signer (arbundles EthereumSigner shape: signatureType 3, 65-byte
+ * uncompressed secp256k1 owner, 65-byte EIP-191 personal_sign signature). Carries only PUBLIC data.
+ * sign() accepts exactly ONE message shape — the 48-byte ANS-104 data-item deep hash (SHA-384,
+ * src/attestation/ans104.ts) — so it cannot be used as a general personal_sign oracle over the
+ * treasury key (SIWE logins, off-chain orders) and can never produce an attestationSigner()
+ * signature (those are EIP-191 over a 32-byte digest: a different EIP-191 length prefix).
+ */
+export interface TurboSigner {
+  readonly signatureType: 3;
+  readonly ownerLength: 65;
+  readonly signatureLength: 65;
+  /** 65-byte uncompressed secp256k1 public key (0x04 ‖ x ‖ y). */
+  readonly publicKey: Uint8Array;
+  /** Treasury EOA. */
+  readonly address: Address;
+  sign(message: Uint8Array): Promise<Uint8Array>;
+}
+
+/**
+ * TurboSigner.sign accepted message lengths — an explicit allowlist: 48 = ANS-104 deep hash (SHA-384).
+ * (Job L's 32-byte "Turbo signed-request nonce" shape was REMOVED in M3 s2 close: the in-house
+ * uploader (attestation/turboHttp.ts) never makes signed requests — upload auth is the data-item
+ * signature, balance reads are by address — and a 32-byte EIP-191 shape would collide with
+ * attestationSigner's digest signatures.)
+ */
+export const TURBO_SIGN_LENGTHS: readonly number[] = [48];
+
+/** Domain prefix of attestationSigner digests (never shared with any other treasury signature). */
+export const ATTESTATION_SIG_DOMAIN = "launchpad-attestation-v1";
+
+/** keccak256(utf8(ATTESTATION_SIG_DOMAIN) ‖ payloadBytes) — the 32-byte digest attestationSigner signs (EIP-191). */
+export function attestationDigest(payloadBytes: Uint8Array): Hex {
+  return keccak256(concat([stringToBytes(ATTESTATION_SIG_DOMAIN), payloadBytes]));
+}
+
+/**
+ * Treasury-backed signer for GET /attestation responses. Carries only PUBLIC data (the address).
+ * sign(payloadBytes) = EIP-191 personal_sign over attestationDigest(payloadBytes); the domain prefix
+ * is applied inside, so no caller can obtain a treasury signature over an arbitrary 32-byte value.
+ * Non-collision: the treasury's other EIP-191 signatures are over 48-byte ANS-104 deep hashes
+ * (different length prefix), raw actionHashes = keccak256(canonical JSON starting with "{") (distinct
+ * preimage space) and — never — SIWE text (the keyring has no SIWE signing path).
+ */
+export interface AttestationSigner {
+  /** Treasury EOA — must equal registry.instanceOf(agentId).treasuryEOA for a verifier to accept. */
+  readonly address: Address;
+  /** 65-byte EIP-191 signature (0x-hex) over attestationDigest(payloadBytes). */
+  sign(payloadBytes: Uint8Array): Promise<Hex>;
 }
 
 export interface CreateKeyringOptions {
@@ -97,6 +173,18 @@ export async function createKeyring(kms: KmsClient, opts?: CreateKeyringOptions)
   const fcSeed = await withRetry(() => kms.derive("fc"), retryOpts);
   const memKey = await withRetry(() => kms.derive("mem"), retryOpts);
   const chatKey = await withRetry(() => kms.derive("chat"), retryOpts);
+
+  // SPEC-M3B §2 lazy TLS derives (memoized; a failed derive is retried on the next call).
+  const lazy = new Map<string, Promise<Hex>>();
+  function lazyDerive(path: string): Promise<Hex> {
+    let p = lazy.get(path);
+    if (p === undefined) {
+      p = withRetry(() => kms.derive(path), retryOpts);
+      lazy.set(path, p);
+      p.catch(() => lazy.delete(path));
+    }
+    return p;
+  }
 
   const treasuryAccount: PrivateKeyAccount = privateKeyToAccount(treasuryKey);
   const actionAccount: PrivateKeyAccount = privateKeyToAccount(actionKey);
@@ -171,6 +259,11 @@ export async function createKeyring(kms: KmsClient, opts?: CreateKeyringOptions)
         throw new Error("keyring: config own addresses do not match the keyring");
       }
       cfg = c;
+    },
+
+    updateAllowlist(entries: readonly X402AllowlistEntry[]): void {
+      const c = requireCfg();
+      cfg = { ...c, x402Allowlist: entries.map((e) => ({ ...e })) };
     },
 
     async signApproved(action: ProposedAction, approval: Approval, now: UnixSeconds): Promise<Hex> {
@@ -269,6 +362,43 @@ export async function createKeyring(kms: KmsClient, opts?: CreateKeyringOptions)
 
     chatSessionKey(): Hex {
       return chatKey;
+    },
+
+    acmeAccountKey(): Promise<Hex> {
+      return lazyDerive("acme");
+    },
+
+    tlsPlaceholderKey(): Promise<Hex> {
+      return lazyDerive("tls");
+    },
+
+    turboSigner(): TurboSigner {
+      const publicKey = hexToBytes(treasuryAccount.publicKey);
+      return Object.freeze({
+        signatureType: 3 as const,
+        ownerLength: 65 as const,
+        signatureLength: 65 as const,
+        publicKey,
+        address: treasuryAccount.address,
+        async sign(message: Uint8Array): Promise<Uint8Array> {
+          if (!(message instanceof Uint8Array) || !TURBO_SIGN_LENGTHS.includes(message.length)) {
+            throw new Error(`turboSigner: refusing to sign a ${message instanceof Uint8Array ? message.length : typeof message}-byte message (only 48-byte ANS-104 deep hashes)`);
+          }
+          return hexToBytes(await treasuryAccount.signMessage({ message: { raw: message } }));
+        },
+      });
+    },
+
+    attestationSigner(): AttestationSigner {
+      return Object.freeze({
+        address: treasuryAccount.address,
+        async sign(payloadBytes: Uint8Array): Promise<Hex> {
+          if (!(payloadBytes instanceof Uint8Array) || payloadBytes.length === 0) {
+            throw new Error("attestationSigner: payload must be a non-empty Uint8Array");
+          }
+          return treasuryAccount.signMessage({ message: { raw: attestationDigest(payloadBytes) } });
+        },
+      });
     },
   };
 }

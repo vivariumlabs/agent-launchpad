@@ -50,14 +50,16 @@ RUN --network=none tar -xzf /tmp/better-sqlite3-prebuild.tar.gz -C node_modules/
 # ---- stage 3: runtime (no network: COPY-only + one --network=none RUN) ----
 FROM --platform=linux/arm64 node@sha256:f71fb9ca71b1b47d4d1a009af78147ed6cdc74f9c7cfc36cbde78ff985169051 AS runtime
 WORKDIR /app
-# Code and deps stay root-owned and read-only to the app user.
 COPY --from=deps /deps/package.json ./package.json
 COPY --from=deps /deps/node_modules ./node_modules
 COPY --from=build /src/dist ./dist
-# /data = agent db + snapshots (compose mounts the agent-data volume here); /app/config = mount
-# point for the attested init-param config file (compose binds /init-params/agent.json).
+# /data = agent db + snapshots + tls/ (compose mounts the agent-data volume here); /app/config =
+# mount point for the init-param config files (compose binds /init-params/agent.json + runtime.json).
 RUN --network=none mkdir -p /data /app/config \
- && chown node:node /data \
  && chmod 0700 /data
-USER node
+# USER root — deliberate (SPEC-M3B §2, rev 0 ruling): in-enclave TLS ingress binds :443 (ACME
+# TLS-ALPN-01 + chat). The enclave is single-tenant (this container is the only workload), Oyster's
+# host networking forbids port mapping (no 8443→443 remap), and setcap cap_net_bind_service xattrs
+# do not survive the reproducible build/export reliably. Revisit if Marlin adds port mapping.
+USER root
 CMD ["node", "dist/main.js", "--config", "/app/config/agent.json", "--db", "/data/agent.db"]

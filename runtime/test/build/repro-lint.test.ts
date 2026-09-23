@@ -136,15 +136,21 @@ describe("Dockerfile: pinned base + determinism rules", () => {
     }
   });
 
-  it("runtime stage: COPY --from only, every RUN is --network=none, non-root USER, exact CMD", () => {
+  // SPEC-M3B §2 (rev 0 ruling) — INVERTED from s1's non-root assertion: the runtime runs as root so the
+  // in-enclave TLS ingress can bind :443 (single-tenant enclave; Oyster host networking forbids port
+  // mapping; setcap xattrs don't survive the reproducible build reliably). The USER line must be the
+  // explicit `USER root` WITH its rationale comment, so the choice stays visible and deliberate.
+  it("runtime stage: COPY --from only, every RUN is --network=none, explicit USER root (TLS :443), exact CMD", () => {
     const start = instrs.findIndex((i) => /^FROM\s.*\sAS\s+runtime$/i.test(i));
     const rt = instrs.slice(start + 1);
     for (const i of rt) {
       if (/^COPY\s/i.test(i)) expect(i, i).toMatch(/--from=(deps|build)\b/);
       if (/^RUN\s/i.test(i)) expect(i, i).toMatch(/^RUN --network=none\s/);
     }
+    const users = rt.filter((i) => /^USER\s/i.test(i));
+    expect(users).toEqual(["USER root"]);
     const userIdx = rt.findIndex((i) => /^USER\s/i.test(i));
-    expect(rt[userIdx]).toBe("USER node");
+    expect(dockerfile).toMatch(/# USER root — deliberate \(SPEC-M3B §2[\s\S]*binds :443[\s\S]*single-tenant[\s\S]*port mapping[\s\S]*setcap[\s\S]*\nUSER root\n/);
     const cmdIdx = rt.findIndex((i) => /^CMD\s/i.test(i));
     expect(cmdIdx).toBeGreaterThan(userIdx);
     expect(JSON.parse(rt[cmdIdx]!.replace(/^CMD\s+/, ""))).toEqual([
@@ -298,6 +304,29 @@ describe("build pipeline wiring", () => {
     expect(t.compilerOptions.rootDir).toBe("src");
     expect(t.compilerOptions.outDir).toBe("dist");
   });
+  it("ANS-104 cross-verification lib (@dha-team/arbundles) is DEV-only: never in dependencies, dev-flagged in the lockfile with its whole subtree, the runtime stage installs --omit=dev", () => {
+    const p = JSON.parse(read("package.json")) as { dependencies: Record<string, string>; devDependencies: Record<string, string> };
+    expect(Object.keys(p.dependencies).filter((d) => /arbundles|turbo-sdk|^arweave$/.test(d))).toEqual([]);
+    expect(p.devDependencies["@dha-team/arbundles"]).toMatch(/^\d+\.\d+\.\d+$/); // exact pin
+    const lock = JSON.parse(read("package-lock.json")) as { packages: Record<string, { dev?: boolean; devOptional?: boolean }> };
+    const arb = Object.entries(lock.packages).filter(([k]) => /(^|\/)node_modules\/(@dha-team\/arbundles|arweave|@ardrive\/turbo-sdk)$/.test(k));
+    expect(arb.length).toBeGreaterThan(0);
+    for (const [k, v] of arb) expect(v.dev === true, k).toBe(true);
+    for (const [k, v] of Object.entries(lock.packages)) if (k.includes("node_modules/@dha-team/arbundles/")) expect(v.dev === true, k).toBe(true);
+    // production node_modules come ONLY from the `deps` stage, whose npm ci omits dev dependencies
+    const stages = dockerfile.split(/\n(?=FROM )/);
+    const deps = stages.find((st) => /^FROM\s.*\sAS deps\b/m.test(st))!;
+    const runtime = stages.find((st) => /^FROM\s.*\sAS runtime\b/m.test(st))!;
+    const depsCi = instructions(deps).filter((i) => /\bnpm ci\b/.test(i));
+    expect(depsCi).toHaveLength(1);
+    expect(depsCi[0]).toMatch(/--omit=dev/);
+    expect(instructions(runtime).filter((i) => /\bnpm\b/.test(i))).toEqual([]);
+    const nmCopies = instructions(runtime).filter((i) => /^COPY\s/.test(i) && /node_modules/.test(i));
+    expect(nmCopies.length).toBeGreaterThan(0);
+    for (const c of nmCopies) expect(c).toMatch(/--from=deps\b/);
+    expect(dockerfile).not.toMatch(/arbundles/);
+  });
+
   it("package.json has the build script the Dockerfile runs", () => {
     const p = JSON.parse(read("package.json")) as { scripts: Record<string, string> };
     expect(p.scripts.build).toBe("tsc -p tsconfig.build.json");

@@ -1,6 +1,7 @@
 // SPEC-M2C §1 — chat server (03 §5, D9). node:http only; `handle(req)` is socket-free and
-// unit-testable, `listen()` wraps it in node:http. Plain HTTP: TLS terminates in-enclave from
-// M3 (docs/TLS-INGRESS.md). The server never trusts forwarded headers (no X-Forwarded-*, no
+// unit-testable, `listen()` wraps it in node:http — or, with `listen({ tls })` (SPEC-M3B §2), in the
+// server the TLS mode builds (src/tls/server.ts: https on :443, in-enclave ACME certs; this file
+// stays free of https/tls imports). The server never trusts forwarded headers (no X-Forwarded-*, no
 // client-IP logic) — `trustProxy` is fixed false in M2.
 //
 // Routes:
@@ -8,7 +9,10 @@
 //   POST /session      { message, signature } (SIWE)   → { token, exp }   | 401 { error, reason }
 //   POST /chat         header x-chat-token, { text }   → { reply } | refusal / error
 //   GET  /health       → { ok, tier }
-//   GET  /attestation  → 501 (M3)
+//   GET  /attestation  → { payload: { report, attestationRef, certSpkiSha256, certKind, domain,
+//                        timestamp }, signer, signature } via deps.attestation (SPEC-M3B §2), signed
+//                        by the treasury key (keyring.attestationSigner; verifier story in
+//                        attestation/attestation.ts); 501 when no provider is wired (no tee report, no TLS)
 //
 // POST /chat pipeline — ORDER IS NORMATIVE:
 //   0. token (HMAC recompute, exp)                                  401
@@ -30,6 +34,7 @@
 import http from "node:http";
 import { z } from "zod";
 import type { Address, Hex } from "viem";
+import { signAttestationResponse } from "../attestation/attestation.js";
 import { execute, type ExecDeps } from "../exec/execute.js";
 import { x402Nonce, type X402AuthInput } from "../keyring/keyring.js";
 import { estimateMaxCostUsd, withinMaxTokens } from "../llm/checks.js";
@@ -84,11 +89,46 @@ export interface ChatServerDeps {
   random?: RandomSource;
   /** Current tier for /health (default: tierOf(runwayDays(state))). */
   tier?: () => Tier | Promise<Tier>;
+  /** SPEC-M3B §2 GET /attestation payload (absent ⇒ 501). */
+  attestation?: () => Promise<AttestationPayload>;
+}
+
+/**
+ * SPEC-M3B §2 GET /attestation: the boot attestation report (canonical JSON string, exactly as
+ * published; null when not booted under a TEE) + sha256 of the SubjectPublicKeyInfo of the TLS cert
+ * currently served (null when TLS is off) — third parties can pin the cert to the enclave even if
+ * they distrust the CA path.
+ */
+export interface AttestationPayload {
+  report: string | null;
+  attestationRef: string | null;
+  certSpkiSha256: Hex | null;
+  certKind: "issued" | "placeholder" | null;
+  domain: string | null;
+}
+
+export type ChatRequestListener = (req: http.IncomingMessage, res: http.ServerResponse) => void;
+
+/** The server surface listen() needs (node:http.Server and node:https.Server both satisfy it). */
+export interface ChatListenServer {
+  listen(port: number, host: string, cb: () => void): unknown;
+  once(event: "error", fn: (e: Error) => void): unknown;
+  off(event: "error", fn: (e: Error) => void): unknown;
+  address(): unknown;
+  close(cb: () => void): unknown;
+  closeAllConnections(): void;
+}
+
+/** SPEC-M3B §2 TLS mode: builds the listening server (src/tls/server.ts tlsListenMode). */
+export interface TlsListenMode {
+  createServer(onRequest: ChatRequestListener): ChatListenServer;
 }
 
 export interface ListenOptions {
-  /** Default cfg.chatPort (8420). 0 = ephemeral. */
+  /** Default cfg.chatPort (8420), or TLS_DEFAULT_PORT (443) in tls mode. 0 = ephemeral. */
   port?: number;
+  /** SPEC-M3B §2: terminate TLS in-process (the server comes from this mode). Absent ⇒ plain HTTP. */
+  tls?: TlsListenMode;
   /** Default "127.0.0.1"; the enclave wiring passes its bind address explicitly. */
   host?: string;
 }
@@ -112,6 +152,8 @@ export const MAX_BODY_BYTES = 64 * 1024;
 export { PUBLIC_SUMMARY_KV_KEY };
 export const PUBLIC_SUMMARY_MAX_CHARS = 2000;
 export const TOKEN_HEADER = "x-chat-token";
+/** SPEC-M3B §2: default listen port in tls mode. */
+export const TLS_DEFAULT_PORT = 443;
 
 /** Platform chat guardrails (fixed, in the code hash — 03 §4/§5). */
 export const CHAT_GUARDRAIL_PROMPT = [
@@ -195,7 +237,8 @@ export function createChatServer(deps: ChatServerDeps): ChatServer {
   const domain = cfg.chatDomain;
   const sessionKey: Hex = deps.exec.keyring.chatSessionKey();
   const clock = (): UnixSeconds => deps.exec.clock();
-  const ex = memoryExecDeps(deps.exec, deps.db);
+  // Built per request (not once): deps.exec.cfg may be swapped by a signed-allowlist adoption (SPEC-M3B §4).
+  const execNow = (): ExecDeps => memoryExecDeps(deps.exec, deps.db);
   const nonces = createNonceStore({ ttlSec: cfg.chatNonceTtlSec, ...(deps.random !== undefined ? { random: deps.random } : {}) });
   const gate: DualGate = createDualGate(deps.readers, {
     agentBps: cfg.chatAgentGateBps,
@@ -293,7 +336,7 @@ export function createChatServer(deps: ChatServerDeps): ChatServer {
       validBefore: t + X402_VALIDITY_SEC,
       nonce: x402Nonce(actionHash(action)),
     };
-    const r = await execute(action, ex, { x402Auth: auth });
+    const r = await execute(action, execNow(), { x402Auth: auth });
     if (!r.verdict.allow) {
       return json(200, {
         reply: `I'd love to, but my policy engine says no: ${r.verdict.code}: ${r.verdict.detail}`,
@@ -341,7 +384,7 @@ export function createChatServer(deps: ChatServerDeps): ChatServer {
     const { system, messages } = buildChatPrompt(cfg, publicSummary, history, text);
     const estimateUsd = estimateMaxCostUsd(promptChars(system, messages, []), CHAT_MAX_TOKENS, ep.maxPricePerMTokUsd, cfg.maxPerCallUsd);
     const salt = inferenceSalt(clock(), wallet.toLowerCase(), rowId);
-    const r = await client.call({ endpointId: ep.id, category: "chat", estimateUsd, salt, system, messages, maxTokens: CHAT_MAX_TOKENS }, ex);
+    const r = await client.call({ endpointId: ep.id, category: "chat", estimateUsd, salt, system, messages, maxTokens: CHAT_MAX_TOKENS }, execNow());
     switch (r.kind) {
       case "ok":
         deps.endpoints.recordContractSuccess(ep.id);
@@ -377,6 +420,25 @@ export function createChatServer(deps: ChatServerDeps): ChatServer {
     }
   }
 
+  async function onAttestation(): Promise<ChatHttpResponse> {
+    const provider = deps.attestation;
+    if (provider === undefined) return json(501, { error: "not_implemented", detail: "no attestation report or TLS certificate configured" });
+    try {
+      const p = await provider();
+      const signed = await signAttestationResponse(deps.exec.keyring.attestationSigner(), {
+        report: p.report,
+        attestationRef: p.attestationRef,
+        certSpkiSha256: p.certSpkiSha256,
+        certKind: p.certKind,
+        domain: p.domain,
+        timestamp: clock(),
+      });
+      return json(200, { payload: signed.payload, signer: signed.signer, signature: signed.signature });
+    } catch (e) {
+      return json(503, { error: "attestation_unavailable", detail: errMsg(e) });
+    }
+  }
+
   async function handle(req: ChatHttpRequest): Promise<ChatHttpResponse> {
     try {
       const path = (req.path.split("?")[0] ?? "").replace(/\/+$/, "") || "/";
@@ -394,7 +456,7 @@ export function createChatServer(deps: ChatServerDeps): ChatServer {
         case "/health":
           return await onHealth();
         default:
-          return json(501, { error: "not_implemented", detail: "attestation endpoint arrives in M3" });
+          return await onAttestation();
       }
     } catch (e) {
       return json(500, { error: "internal", detail: errMsg(e) });
@@ -405,7 +467,7 @@ export function createChatServer(deps: ChatServerDeps): ChatServer {
   // node:http wrapper
   // -------------------------------------------------------------------------
 
-  let server: http.Server | undefined;
+  let server: ChatListenServer | undefined;
 
   function send(res: http.ServerResponse, r: ChatHttpResponse): void {
     const payload = JSON.stringify(r.body);
@@ -455,8 +517,8 @@ export function createChatServer(deps: ChatServerDeps): ChatServer {
     async listen(opts: ListenOptions = {}): Promise<{ host: string; port: number }> {
       if (server !== undefined) throw new Error("chat server: already listening");
       const host = opts.host ?? "127.0.0.1";
-      const port = opts.port ?? cfg.chatPort;
-      const srv = http.createServer(onRequest);
+      const port = opts.port ?? (opts.tls !== undefined ? TLS_DEFAULT_PORT : cfg.chatPort);
+      const srv: ChatListenServer = opts.tls !== undefined ? opts.tls.createServer(onRequest) : http.createServer(onRequest);
       await new Promise<void>((resolve, reject) => {
         srv.once("error", reject);
         srv.listen(port, host, () => {
@@ -466,7 +528,8 @@ export function createChatServer(deps: ChatServerDeps): ChatServer {
       });
       server = srv;
       const addr = srv.address();
-      return { host, port: typeof addr === "object" && addr !== null ? addr.port : port };
+      const bound = typeof addr === "object" && addr !== null && "port" in addr && typeof addr.port === "number" ? addr.port : port;
+      return { host, port: bound };
     },
 
     async close(): Promise<void> {

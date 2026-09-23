@@ -25,7 +25,7 @@ import {
 import { mkdirSync } from "node:fs";
 import { SETTLE_TX, x402Server } from "../llm/x402Server.js";
 import type { BalanceReader, Holdings } from "../../src/chat/gate.js";
-import { configHash, frozenConfigHash, loadSplitConfig, resolveConfig } from "../../src/config/schema.js";
+import { adoptsAllowlistUpdates, configHash, frozenConfigHash, loadSplitConfig, resolveConfig } from "../../src/config/schema.js";
 import { frozenHashOfFile, parseArgs, printConfigHashTarget } from "../../src/main.js";
 import { MockChainClient, type ReadContractRequest } from "../../src/exec/chain.js";
 import { createKeyring } from "../../src/keyring/keyring.js";
@@ -898,16 +898,42 @@ describe("SPEC-M3 §3b loadSplitConfig: frozen agent.json + ops runtime.json", (
     }
   });
 
-  it("allowlistUpdatePubkey (04 §4 signer) is a FROZEN field: accepted in platform, covered by the hash", () => {
+  it("allowlistUpdateSigner (04 §4 signer, an address; renamed from allowlistUpdatePubkey) is a FROZEN field: accepted in platform, covered by the hash", () => {
     const dir = tmp();
     const { agentPath, runtimePath } = splitFiles(dir, {
-      mutateAgent: (j) => (j.platform["allowlistUpdatePubkey"] = "0xa11ce00000000000000000000000000000000a11"),
+      mutateAgent: (j) => (j.platform["allowlistUpdateSigner"] = "0xa11ce00000000000000000000000000000000a11"),
     });
     const c = loadSplitConfig({ agentPath, runtimePath });
-    expect(c.frozen.platform.allowlistUpdatePubkey).toBe("0xa11ce00000000000000000000000000000000a11");
+    expect(c.frozen.platform.allowlistUpdateSigner).toBe("0xa11ce00000000000000000000000000000000a11");
     expect(c.frozenHash).not.toBe(FROZEN_HASH);
-    const bad = splitFiles(tmp(), { mutateAgent: (j) => (j.platform["allowlistUpdatePubkey"] = "0x1234") });
+    const bad = splitFiles(tmp(), { mutateAgent: (j) => (j.platform["allowlistUpdateSigner"] = "0x1234") });
     expect(() => loadSplitConfig(bad)).toThrow();
+  });
+
+  it("SPEC-M3B §4: agent.adoptAllowlistUpdates is FROZEN (hash-covered); absent keeps the golden hash and reads as opted in", () => {
+    const dir = tmp();
+    const base = loadSplitConfig({ agentPath: FIXTURE_AGENT, runtimePath: FIXTURE_RUNTIME });
+    expect(base.frozenHash).toBe(FROZEN_HASH);
+    expect(base.frozen.agent.adoptAllowlistUpdates).toBeUndefined();
+    expect(adoptsAllowlistUpdates(base.frozen.agent)).toBe(true);
+    const off = splitFiles(dir, { mutateAgent: (j) => (j.agent["adoptAllowlistUpdates"] = false) });
+    const c = loadSplitConfig(off);
+    expect(adoptsAllowlistUpdates(c.frozen.agent)).toBe(false);
+    expect(c.frozenHash).not.toBe(FROZEN_HASH);
+    const on = splitFiles(tmp(), { mutateAgent: (j) => (j.agent["adoptAllowlistUpdates"] = true) });
+    expect(loadSplitConfig(on).frozenHash).not.toBe(FROZEN_HASH); // explicit true is a different frozen file
+    const bad = splitFiles(tmp(), { mutateAgent: (j) => (j.agent["adoptAllowlistUpdates"] = "yes") });
+    expect(() => loadSplitConfig(bad)).toThrow();
+  });
+
+  it("runtime.allowlistUpdateUrl is an OPS field (unattested; the signature is the only trust)", () => {
+    const dir = tmp();
+    const { agentPath, runtimePath } = splitFiles(dir, { runtime: { allowlistUpdateUrl: "https://platform.example/allowlist.json", allowlistUpdateIntervalSec: 3600 } });
+    const c = loadSplitConfig({ agentPath, runtimePath });
+    expect(c.ops.allowlistUpdateUrl).toBe("https://platform.example/allowlist.json");
+    expect(c.frozenHash).toBe(FROZEN_HASH);
+    const smuggled = splitFiles(tmp(), { runtime: { allowlistUpdateSigner: "0xa11ce00000000000000000000000000000000a11" } });
+    expect(() => loadSplitConfig(smuggled)).toThrow(); // the signer can never come from runtime.json
   });
 
   it("expectedHash is checked against frozenHash, before validation", () => {

@@ -13,6 +13,8 @@
 
 Independent of ACME, the runtime serves `GET /attestation` returning the Nitro attestation document with the TLS cert's SPKI hash in user data. Third-party frontends (03 §5 says the endpoint is public) can verify they're talking to the pinned code hash even if they distrust the CA path. Cheap to implement; do it regardless.
 
+> As built (M3 s2 close): the response is `{ payload: { report, attestationRef, certSpkiSha256, certKind, domain, timestamp }, signer, signature }`, signed by the TREASURY key over `keccak256("launchpad-attestation-v1" ‖ canonicalEncode(payload))` (EIP-191). Verifiers recover the signer, require it to equal `registry.instanceOf(agentId).treasuryEOA` and `certSpkiSha256` to equal the cert they were served — a MITM proxy cannot forge either. Verifier steps + helper: `src/attestation/attestation.ts` (`verifyAttestationResponse`).
+
 ## Rejected
 
 - Platform-terminated TLS/reverse proxy: platform could read chats — violates the trust model.

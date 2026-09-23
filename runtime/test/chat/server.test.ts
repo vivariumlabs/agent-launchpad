@@ -30,9 +30,20 @@ describe("routes", () => {
     expect(r).toMatchObject({ status: 200, body: { ok: true, tier: "Active" } });
   });
 
-  it("GET /attestation → 501 stub (M3)", async () => {
+  it("GET /attestation → 501 when no provider is wired (no tee report, no TLS)", async () => {
     const h = await makeChatHarness();
     expect((await h.get("/attestation")).status).toBe(501);
+  });
+
+  it("GET /attestation (SPEC-M3B §2) → 200 provider payload; provider failure → 503; POST → 405", async () => {
+    const payload = { report: '{"kind":"agent-launchpad.attestation-report"}', attestationRef: "tx1", certSpkiSha256: `0x${"ab".repeat(32)}` as const, certKind: "issued" as const, domain: "a1.agents.example.test" };
+    const h = await makeChatHarness({ attestation: async () => payload });
+    const r = await h.get("/attestation");
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ payload: { ...payload, timestamp: NOW.toString(10) }, signer: h.kr.addresses().treasury, signature: expect.stringMatching(/^0x[0-9a-f]{130}$/) });
+    expect((await h.post("/attestation", {})).status).toBe(405);
+    const bad = await makeChatHarness({ attestation: async () => Promise.reject(new Error("tls store gone")) });
+    expect(await bad.get("/attestation")).toEqual({ status: 503, body: { error: "attestation_unavailable", detail: "tls store gone" } });
   });
 
   it("unknown path → 404; wrong method → 405 with allow; query string ignored; trailing slash tolerated", async () => {

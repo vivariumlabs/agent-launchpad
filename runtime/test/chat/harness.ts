@@ -122,6 +122,8 @@ export class ManualTimer implements GateTimer {
 // ---------------------------------------------------------------------------
 
 export interface ChatHarnessOpts {
+  /** SPEC-M3B §2 GET /attestation provider. */
+  attestation?: ChatServerDeps["attestation"];
   ledger?: BudgetLedger;
   state?: WalletState;
   caps?: Record<string, unknown>;
@@ -239,6 +241,7 @@ export async function makeChatHarness(opts: ChatHarnessOpts = {}): Promise<ChatH
   const deps: ChatServerDeps = { exec, db, llm, x402, endpoints, readers: [readerA, readerB], tier: undefined };
   if (opts.x402Http !== undefined) deps.paidInference = new X402HttpInference({ http: opts.x402Http, exec, endpoints });
   if (opts.realTimer !== true) deps.timer = timer;
+  if (opts.attestation !== undefined) deps.attestation = opts.attestation;
   const server = createChatServer(deps);
 
   const h: ChatHarness = {

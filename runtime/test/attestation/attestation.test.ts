@@ -10,8 +10,6 @@ import {
   buildReport,
   fetchAttestation,
   LocalDirSink,
-  NotFundedError,
-  TurboArweaveSink,
   type BuildReportInput,
 } from "../../src/attestation/attestation.js";
 import { NonLocalUrlError } from "../../src/keyring/nautilusKms.js";
@@ -108,10 +106,5 @@ describe("AttestationSink", () => {
     expect(readdirSync(dir)).toEqual([ref]);
     expect(readFileSync(join(dir, ref), "utf8")).toBe(GOLDEN);
   });
-  it("TurboArweaveSink skeleton ⇒ NotFundedError with a clear message", async () => {
-    const sink = new TurboArweaveSink({ address: "0x6930FD5C95a2D9d80F3d165597d55843e8A00154", sign: async (d) => d });
-    const p = sink.upload(GOLDEN, 1n);
-    await expect(p).rejects.toBeInstanceOf(NotFundedError);
-    await expect(sink.upload(GOLDEN, 1n)).rejects.toThrow(/NotFunded: .*not wired yet \(SPEC-M3 s2\).*0x6930FD5C95a2D9d80F3d165597d55843e8A00154/);
-  });
+  // The s1 TurboArweaveSink skeleton (always NotFunded) is replaced by src/attestation/turbo.ts (SPEC-M3B §3; test/attestation/turbo.test.ts).
 });

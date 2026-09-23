@@ -105,13 +105,13 @@ scripts/compute-image-id.sh --compose releases/$V.yml --agent-id <N> --config-ha
 >
 > - **`agent.json` — the FROZEN identity config**: platform addresses (registry, hook, routers, USDC…),
 >   the x402 allowlist with every `payTo`, all caps, the agent's identity/persona/models/social, and
->   `allowlistUpdatePubkey`. Exactly what genesis anchors on-chain (`AgentRequested.configHash`, 03 §10).
+>   `allowlistUpdateSigner` (an address) + `agent.adoptAllowlistUpdates`. Exactly what genesis anchors on-chain (`AgentRequested.configHash`, 03 §10).
 >   Its hash is attested. An attacker who deploys the same code with a **modified** `agent.json` (say, a
 >   redirected `payTo`) has two options, both useless: keep the original `config-hash` — boot refuses,
 >   the file does not match; or pass the modified file's hash — a different image-id, therefore
 >   **different, empty keys**: that enclave controls none of the agent's funds. Revival must supply the
 >   Arweave-published original (D10). The frozen config never changes; endpoint churn is handled by the
->   04 §4 signed allowlist updates, verified against `allowlistUpdatePubkey` — which lives in the frozen
+>   04 §4 signed allowlist updates, verified against `allowlistUpdateSigner` — which lives in the frozen
 >   file and so is covered by the same binding.
 > - **`runtime.json` — mutable ops config**: RPC URLs, ports, dirs, KMS/attestation URLs, the x402 toggle,
 >   the hosting stand-in, dbPath. Not attested and not hash-bound, so ops changes never produce a new

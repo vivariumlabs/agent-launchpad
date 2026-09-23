@@ -56,7 +56,7 @@ export function candidateEndpoints(cfg: EndpointConfig): X402AllowlistEntry[] {
 }
 
 export class EndpointManager {
-  private readonly cfg: EndpointConfig;
+  private cfg: EndpointConfig;
   private readonly records = new Map<string, EndpointRecord>();
   readonly contractFailures = new ConsecutiveFailureCounter();
   private lastCanaryDay: bigint | null = null;
@@ -66,6 +66,26 @@ export class EndpointManager {
     for (const e of candidateEndpoints(cfg)) {
       this.records.set(e.id, { health: { status: "healthy" }, lastFailedAt: null, canary: [] });
     }
+  }
+
+  /**
+   * SPEC-M3B §4 reload seam (signed allowlist adoption): swap the config; endpoints that survive keep
+   * their health/canary/failure state, new ones start healthy, removed ones are dropped (a removed id is
+   * then "unknown" — never selected again).
+   */
+  reload(cfg: EndpointConfig): void {
+    const next = candidateEndpoints(cfg);
+    const keep = new Set(next.map((e) => e.id));
+    for (const id of [...this.records.keys()]) {
+      if (!keep.has(id)) {
+        this.records.delete(id);
+        this.contractFailures.reset(id);
+      }
+    }
+    for (const e of next) {
+      if (!this.records.has(e.id)) this.records.set(e.id, { health: { status: "healthy" }, lastFailedAt: null, canary: [] });
+    }
+    this.cfg = cfg;
   }
 
   candidates(): X402AllowlistEntry[] {

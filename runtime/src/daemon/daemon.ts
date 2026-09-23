@@ -3,6 +3,14 @@
 // tick(deps, now): NO LLM. Pure decision logic + execute() calls, in this order:
 //   1 rental  2 gas  3 inferenceRefill  4 distribute  5 convert  6 allowance
 //   7 heartbeat  8 snapshot  9 tier recompute (+ transition announcements)
+//   10 tlsRenewal (SPEC-M3B §2; ONLY when deps.tlsRenewal is wired, i.e. runtime.tls.enabled):
+//      renew the in-enclave ACME cert when < 30 d remain. Not a spend ⇒ no policy action; runs in
+//      every tier (the chat ingress outlives treasury tiers).
+//   11 allowlistUpdate (SPEC-M3B §4; ONLY when deps.allowlistUpdate is wired, i.e. the agent opted in
+//      at genesis AND an update URL + frozen signer exist): once per interval (DEFAULT daily) fetch the
+//      platform-signed allowlist and adopt it iff every §4 gate passes (src/llm/allowlistUpdate.ts).
+//      Not a spend ⇒ no policy action for the fetch; the adoption journal goes through execute() (J1).
+//      Runs in every tier (endpoint churn matters most when the agent needs to wake).
 // Every chain-touching step goes through execute() / treasurySwapExactIn() —
 // never the raw ChainClient — so the policy engine re-checks every amount the
 // daemon computes. execute() logs every ExecResult (allow AND deny) via
@@ -52,6 +60,25 @@ export interface DaemonDeps extends ExecDeps {
   memory: MemoryDb;
   snapshotSink: SnapshotSink;
   tierStore: TierStore;
+  /** SPEC-M3B §2 step 10 hook (src/tls/server.ts TlsManager). Absent ⇒ no step 10. */
+  tlsRenewal?: TlsRenewalHook;
+  /** SPEC-M3B §4 step 11 hook (boot wires it only when the agent opted in). Absent ⇒ no step 11. */
+  allowlistUpdate?: AllowlistUpdateHook;
+}
+
+/**
+ * SPEC-M3B §4 step 11: due check + one check. run() resolves to `skip` (routine: nothing newer) or ran
+ * (adopted; results = the adoption journal ExecResult); it THROWS on a rejected/failed update.
+ */
+export interface AllowlistUpdateHook {
+  due(now: UnixSeconds): boolean;
+  run(now: UnixSeconds): Promise<{ skip?: string; notes: string[]; results: ExecResult[] }>;
+}
+
+/** SPEC-M3B §2: the tlsRenewalDue hook — due check + one renewal (resolves to a note; throws on failure). */
+export interface TlsRenewalHook {
+  renewalDue(now: UnixSeconds): boolean;
+  renew(): Promise<string>;
 }
 
 export type StepName =
@@ -63,7 +90,9 @@ export type StepName =
   | "allowance"
   | "heartbeat"
   | "snapshot"
-  | "tier";
+  | "tier"
+  | "tlsRenewal"
+  | "allowlistUpdate";
 
 export type StepReport =
   | { step: StepName; status: "skipped"; reason: string }
@@ -519,6 +548,30 @@ export async function tick(deps: DaemonDeps, now: UnixSeconds): Promise<TickRepo
       return r.skip;
     }),
   );
+
+  const tlsHook = deps.tlsRenewal;
+  if (tlsHook !== undefined) {
+    steps.push(
+      await runStep("tlsRenewal", async (ctx) => {
+        if (!tlsHook.renewalDue(now)) return "certificate valid for ≥ 30 days";
+        ctx.notes.push(await tlsHook.renew());
+        return undefined;
+      }),
+    );
+  }
+
+  const alHook = deps.allowlistUpdate;
+  if (alHook !== undefined) {
+    steps.push(
+      await runStep("allowlistUpdate", async (ctx) => {
+        if (!alHook.due(now)) return "allowlist update checked within the interval";
+        const out = await alHook.run(now);
+        ctx.results.push(...out.results);
+        ctx.notes.push(...out.notes);
+        return out.skip;
+      }),
+    );
+  }
 
   const report: TickReport = {
     now,

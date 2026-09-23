@@ -39,6 +39,39 @@ export const agentRegistryAbi = [
     inputs: [{ name: "agentId", type: "uint256" }],
     outputs: [{ name: "", type: "bool" }],
   },
+  // contracts/src/AgentRegistry.sol:128
+  //   function instanceOf(uint256 agentId) external view returns (AgentInstance memory)
+  // contracts/src/interfaces/ILaunchpad.sol:11-18
+  //   struct AgentInstance { address treasuryEOA; address actionEOA; bytes32 codeHash;
+  //                          string attestationRef; uint64 lastHeartbeat; uint32 generation; }
+  {
+    type: "function",
+    name: "instanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "agentId", type: "uint256" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "treasuryEOA", type: "address" },
+          { name: "actionEOA", type: "address" },
+          { name: "codeHash", type: "bytes32" },
+          { name: "attestationRef", type: "string" },
+          { name: "lastHeartbeat", type: "uint64" },
+          { name: "generation", type: "uint32" },
+        ],
+      },
+    ],
+  },
+  // contracts/src/AgentRegistry.sol:13  uint64 public constant REVIVAL_WINDOW = 7 days;
+  {
+    type: "function",
+    name: "REVIVAL_WINDOW",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint64" }],
+  },
 ] as const;
 
 // ---------------------------------------------------------------------------

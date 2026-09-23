@@ -26,7 +26,7 @@
 #     MODIFIED agent.json either fails boot (file ≠ attested hash) or, with a matching modified hash,
 #     is a different image-id ⇒ different, EMPTY keys ⇒ it controls none of the agent's funds.
 #     Revival must supply the Arweave-published original (D10). Allowlist evolution = the 04 §4
-#     signed-update path, verified against platform.allowlistUpdatePubkey (itself in the frozen file).
+#     signed-update path, verified against platform.allowlistUpdateSigner (itself in the frozen file).
 #   - the hash, not the file, is attested: canonical (key order / whitespace free), 66 bytes, and the
 #     image-id is recomputable by anyone from the on-chain configHash + agentId + this compose.
 #   - runtime.json (RPC urls, ports, dirs, kmsUrl, x402 toggle, hosting…) is NOT attested and NOT
@@ -40,8 +40,9 @@
 # runtime.json must NEVER contain secrets — no API-keyed RPC URLs, no tokens, no private keys.
 # ============================================================================================
 #
-# Ports (network_mode host ⇒ no port publishing; listed for operators): chat server
-# (cfg.runtime.chatPort; :443 once TLS ingress lands in M3 s2), Oyster attestation server :1300
+# Ports (network_mode host ⇒ no port publishing; listed for operators): chat server — plain HTTP
+# on caps.chatPort, or with runtime.tls.enabled in-enclave TLS on :443 (SPEC-M3B §2; the image runs
+# as root for this — see Dockerfile), Oyster attestation server :1300
 # and Nautilus derive server 127.0.0.1:1100 are provided by the base enclave image.
 services:
   agent:

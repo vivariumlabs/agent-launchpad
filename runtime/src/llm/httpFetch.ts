@@ -16,7 +16,8 @@ export interface FetchHttpClientOptions {
   maxBodyBytes?: number;
 }
 
-async function readCapped(res: Response, cap: number): Promise<string> {
+/** Reads a response body, rejecting once it exceeds `cap` bytes (also used by llm/allowlistFetch.ts). */
+export async function readCapped(res: Response, cap: number): Promise<string> {
   const body = res.body;
   if (body === null) return "";
   const reader = body.getReader();

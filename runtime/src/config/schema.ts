@@ -81,7 +81,18 @@ export const AgentConfigSchema = z.object({
     postsPerDay: z.number().int().nonnegative(),
     repliesPerDay: z.number().int().nonnegative(),
   }),
+  /**
+   * SPEC-M3B §4 (ADDITIVE, Job M): adopt newer platform-signed allowlists (04 §4 opt-in, chosen by the
+   * creator at genesis ⇒ FROZEN). DEFAULT true — optional so an absent field (every pre-M3B agent.json)
+   * keeps its frozen hash; read it ONLY through adoptsAllowlistUpdates(). false ⇒ never fetches.
+   */
+  adoptAllowlistUpdates: z.boolean().optional(),
 });
+
+/** SPEC-M3B §4: DEFAULT true (absent ⇒ opted in); only an explicit `false` opts out. */
+export function adoptsAllowlistUpdates(agent: Pick<AgentConfig, "adoptAllowlistUpdates">): boolean {
+  return agent.adoptAllowlistUpdates !== false;
+}
 
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
 
@@ -261,11 +272,22 @@ export const PlatformConfigSchema = z.object({
   platformTokenAddress: addressSchema.optional(),
   // ---- SPEC-M3 §3b (ADDITIVE, rev 1) ----
   /**
-   * Platform signer for 04 §4 signed allowlist updates (opt-in adoption; verifier not built yet).
-   * Lives in the FROZEN config, so it is covered by the attested config-hash binding. Typed as the
-   * signer's EVM address (secp256k1; verification = signature recovery, as everywhere else in the stack).
+   * Platform signer for 04 §4 signed allowlist updates (SPEC-M3B §4; renamed from allowlistUpdatePubkey —
+   * it is an ADDRESS). Lives in the FROZEN config, so it is covered by the attested config-hash binding.
+   * Verification = EIP-191 personal_sign recovery (viem recoverMessageAddress) over canonicalEncode(payload)
+   * — src/llm/allowlistUpdate.ts. Absent ⇒ no update can ever be adopted.
    */
-  allowlistUpdatePubkey: addressSchema.optional(),
+  allowlistUpdateSigner: addressSchema.optional(),
+  // ---- SPEC-M3B §2 (ADDITIVE, Job L) ----
+  /**
+   * DNS root of agent chat endpoints: the agent serves TLS as `a<agentId>.<agentDnsRoot>` (in-enclave
+   * ACME). FROZEN — the domain an agent answers on is spend-adjacent identity (holders sign SIWE to it).
+   * Required when runtime.tls.enabled; otherwise unused.
+   */
+  agentDnsRoot: z
+    .string()
+    .regex(/^(?=.{1,240}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/, "must be a lowercase hostname")
+    .optional(),
 });
 
 export type PlatformConfig = z.infer<typeof PlatformConfigSchema>;
@@ -308,7 +330,7 @@ export function configHash(json: unknown): Hex {
 // ---------------------------------------------------------------------------
 //
 // agent.json = { platform, agent } — everything money/authority-bearing: addresses, x402 allowlist,
-// caps, agent identity/persona/models/social, allowlistUpdatePubkey. Its frozenHash =
+// caps, agent identity/persona/models/social/adoptAllowlistUpdates, allowlistUpdateSigner. Its frozenHash =
 // keccak256(canonicalEncode(file JSON)) is passed as the ATTESTED Oyster init param `config-hash`, so
 // the KMS keys bind to (codeHash, agentId, configHash); boot refuses when the file hashes differently.
 // runtime.json = the ops section (RPC urls, ports, dirs, KMS/attestation urls, x402 toggle, hosting
@@ -365,6 +387,50 @@ export const RuntimeOpsConfigSchema = z
      * allowInsecureHttp: permit http:// endpoint URLs (local testing ONLY; DEFAULT false).
      */
     x402: z.object({ enabled: z.boolean(), allowInsecureHttp: z.boolean().optional() }).strict().default({ enabled: false }),
+    // ---- SPEC-M3B §2 (ADDITIVE, Job L) ----
+    /**
+     * In-enclave TLS ingress (DEFAULT disabled ⇒ plain-HTTP chat as before). enabled ⇒ chat listens
+     * with TLS on `port` (DEFAULT 443; host DEFAULT "0.0.0.0" unless chatHost is set), serving
+     * a<agentId>.<platform.agentDnsRoot> via ACME TLS-ALPN-01 against acmeDirectoryUrl (DEFAULT
+     * Let's Encrypt production); certs under `dir` (DEFAULT <dir of dbPath>/tls ⇒ /data/tls).
+     */
+    tls: z
+      .object({
+        enabled: z.boolean().default(false),
+        acmeDirectoryUrl: z.string().url().optional(),
+        port: z.number().int().min(0).max(65_535).optional(),
+        dir: z.string().min(1).optional(),
+        /** Seconds between failed first-issuance attempts (DEFAULT 300). */
+        retrySec: z.number().int().positive().optional(),
+      })
+      .strict()
+      .default({ enabled: false }),
+    // ---- SPEC-M3B §3 (ADDITIVE, Job L) ----
+    /**
+     * Turbo/Arweave publishing (DEFAULT disabled ⇒ LocalDirSink only). enabled ⇒ TurboArweaveSink for
+     * BOTH attestation reports and snapshots; localMirror (DEFAULT true) keeps the LocalDirSink copies.
+     */
+    arweave: z
+      .object({
+        enabled: z.boolean().default(false),
+        localMirror: z.boolean().default(true),
+        /** DEFAULT https://upload.ardrive.io/v1/tx (attestation/turboHttp.ts). */
+        uploadUrl: z.string().url().optional(),
+        /** Turbo payment service (balance / price reads). DEFAULT https://payment.ardrive.io/v1. */
+        paymentUrl: z.string().url().optional(),
+        /** Arweave gateway (GraphQL list + data reads). DEFAULT https://arweave.net. */
+        gatewayUrl: z.string().url().optional(),
+      })
+      .strict()
+      .default({ enabled: false, localMirror: true }),
+    // ---- SPEC-M3B §4 (ADDITIVE, Job M) ----
+    /**
+     * Where the daemon fetches the platform-signed allowlist update (https; transport UNTRUSTED — only
+     * the signature by the FROZEN platform.allowlistUpdateSigner counts). Unset ⇒ no update checks.
+     */
+    allowlistUpdateUrl: z.string().url().optional(),
+    /** Seconds between update checks (daemon step 11; DEFAULT 86 400 = once per day). */
+    allowlistUpdateIntervalSec: z.number().int().positive().optional(),
   })
   .strict()
   .default({});
