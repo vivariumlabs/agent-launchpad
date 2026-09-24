@@ -23,7 +23,9 @@
 //       tx_hash / error); ledger store → loadLedger on boot (else emptyLedger), saveLedger on
 //       EVERY set (budget consumption is persisted before any side effect); clock; chain
 //       (override, else RealChainClient when runtime.rpc urls are configured, else
-//       MockChainClient); getState from ChainClient reads.
+//       MockChainClient); getState from ChainClient reads — SPEC-M3C §4: NEVER throws; per-chain
+//       degradation (cached-else-zero balances, LOUD warning, WalletState.staleChains ⇒ the engine's
+//       G5 gate denies STATE_STALE for spends touching a stale chain).
 //   (5) EndpointManager; paid inference: runtime.x402.enabled ⇒ X402HttpInference over
 //       FetchHttpClient (or overrides.http / overrides.paidInference) handed to pulse + chat, else
 //       the overrides.x402 + overrides.llm mocks; chat server (createChatServer, enabled iff cfg.chatDomain is set;
@@ -53,7 +55,7 @@
 //       every component, before start() arms the schedulers) read registry.instanceOf(agentId); unregistered
 //       OR stale (now − lastHeartbeat > the contract's REVIVAL_WINDOW: a REVIVED instance ⇒ generation++ and
 //       the new attestationRef) ⇒ execute({kind:"registerInstance"}) through the normal deps (engine T1 →
-//       keyring K2). Registered + fresh ⇒ skip (logged). Read or send failure ⇒ LOUD warning and boot continues (heartbeats keep failing
+//       keyring K2). Registered + fresh ⇒ skip (logged). Read or send failure (incl. a THROWING execute, SPEC-M3C §5) ⇒ LOUD warning and boot continues (heartbeats keep failing
 //       visibly; the genesis orchestrator watches registration and owns retry/timeout).
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -529,13 +531,55 @@ function asBigint(v: unknown, what: string): bigint {
   return v;
 }
 
+type ChainBalances = WalletBalances[Chain];
+
+/** SPEC-M3C §4: one chain's slice of a WalletState (treasury + action balances on that chain). */
+interface ChainSlice {
+  treasury: ChainBalances;
+  action: ChainBalances;
+}
+
+function cloneBalances(b: ChainBalances): ChainBalances {
+  return {
+    native: b.native,
+    ...(b.USDG !== undefined ? { USDG: b.USDG } : {}),
+    ...(b.USDC !== undefined ? { USDC: b.USDC } : {}),
+    ...(b.tokens !== undefined ? { tokens: { ...b.tokens } } : {}),
+  };
+}
+
+function cloneSlice(s: ChainSlice): ChainSlice {
+  return { treasury: cloneBalances(s.treasury), action: cloneBalances(s.action) };
+}
+
+export interface ChainStateReaderOptions {
+  /** LOUD per-chain degradation warnings (DEFAULT console). */
+  logger?: BootLogger;
+  /** Cache-age source for the warning (DEFAULT systemClock). */
+  clock?: Clock;
+}
+
 /**
- * WalletState from ChainClient reads (M2: mock-backed). Treasury: native + USDC on every
- * chain, USDG + agent token on rh. Action EOA: rh only (native, USDG, agent token).
+ * WalletState from ChainClient reads. Treasury: native + USDC on every chain, USDG + agent token on
+ * rh. Action EOA: rh only (native, USDG, agent token); other chains are 0 (never read).
  * Native balances need a ChainClient implementing NativeBalanceSource; otherwise 0.
  * Hosting (Oyster) comes from the runtime.hosting config stand-in.
+ *
+ * SPEC-M3C §4 — NEVER throws. Reads are grouped per chain; ALL of a chain's reads share ONE
+ * try/catch, so a chain is fresh only if every read on it succeeded (no half-fresh chains). Each
+ * success refreshes this reader's in-memory per-chain cache. A failed chain is LOUDLY warned, served
+ * from the cache (else zeros) and listed in `staleChains` — cached values STILL mark it stale (the
+ * engine's G5 gate keeps spends touching it closed; the cache only keeps runway/tier from cratering
+ * spuriously). `staleChains` is present ONLY when non-empty. Recovery is automatic on the next read.
  */
-export function chainStateReader(chain: ChainClient, cfg: ResolvedConfig, hosting: RuntimeSection["hosting"]): StateReader {
+export function chainStateReader(
+  chain: ChainClient,
+  cfg: ResolvedConfig,
+  hosting: RuntimeSection["hosting"],
+  opts: ChainStateReaderOptions = {},
+): StateReader {
+  const logger = opts.logger ?? consoleLogger;
+  const clock = opts.clock ?? systemClock;
   const native = async (c: Chain, a: Address): Promise<bigint> => (hasNativeBalance(chain) ? chain.getBalance(c, a) : 0n);
   const erc20 = async (c: Chain, token: Address, owner: Address): Promise<bigint> =>
     asBigint(await chain.readContract(c, { address: token, abi: erc20Abi, functionName: "balanceOf", args: [owner] }), `balanceOf(${token})@${c}`);
@@ -544,29 +588,66 @@ export function chainStateReader(chain: ChainClient, cfg: ResolvedConfig, hostin
     if (t === undefined) return undefined;
     return { [t]: await erc20("rh", t, owner) };
   };
+
+  /** All of chain c's reads, in the original order; throws on the first failed read. */
+  const readChain = async (c: Chain): Promise<ChainSlice> => {
+    const treasury: ChainBalances = { native: await native(c, cfg.treasury), USDC: await erc20(c, cfg.usdc[c], cfg.treasury) };
+    if (c !== "rh") return { treasury, action: { native: 0n } };
+    treasury.USDG = await erc20("rh", cfg.usdg.rh, cfg.treasury);
+    const tt = await tokens(cfg.treasury);
+    if (tt !== undefined) treasury.tokens = tt;
+    const action: ChainBalances = { native: await native("rh", cfg.action), USDG: await erc20("rh", cfg.usdg.rh, cfg.action) };
+    const at = await tokens(cfg.action);
+    if (at !== undefined) action.tokens = at;
+    return { treasury, action };
+  };
+
+  /** Same shape as a successful read of c, every balance 0. */
+  const zeroSlice = (c: Chain): ChainSlice => {
+    const t = cfg.agentTokenAddress;
+    if (c !== "rh") return { treasury: { native: 0n, USDC: 0n }, action: { native: 0n } };
+    return {
+      treasury: { native: 0n, USDC: 0n, USDG: 0n, ...(t !== undefined ? { tokens: { [t]: 0n } } : {}) },
+      action: { native: 0n, USDG: 0n, ...(t !== undefined ? { tokens: { [t]: 0n } } : {}) },
+    };
+  };
+
+  const cache = new Map<Chain, { slice: ChainSlice; at: UnixSeconds }>();
+
   return async (): Promise<WalletState> => {
     const treasury = {} as WalletBalances;
+    const action = {} as WalletBalances;
+    const staleChains: Chain[] = [];
     for (const c of CHAINS) {
-      treasury[c] = { native: await native(c, cfg.treasury), USDC: await erc20(c, cfg.usdc[c], cfg.treasury) };
+      let slice: ChainSlice;
+      try {
+        slice = await readChain(c);
+        cache.set(c, { slice: cloneSlice(slice), at: clock() });
+      } catch (e) {
+        const cached = cache.get(c);
+        let using: string;
+        if (cached !== undefined) {
+          const now = clock();
+          const age = now > cached.at ? now - cached.at : 0n;
+          using = `cached values (age ${age.toString(10)}s)`;
+          slice = cloneSlice(cached.slice);
+        } else {
+          using = "zeros";
+          slice = zeroSlice(c);
+        }
+        logger.warn(`!!! getState: ${c} reads FAILED (${errMsg(e)}) — using ${using}; spends touching ${c} deny STATE_STALE !!!`);
+        staleChains.push(c);
+      }
+      treasury[c] = slice.treasury;
+      action[c] = slice.action;
     }
-    treasury.rh.USDG = await erc20("rh", cfg.usdg.rh, cfg.treasury);
-    const tt = await tokens(cfg.treasury);
-    if (tt !== undefined) treasury.rh.tokens = tt;
-
-    const action: WalletBalances = {
-      rh: { native: await native("rh", cfg.action), USDG: await erc20("rh", cfg.usdg.rh, cfg.action) },
-      base: { native: 0n },
-      arbitrum: { native: 0n },
-      optimism: { native: 0n },
-    };
-    const at = await tokens(cfg.action);
-    if (at !== undefined) action.rh.tokens = at;
 
     return {
       treasury,
       action,
       hostingPaidUntil: hosting?.paidUntil ?? 0n,
       hostingRatePerDay: hosting?.ratePerDay ?? 0n,
+      ...(staleChains.length > 0 ? { staleChains } : {}),
     };
   };
 }
@@ -773,7 +854,7 @@ function parseInstance(v: unknown): RegistryInstance {
  * assumed — and the comparison is the contract's own (strictly greater). A stale record whose pinned
  * (treasury, action, codeHash) differ from ours would revert MismatchedRevivalKeys ⇒ LOUD warning, nothing
  * sent. Registration goes through the normal deps (engine T1 → keyring K2 rebuilds the tx from its attached
- * cfg). Never throws: a failed read or send is a LOUD warning and boot continues (heartbeats will keep
+ * cfg). Never throws (SPEC-M3C §5: a throwing execute ⇒ "sendFailed"): a failed read or send is a LOUD warning and boot continues (heartbeats will keep
  * failing visibly; the genesis orchestrator / reviver watches registration). A failed read sends nothing.
  */
 export async function ensureRegistered(
@@ -826,7 +907,17 @@ export async function ensureRegistered(
     logger.info(`registration: agent ${agentId} heartbeat stale (${age}s > revival window ${windowSec}s) — REVIVING (generation ${inst.generation} → ${inst.generation + 1})`);
   }
 
-  const r = await execute({ kind: "registerInstance" }, exec);
+  // SPEC-M3C §5: execute can still throw (chain.getNonce / sendRaw, or a throwing getState) — honor
+  // "never throws" here too.
+  let r: ExecResult;
+  try {
+    r = await execute({ kind: "registerInstance" }, exec);
+  } catch (e) {
+    logger.warn(
+      `!!! registration: registerInstance THREW for agent ${agentId}${revival ? " (revival)" : ""} (${errMsg(e)}) — boot continues UNREGISTERED; heartbeats will fail visibly !!!`,
+    );
+    return "sendFailed";
+  }
   if (r.verdict.allow && r.error === undefined) {
     logger.info(`registration: registerInstance sent for agent ${agentId}${revival ? " (revival)" : ""} (tx ${r.txHash ?? "?"})`);
     return revival ? "revived" : "registered";
@@ -1000,7 +1091,7 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
   if (ov.chain === undefined && Object.keys(rpcUrls).length === 0) {
     logger.warn("no runtime.rpc configured: using MockChainClient (M2 mock chain — nothing reaches a real network)");
   }
-  const getState: StateReader = ov.state ?? chainStateReader(chain, cfg, rt.hosting);
+  const getState: StateReader = ov.state ?? chainStateReader(chain, cfg, rt.hosting, { logger, clock });
 
   let ledgerCache: BudgetLedger = loadLedger(db) ?? emptyLedger(clock());
   const ledger: LedgerStore = {

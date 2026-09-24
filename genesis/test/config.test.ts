@@ -107,6 +107,20 @@ describe("buildConfig", () => {
     expect(() => buildConfig(base({ seeding: { ethUsdMicro: "0" } }), d)).toThrow();
   });
 
+  it("M3C: oyster.enclaveMemoryMb / oyster.bandwidthKbps parse as positive safe ints (optional, no DEFAULT); bad values rejected", () => {
+    const d = fixtureDir();
+    const unset = buildConfig(base(), d);
+    expect(unset.oyster.enclaveMemoryMb).toBeUndefined();
+    expect(unset.oyster.bandwidthKbps).toBeUndefined();
+    const set = buildConfig(base({ oyster: { enclaveMemoryMb: 3072, bandwidthKbps: 250 } }), d);
+    expect(set.oyster.enclaveMemoryMb).toBe(3072);
+    expect(set.oyster.bandwidthKbps).toBe(250);
+    for (const bad of [0, -1, 1.5, "3072", Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => buildConfig(base({ oyster: { enclaveMemoryMb: bad } }), d), `enclaveMemoryMb ${String(bad)}`).toThrow();
+      expect(() => buildConfig(base({ oyster: { bandwidthKbps: bad } }), d), `bandwidthKbps ${String(bad)}`).toThrow();
+    }
+  });
+
   it("mainnet profile: every leg required", () => {
     expect(Object.values(effectiveLegModes({ seeding: { profile: "mainnet", legs: {}, ethUsdMicro: 1n, revivalGasSeedUsdMicro: 1n } }))).toEqual(Array(7).fill("required"));
   });

@@ -1,11 +1,12 @@
 // SPEC-M2B §3 buildTx golden tests. Expected calldata is encoded INDEPENDENTLY in
 // this file from human-readable Solidity signatures (parseAbi), not from src/exec/abi.ts.
+// SPEC-M3C §9.3 (appended): buildTx(a).chain ∈ chainsTouched(a) consistency.
 
 import { encodeFunctionData, parseAbi, toFunctionSelector, type Address, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
 import { resolveConfig, type ResolvedConfig } from "../../src/config/schema.js";
 import { buildTx, NoTxError, NotImplementedError, poolKeyFor } from "../../src/exec/build.js";
-import type { ProposedAction } from "../../src/policy/types.js";
+import { chainsTouched, type ProposedAction } from "../../src/policy/types.js";
 import {
   ACTION, AGENT_POOL_ID, ARWEAVE, CODE_HASH, CP, E18, E6, MARLIN_PAY, NOW, PAYTO_DATA, SPOKE, SWAP_ROUTER,
   TOKEN_X, TOKEN_Y, TREASURY, USDC, USDG_RH, WETH, agentJson, cfg, platformJson,
@@ -268,5 +269,60 @@ describe("buildTx purity", () => {
     const def = resolveConfig({ platform: { ...platformJson(), chainIds: undefined }, agent: agentJson, ownAddresses: { treasury: TREASURY, action: ACTION } });
     expect(def.chainIds.rh).toBe(4663);
     expect([def.poolFee, def.tickSpacing]).toEqual([0, 60]);
+  });
+});
+
+describe("M3C: buildTx chain ∈ chainsTouched (SPEC-M3C §9.3)", () => {
+  it("M3C: for a fixture of every tx-producing kind, buildTx(a).chain ∈ chainsTouched(a); no-tx / not-implemented kinds skipped", () => {
+    const h = `0x${"11".repeat(32)}` as Hex;
+    const chains = ["rh", "base", "arbitrum", "optimism"] as const;
+    const fixtures: ProposedAction[] = [
+      { kind: "heartbeat" },
+      { kind: "registerInstance" },
+      { kind: "distribute" },
+      { kind: "allowance", amount: 100n * E6 },
+      { kind: "treasurySwap", tokenIn: TOKEN_X, amountIn: E18, minOut: 1n },
+      { kind: "treasuryApprove", token: TOKEN_X, spender: SWAP_ROUTER, amount: E18 },
+      { kind: "actionTransfer", asset: "ETH", to: CP, amount: 1n },
+      { kind: "actionTransfer", asset: "USDG", to: CP, amount: 1n },
+      { kind: "actionTransfer", asset: TOKEN_X, to: CP, amount: 1n },
+      { kind: "actionSwap", tokenIn: "USDG", tokenOut: TOKEN_X, amountIn: E6, minOut: 0n },
+      { kind: "actionSwap", tokenIn: TOKEN_X, tokenOut: "USDG", amountIn: E18, minOut: 0n },
+      { kind: "actionMint", target: CP, value: 1n },
+      { kind: "actionApprove", token: TOKEN_X, spender: SWAP_ROUTER, amount: E18 },
+      { kind: "treasuryTransfer", purpose: "oysterRental", chain: "arbitrum", asset: "USDC", to: MARLIN_PAY, amount: E6 },
+      { kind: "treasuryTransfer", purpose: "arweaveFunding", chain: "rh", asset: "USDG", to: ARWEAVE, amount: E6 },
+      { kind: "treasuryTransfer", purpose: "x402Data", chain: "base", asset: "USDC", to: PAYTO_DATA, amount: E6 },
+      ...chains.map((c): ProposedAction => ({ kind: "treasuryTransfer", purpose: "gasTopUp", chain: c, asset: "ETH", to: ACTION, amount: 1n })),
+      { kind: "treasuryTransfer", purpose: "acrossBridge", chain: "rh", asset: "USDG", to: SPOKE.rh, amount: E6, recipient: TREASURY, destChain: "base" },
+      { kind: "treasuryTransfer", purpose: "acrossBridge", chain: "rh", asset: "USDG", to: SPOKE.rh, amount: E6, recipient: TREASURY, destChain: "arbitrum" },
+      { kind: "treasuryTransfer", purpose: "acrossBridge", chain: "base", asset: "ETH", to: SPOKE.base, amount: E18, recipient: TREASURY, destChain: "rh" },
+      // skipped by construction (buildTx builds no tx for these):
+      { kind: "actionLp", pool: `0x${"ab".repeat(32)}`, usdgAmount: 1n, tokenAmount: 1n, token: TOKEN_X },
+      { kind: "inference", category: "pulse", endpointId: "inf-cheap", maxCostUsd: 1n },
+      { kind: "castPost", contentHash: h },
+      { kind: "castReply", contentHash: h, parentHash: h },
+      { kind: "journalWrite", contentHash: h, sizeBytes: 1n },
+    ];
+    const built = new Set<string>();
+    const skipped = new Set<string>();
+    for (const a of fixtures) {
+      let chain: string;
+      try {
+        chain = buildTx(a, cfg, NOW).chain;
+      } catch (e) {
+        if (e instanceof NoTxError || e instanceof NotImplementedError) {
+          skipped.add(a.kind);
+          continue;
+        }
+        throw e;
+      }
+      expect(chainsTouched(a), `${a.kind} built on ${chain}`).toContain(chain);
+      built.add(a.kind);
+    }
+    expect([...built].sort()).toEqual(
+      ["actionApprove", "actionMint", "actionSwap", "actionTransfer", "allowance", "distribute", "heartbeat", "registerInstance", "treasuryApprove", "treasurySwap", "treasuryTransfer"],
+    );
+    expect([...skipped].sort()).toEqual(["actionLp", "castPost", "castReply", "inference", "journalWrite"]);
   });
 });

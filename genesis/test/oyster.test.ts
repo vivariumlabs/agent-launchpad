@@ -1,5 +1,6 @@
 // oyster.ts: exact argv (init params per SPEC-M3 §3b, key as a FILE path), parity with
 // runtime/scripts/compute-image-id.sh, output parsing, control-plane IP lookup, verify.
+// SPEC-M3C §7: optional --enclave-memory / --bandwidth deploy flags.
 
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -102,6 +103,23 @@ describe("deploy", () => {
     expect(a[a.indexOf("--job-name") + 1]).toBe("agent-12");
     const ips = a.filter((_, i) => a[i - 1] === "--init-params");
     expect(ips).toEqual(deployInitParams(12, HASH, p.agentJsonPath, p.runtimeJsonPath));
+  });
+
+  it("M3C: --enclave-memory <MB> / --bandwidth <KBps> pushed when set (before the init params), omitted when unset", () => {
+    const unset = deployArgs(S, p);
+    expect(unset).not.toContain("--enclave-memory");
+    expect(unset).not.toContain("--bandwidth");
+    const a = deployArgs({ ...S, enclaveMemoryMb: 3072, bandwidthKbps: 250 }, p);
+    expect(a[a.indexOf("--enclave-memory") + 1]).toBe("3072");
+    expect(a[a.indexOf("--bandwidth") + 1]).toBe("250");
+    expect(a.indexOf("--enclave-memory")).toBeLessThan(a.indexOf("--init-params"));
+    expect(a.indexOf("--bandwidth")).toBeLessThan(a.indexOf("--init-params"));
+    expect(a.slice(a.indexOf("--init-params"))).toEqual(unset.slice(unset.indexOf("--init-params")));
+    const onlyMem = deployArgs({ ...S, enclaveMemoryMb: 3072 }, p);
+    expect(onlyMem).toContain("--enclave-memory");
+    expect(onlyMem).not.toContain("--bandwidth");
+    expect(() => deployArgs({ ...S, enclaveMemoryMb: 0 }, p)).toThrow(/enclaveMemoryMb/);
+    expect(() => deployArgs({ ...S, bandwidthKbps: 1.5 }, p)).toThrow(/bandwidthKbps/);
   });
 
   it("parses job id + IP from real-shaped (ANSI-coloured) output; missing id ⇒ not ok", async () => {

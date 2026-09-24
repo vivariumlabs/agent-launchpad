@@ -86,6 +86,8 @@ export function createOrchestrator(cfg: GenesisConfig, opts: OrchestratorOpts): 
       operator: cfg.oyster.operator,
       instanceType: cfg.oyster.instanceType,
       rpc: cfg.oyster.rpc,
+      enclaveMemoryMb: cfg.oyster.enclaveMemoryMb,
+      bandwidthKbps: cfg.oyster.bandwidthKbps,
       indexerUrl: cfg.oyster.indexerUrl,
       cpUrl: cfg.oyster.cpUrl,
       deployTimeoutSec: cfg.oyster.deployTimeoutSec,

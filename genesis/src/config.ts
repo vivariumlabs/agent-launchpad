@@ -2,7 +2,7 @@
 // addresses (from the contracts deployment manifest via configFromDeployment), walletKeyPath,
 // release compose path, the seed table (04 §2) with profiles, oyster + turbo settings, timing and
 // retry caps. Every `DEFAULT` below is a config parameter. Relative paths resolve against the
-// config file's directory.
+// config file's directory. SPEC-M3C §7: oyster.enclaveMemoryMb / oyster.bandwidthKbps (optional deploy flags).
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
@@ -167,6 +167,10 @@ export const GenesisConfigFileSchema = z
         operator: z.string().regex(/^0x[0-9a-fA-F]{40}$/).default(OYSTER_OPERATOR_DEFAULT),
         instanceType: z.string().min(1).optional(),
         rpc: z.string().url().optional(),
+        /** SPEC-M3C §7: `deploy --enclave-memory <MB>`; unset ⇒ omitted (CLI default). Our image REQUIRES 3072. */
+        enclaveMemoryMb: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+        /** SPEC-M3C §7: `deploy --bandwidth <KBps>` (CLI 5.0.1: KBps, default 10); unset ⇒ omitted. */
+        bandwidthKbps: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
         /** Rental per deploy, minutes. DEFAULT per profile: testnet 180, mainnet 43_200 (30 d, 04 §2). */
         durationMin: z.number().int().positive().optional(),
         /** Rental rate for the projected-cost log, µUSDC per hour (DEFAULT 51_200 = 0.0512 USDC/h, M0 RESULTS). */

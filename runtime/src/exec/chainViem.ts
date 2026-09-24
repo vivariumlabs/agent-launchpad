@@ -10,6 +10,10 @@
 //     and louder).
 //   * Fees are whatever the node suggests (viem estimateFeesPerGas, EIP-1559). No
 //     clamping here: an out-of-bounds suggestion must reach K2 and fail there.
+//   * Transport retries (SPEC-M3C §6): viem http `retryCount` = httpRetryCount, DEFAULT 2
+//     (was 0 — one throttled read at boot crash-looped the drill). Applies to EVERY request,
+//     reads and eth_sendRawTransaction alike; retrying a send is safe: the same signed bytes ⇒
+//     the same tx hash (idempotent — a duplicate cannot land twice).
 //
 // No Date.now / process.env / fetch( here (hygiene test covers src/exec): viem owns
 // the transport; urls and chain ids are constructor inputs.
@@ -31,9 +35,13 @@ export interface RealChainClientOptions {
   pollingIntervalMs?: number;
   /** Per-request http timeout. DEFAULT 15_000 ms. */
   httpTimeoutMs?: number;
+  /** SPEC-M3C §6: viem http transport retryCount (all requests, incl. eth_sendRawTransaction). DEFAULT 2. */
+  httpRetryCount?: number;
 }
 
 export const DEFAULT_GAS_HEADROOM_BPS = 2000;
+/** SPEC-M3C §6. */
+export const DEFAULT_HTTP_RETRY_COUNT = 2;
 const BPS = 10_000n;
 
 export class RealChainClient implements ChainClient {
@@ -47,6 +55,8 @@ export class RealChainClient implements ChainClient {
     const h = opts.gasHeadroomBps ?? DEFAULT_GAS_HEADROOM_BPS;
     if (!Number.isInteger(h) || h < 0) throw new Error(`RealChainClient: gasHeadroomBps must be a non-negative integer, got ${h}`);
     this.headroomBps = BigInt(h);
+    const retryCount = opts.httpRetryCount ?? DEFAULT_HTTP_RETRY_COUNT;
+    if (!Number.isInteger(retryCount) || retryCount < 0) throw new Error(`RealChainClient: httpRetryCount must be a non-negative integer, got ${retryCount}`);
     for (const [chain, url] of Object.entries(opts.rpcUrls) as Array<[Chain, string | undefined]>) {
       if (url === undefined) continue;
       const id = opts.chainIds[chain];
@@ -61,7 +71,7 @@ export class RealChainClient implements ChainClient {
         chain,
         createPublicClient({
           chain: def,
-          transport: http(url, { timeout: opts.httpTimeoutMs ?? 15_000, retryCount: 0 }),
+          transport: http(url, { timeout: opts.httpTimeoutMs ?? 15_000, retryCount }),
           pollingInterval: opts.pollingIntervalMs ?? 250,
         }),
       );

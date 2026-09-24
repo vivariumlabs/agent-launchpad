@@ -3,6 +3,8 @@
 // Pipeline:
 //   1. `now` must be a non-negative bigint                    ⇒ else MALFORMED
 //   2. G1: zod shape validation (validate.ts)                 ⇒ else MALFORMED
+//   2b. G5 (SPEC-M3C §3): state.staleChains ∩ chainsTouched(a) ≠ ∅ ⇒ STATE_STALE — degraded
+//      (cached/zeroed) balances never drive a spend. Social/journal kinds touch no chain (∅).
 //   3. Roll the ledger view forward to dayKeyOf(now) (G4: only a LATER day empties
 //      daily buckets; same day or a rewound clock keeps the ledger as-is)
 //   4. Wallet inferred from kind (walletForAction); treasury kinds are evaluated
@@ -22,7 +24,7 @@ import { deny } from "./rules/common.js";
 import { evaluateActionWallet } from "./rules/action.js";
 import { evaluateSocial } from "./rules/social.js";
 import { evaluateTreasury } from "./rules/treasury.js";
-import { walletForAction, type BudgetLedger, type ProposedAction, type UnixSeconds, type Verdict, type WalletState } from "./types.js";
+import { chainsTouched, walletForAction, type BudgetLedger, type ProposedAction, type UnixSeconds, type Verdict, type WalletState } from "./types.js";
 import { validateAction, validNow } from "./validate.js";
 
 export function evaluate(
@@ -38,6 +40,19 @@ export function evaluate(
     const v = validateAction(action);
     if (!v.ok) return deny("MALFORMED", v.detail);
     const a = v.action;
+
+    // G5 (SPEC-M3C §3): refuse to act on stale chain state.
+    const touched = chainsTouched(a);
+    if (touched.length > 0) {
+      const stale: unknown = state.staleChains;
+      if (stale !== undefined) {
+        if (!Array.isArray(stale)) throw new Error("state.staleChains must be an array of chains");
+        const hit = touched.filter((c) => stale.includes(c));
+        if (hit.length > 0) {
+          return deny("STATE_STALE", `G5: balances for ${hit.join(", ")} are stale (RPC unreachable) — refusing to act on degraded state`);
+        }
+      }
+    }
 
     const L = rollLedger(ledger, now);
     const wallet = walletForAction(a.kind);

@@ -1,4 +1,5 @@
 // SPEC-M2 §2 (types, normative) + §3 (DenyCode enum). Transcribed exactly.
+// SPEC-M3C §1–§3 (additive): WalletState.staleChains, DenyCode STATE_STALE, chainsTouched().
 // No `any` anywhere in this file.
 
 import type { Address, Hex } from "viem";
@@ -93,6 +94,10 @@ export interface WalletState {
   action: WalletBalances;
   hostingPaidUntil: UnixSeconds; // current Oyster rental expiry
   hostingRatePerDay: bigint; // USDC(6) per day, live marketplace rate
+  // SPEC-M3C §1: chains whose balances in THIS state object are NOT fresh reads (cached or zeroed).
+  // Absent/empty ⇒ all fresh. The engine's G5 gate denies STATE_STALE on any intersection with
+  // chainsTouched(action).
+  staleChains?: readonly Chain[];
 }
 
 // ADDITIVE (M2 policy-engine agent): SPEC-M2 §3 T3 tracks gasTopUp per chain
@@ -134,7 +139,9 @@ export type DenyCode =
   | "LOOKALIKE"
   // SPEC-M2B §1:
   | "PACE_CAP"
-  | "APPROVE_SPENDER";
+  | "APPROVE_SPENDER"
+  // SPEC-M3C §3:
+  | "STATE_STALE";
 
 export interface Approval {
   actionHash: Hex;
@@ -175,4 +182,37 @@ export function walletForAction(kind: ProposedAction["kind"]): WalletKind {
   if (FC_KINDS.has(kind)) return "fc";
   if (JOURNAL_KINDS.has(kind)) return "journal";
   throw new Error(`walletForAction: unknown kind ${String(kind)}`);
+}
+
+/**
+ * SPEC-M3C §2 (ruling, exact): the chains whose balances the rules read and/or where the tx lands.
+ * Social/journal kinds touch no chain balances ⇒ [] (never stale-blocked). Pure.
+ */
+export function chainsTouched(a: ProposedAction): readonly Chain[] {
+  switch (a.kind) {
+    case "heartbeat":
+    case "registerInstance":
+    case "distribute":
+    case "allowance":
+    case "treasurySwap":
+    case "treasuryApprove":
+    case "actionTransfer":
+    case "actionSwap":
+    case "actionLp":
+    case "actionMint":
+    case "actionApprove":
+      return ["rh"];
+    case "treasuryTransfer":
+      return a.destChain !== undefined ? [a.chain, a.destChain] : [a.chain];
+    case "inference":
+      return ["base"]; // x402 pays Base USDC
+    case "castPost":
+    case "castReply":
+    case "journalWrite":
+      return [];
+    default: {
+      const unknownKind: never = a;
+      throw new Error(`chainsTouched: unknown kind ${String((unknownKind as { kind?: unknown }).kind)}`);
+    }
+  }
 }

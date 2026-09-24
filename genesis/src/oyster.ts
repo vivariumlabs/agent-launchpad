@@ -9,6 +9,8 @@
 //   - IP lookup: runtime/spikes/m0-marlin-kms/RESULTS.md — control plane `GET <cp>/ip?id=<jobId>&region=<r>`,
 //     CP URL from the indexer GraphQL `providerById { cp }`.
 // The wallet key is passed to the CLI as a FILE PATH (`--wallet-private-key-file`), never on argv.
+// SPEC-M3C §7: optional `deploy --enclave-memory <MB>` / `--bandwidth <KBps>` (oyster-cvm 5.0.1;
+// --bandwidth is KBps, default 10), pushed only when set; init params stay LAST.
 
 import type { Exec } from "./exec.js";
 import type { HttpClient } from "./http.js";
@@ -22,6 +24,10 @@ export interface OysterSettings {
   operator: string;
   instanceType?: string | undefined;
   rpc?: string | undefined;
+  /** SPEC-M3C §7: `deploy --enclave-memory <MB>` (our image REQUIRES 3072; drill 2026-09-23). Unset ⇒ flag omitted (CLI default). */
+  enclaveMemoryMb?: number | undefined;
+  /** SPEC-M3C §7: `deploy --bandwidth <KBps>` (CLI 5.0.1: KBps, default 10). Unset ⇒ flag omitted. */
+  bandwidthKbps?: number | undefined;
   indexerUrl: string;
   cpUrl?: string | undefined;
   deployTimeoutSec: number;
@@ -104,6 +110,11 @@ export function computeImageIdArgs(s: Pick<OysterSettings, "arch" | "preset">, p
   return ["compute-image-id", "--docker-compose", p.composePath, "--arch", s.arch, "--preset", s.preset, "--init-params", a!, "--init-params", c!];
 }
 
+function positiveSafeInt(n: number, what: string): number {
+  if (!Number.isSafeInteger(n) || n <= 0) throw new Error(`${what} must be a positive integer, got ${n}`);
+  return n;
+}
+
 export function deployArgs(s: OysterSettings, p: DeployParams): string[] {
   if (!Number.isSafeInteger(p.durationMin) || p.durationMin <= 0) throw new Error(`durationMin must be a positive integer`);
   const args = [
@@ -120,6 +131,8 @@ export function deployArgs(s: OysterSettings, p: DeployParams): string[] {
   ];
   if (s.instanceType !== undefined) args.push("--instance-type", s.instanceType);
   if (s.rpc !== undefined) args.push("--rpc", s.rpc);
+  if (s.enclaveMemoryMb !== undefined) args.push("--enclave-memory", String(positiveSafeInt(s.enclaveMemoryMb, "enclaveMemoryMb")));
+  if (s.bandwidthKbps !== undefined) args.push("--bandwidth", String(positiveSafeInt(s.bandwidthKbps, "bandwidthKbps")));
   for (const ip of deployInitParams(p.agentId, p.configHash, p.agentJsonPath, p.runtimeJsonPath)) args.push("--init-params", ip);
   return args;
 }
