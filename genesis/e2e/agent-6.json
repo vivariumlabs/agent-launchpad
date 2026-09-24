@@ -1,0 +1,146 @@
+{
+  "platform": {
+    "registry": {
+      "rh": "0xDBA9680C0F1958Af7Bc34a225863D93df2B92f59",
+      "base": "0xf100000200000000000000000000000000000002",
+      "arbitrum": "0xf100000300000000000000000000000000000003",
+      "optimism": "0xf100000400000000000000000000000000000004"
+    },
+    "feeSplitHook": {
+      "rh": "0x40053E41fa0Bcdcd2EB127954Ce624323e9aa044",
+      "base": "0xf200000200000000000000000000000000000002",
+      "arbitrum": "0xf200000300000000000000000000000000000003",
+      "optimism": "0xf200000400000000000000000000000000000004"
+    },
+    "poolManager": {
+      "rh": "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+      "base": "0xf300000200000000000000000000000000000002",
+      "arbitrum": "0xf300000300000000000000000000000000000003",
+      "optimism": "0xf300000400000000000000000000000000000004"
+    },
+    "usdg": {
+      "rh": "0xe6f7E5832991f5af335C2A21d4F35cea3d47ccAb",
+      "base": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "arbitrum": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+      "optimism": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"
+    },
+    "across": {
+      "spokePool": {
+        "rh": "0xcc000001000000000000000000000000000000c1",
+        "base": "0xcc000002000000000000000000000000000000c2",
+        "arbitrum": "0xcc000003000000000000000000000000000000c3",
+        "optimism": "0xcc000004000000000000000000000000000000c4"
+      }
+    },
+    "marlin": {
+      "paymentAddresses": [
+        "0xbb000001000000000000000000000000000000b1"
+      ]
+    },
+    "arweaveFundingAddress": "0xdd000001000000000000000000000000000000d1",
+    "x402Allowlist": [
+      {
+        "id": "dexl-free",
+        "kind": "inference",
+        "operator": "dexl.io",
+        "url": "https://agents.dexl.io/v1/chat/completions",
+        "payTo": "0x820D61a720963fab63aB6e0aeF4D1779Eb42F6BB",
+        "model": "dexl-free",
+        "tier": "cheap",
+        "maxPricePerMTokUsd": "2000000",
+        "attested": false
+      },
+      {
+        "id": "dexl-deepseek",
+        "kind": "inference",
+        "operator": "dexl.io",
+        "url": "https://agents.dexl.io/v1/chat/completions",
+        "payTo": "0x820D61a720963fab63aB6e0aeF4D1779Eb42F6BB",
+        "model": "deepseek-v4-flash",
+        "tier": "standard",
+        "maxPricePerMTokUsd": "2000000",
+        "attested": false
+      },
+      {
+        "id": "synthora-fast",
+        "kind": "inference",
+        "operator": "hergertsynthora.com",
+        "url": "https://llm-fast.hergertsynthora.com/v1/chat/completions",
+        "payTo": "0xEf879BFD6C4AccB8F795136de90246e1EC245e06",
+        "model": "fast",
+        "tier": "cheap",
+        "maxPricePerMTokUsd": "2000000",
+        "attested": false
+      },
+      {
+        "id": "unykorn-llm",
+        "kind": "inference",
+        "operator": "unykorn.org",
+        "url": "https://twin.unykorn.org/llm",
+        "payTo": "0x7d9a65d06dcc435a52D5880C6310Bd6E96c156DB",
+        "model": "default",
+        "tier": "cheap",
+        "maxPricePerMTokUsd": "2000000",
+        "attested": false
+      }
+    ],
+    "caps": {},
+    "usdc": {
+      "rh": "0xe6f7E5832991f5af335C2A21d4F35cea3d47ccAb",
+      "base": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "arbitrum": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+      "optimism": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"
+    },
+    "weth": {
+      "rh": "0x5e000001000000000000000000000000000005e1",
+      "base": "0x4200000000000000000000000000000000000006",
+      "arbitrum": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+      "optimism": "0x4200000000000000000000000000000000000006"
+    },
+    "chainIds": {
+      "rh": 46630
+    },
+    "swapRouter": {
+      "rh": "0xb37851154a9645719B7F83E469918347D7C736A7"
+    },
+    "usdcDomain": {
+      "base": {
+        "name": "USD Coin",
+        "version": "2",
+        "chainId": 8453,
+        "verifyingContract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+      }
+    },
+    "registration": {
+      "codeHash": "0xc0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0dec0de",
+      "attestationRef": "mock-attestation"
+    },
+    "chatDomain": "drill6.vivarium.invalid",
+    "chatRpc": [
+      "https://rpc.testnet.chain.robinhood.com",
+      "https://rpc.testnet.chain.robinhood.com"
+    ],
+    "agentTokenAddress": "0x308ceBcf8258a91DE06ddF1194dE82b04B72a1b4",
+    "agentPoolId": "0xfcc61dbf0da5c1e3ecd33f8075227b84ef2408e5c54fa0f915db201cea803957",
+    "allowlistUpdateSigner": "0x6930FD5C95a2D9d80F3d165597d55843e8A00154"
+  },
+  "agent": {
+    "agentId": 6,
+    "name": "Vivarium Trader",
+    "symbol": "VIVTRD6",
+    "archetype": "trader",
+    "persona": "Trading systems check. On each pulse: if your action wallet holds at least 1 USDG, execute ONE small actionSwap buying your agent token with exactly 1 USDG (tokenIn USDG, tokenOut = your agent token, minOut 0). If you already hold agent tokens, journal the position instead. Keep every trade tiny. This is a testnet drill.",
+    "models": {
+      "primary": "dexl-free",
+      "fallbacks": [
+        "deepseek-v4-flash",
+        "fast"
+      ],
+      "chatTier": "cheap"
+    },
+    "social": {
+      "postsPerDay": 4,
+      "repliesPerDay": 4
+    }
+  }
+}

@@ -1,0 +1,10 @@
+import { createPublicClient, http, parseAbi } from "viem";
+const pub = createPublicClient({ transport: http("https://rpc.testnet.chain.robinhood.com") });
+const erc = parseAbi(["function balanceOf(address) view returns (uint256)"]);
+const T = "0xe5d2190897dffa7dd5675fcaf5790cae47aceb97";
+const A = "0x445ed86e8efe7c36985cf35d217e9e55c4a4c1fc";
+const USDG = "0xe6f7E5832991f5af335C2A21d4F35cea3d47ccAb";
+const AGENT1 = "0x308ceBcf8258a91DE06ddF1194dE82b04B72a1b4";
+const f = async (t: string, o: string) => Number(await pub.readContract({ address: t as any, abi: erc, functionName: "balanceOf", args: [o as any] }));
+console.log("treasury: nonce", await pub.getTransactionCount({ address: T }), "| USDG", (await f(USDG, T))/1e6, "| ETH", Number(await pub.getBalance({ address: T }))/1e18);
+console.log("action  : nonce", await pub.getTransactionCount({ address: A }), "| USDG", (await f(USDG, A))/1e6, "| ETH", Number(await pub.getBalance({ address: A }))/1e18, "| AGENT1-token", (await f(AGENT1, A))/1e18);
