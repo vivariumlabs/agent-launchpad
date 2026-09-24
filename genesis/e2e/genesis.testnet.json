@@ -28,7 +28,9 @@
       "maxPriorityFeePerGasWei": "0"
     }
   },
-  "release": { "composePath": "../../runtime/releases/v0.1.3.yml" },
+  "release": {
+    "composePath": "../../runtime/releases/v0.1.5.yml"
+  },
   "configInboxDir": "inbox",
   "runtimeOps": {
     "chatHost": "0.0.0.0",
@@ -40,14 +42,23 @@
       "arbitrum": "https://arbitrum-one-rpc.publicnode.com",
       "optimism": "https://optimism-rpc.publicnode.com"
     },
-    "hosting": { "paidUntil": "1791028800", "ratePerDay": "1700000" },
-    "x402": { "enabled": false }
+    "hosting": {
+      "paidUntil": "1791028800",
+      "ratePerDay": "1700000"
+    },
+    "x402": {
+      "enabled": true
+    }
   },
-  "seeding": { "profile": "testnet" },
+  "seeding": {
+    "profile": "testnet"
+  },
   "oyster": {
     "bin": "/sessions/magical-zealous-davinci/oyster-cvm",
     "walletKeyFile": "../../.secrets/m0-drill-wallet.key",
     "durationMin": 60
   },
-  "turbo": { "enabled": false }
+  "turbo": {
+    "enabled": false
+  }
 }
