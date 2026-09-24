@@ -61,6 +61,10 @@
 //       and the treasury's rh balance < REGISTRATION_GAS_FLOOR_WEI, poll it every 10 s (clock + injectable
 //       sleep) up to runtime.registrationGasWaitSec (DEFAULT 600) for the orchestrator's preGas; timeout ⇒
 //       attempt anyway with a LOUD warning. Read errors = "not yet funded" (warned once). Never throws.
+//       SPEC-M3C §11: step (7) runs ensureRegistered in a bounded retry loop (ensureRegisteredWithRetry):
+//       readFailed/sendFailed ⇒ sleep runtime.registrationRetryDelaySec (DEFAULT 30) and retry until
+//       runtime.registrationRetrySec (DEFAULT 900) has elapsed; registered/revived/alreadyRegistered/
+//       keyMismatch ⇒ stop. Retries use a 60 s §10 gas wait. LOUD warning on give-up; never throws.
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -1026,6 +1030,98 @@ export async function ensureRegistered(
   return "sendFailed";
 }
 
+// ---------------------------------------------------------------------------
+// SPEC-M3C §11 — registration retry loop (second e2e finding 2026-09-24: a one-shot boot registration
+// died to a transient — instanceOf read flake ⇒ "readFailed", or a transient rh RPC failure inside
+// getState ⇒ G5 STATE_STALE ⇒ "sendFailed"). Every variant gets the same cure: bounded RETRY.
+// ---------------------------------------------------------------------------
+
+/** DEFAULT runtime.registrationRetrySec — total retry budget (SPEC-M3C §11). */
+export const DEFAULT_REGISTRATION_RETRY_SEC = 900;
+/** DEFAULT runtime.registrationRetryDelaySec — sleep between attempts (SPEC-M3C §11). */
+export const DEFAULT_REGISTRATION_RETRY_DELAY_SEC = 30;
+/** §10 gas-wait budget passed on RETRIES so the loop's cadence dominates (SPEC-M3C §11). */
+export const REGISTRATION_RETRY_GAS_WAIT_SEC = 60;
+
+export interface RegistrationRetryOptions {
+  /** Total retry budget in seconds, measured from the first attempt (DEFAULT DEFAULT_REGISTRATION_RETRY_SEC). */
+  retrySec?: number;
+  /** Delay between attempts in seconds (DEFAULT DEFAULT_REGISTRATION_RETRY_DELAY_SEC); the last sleep is clamped to the deadline. */
+  retryDelaySec?: number;
+  /** §10 gas-wait budget for the FIRST attempt (DEFAULT DEFAULT_REGISTRATION_GAS_WAIT_SEC); retries use REGISTRATION_RETRY_GAS_WAIT_SEC. */
+  waitSec?: number;
+  /** DEFAULT systemClock. */
+  clock?: Clock;
+  /** DEFAULT realSleep (same injectable SleepFn as §10). */
+  sleep?: SleepFn;
+}
+
+const REGISTRATION_TERMINAL: ReadonlySet<RegistrationOutcome> = new Set<RegistrationOutcome>(["registered", "revived", "alreadyRegistered", "keyMismatch"]);
+
+/**
+ * SPEC-M3C §11: boot step (7) — ensureRegistered in a bounded retry loop.
+ *   - "registered" | "revived" | "alreadyRegistered" | "keyMismatch" ⇒ stop (keyMismatch is permanent).
+ *   - "readFailed" | "sendFailed" ⇒ sleep retryDelaySec (clamped to the deadline) and retry, until
+ *     retrySec has elapsed since the first attempt (clock-measured, so §10 gas waits count toward it).
+ *     Each attempt re-reads instanceOf first (ensureRegistered does), so a send whose receipt was lost
+ *     converges to "alreadyRegistered" instead of double-sending.
+ *   - First attempt: §10 waitSec as configured (DEFAULT 600); retries: REGISTRATION_RETRY_GAS_WAIT_SEC.
+ * LOUD warning on final give-up. NEVER throws (a throwing clock/sleep/attempt ⇒ warn + return the last
+ * outcome); boot continues either way.
+ */
+export async function ensureRegisteredWithRetry(
+  cfg: ResolvedConfig,
+  agentId: number,
+  chain: ChainClient,
+  exec: ExecDeps,
+  logger: BootLogger,
+  opts: RegistrationRetryOptions = {},
+): Promise<RegistrationOutcome> {
+  const clock = opts.clock ?? systemClock;
+  const sleep = opts.sleep ?? realSleep;
+  const budgetSec = BigInt(opts.retrySec ?? DEFAULT_REGISTRATION_RETRY_SEC);
+  const delaySec = BigInt(opts.retryDelaySec ?? DEFAULT_REGISTRATION_RETRY_DELAY_SEC);
+  const firstWaitSec = opts.waitSec ?? DEFAULT_REGISTRATION_GAS_WAIT_SEC;
+  let outcome: RegistrationOutcome = "readFailed";
+  let attempts = 0;
+  try {
+    const start = clock();
+    for (;;) {
+      const waitSec = attempts === 0 ? firstWaitSec : REGISTRATION_RETRY_GAS_WAIT_SEC;
+      attempts++;
+      try {
+        outcome = await ensureRegistered(cfg, agentId, chain, exec, logger, clock(), { waitSec, clock, sleep });
+      } catch (e) {
+        // ensureRegistered never throws by contract; defense in depth (SPEC-M3C §11 "never throws").
+        logger.warn(`!!! registration: attempt ${attempts} THREW unexpectedly (${errMsg(e)}) — treating as sendFailed !!!`);
+        outcome = "sendFailed";
+      }
+      if (REGISTRATION_TERMINAL.has(outcome)) {
+        if (attempts > 1) logger.info(`registration: agent ${agentId} ${outcome} on attempt ${attempts}`);
+        return outcome;
+      }
+      const elapsed = clock() - start;
+      if (elapsed >= budgetSec) {
+        logger.warn(
+          `!!! registration: GIVING UP for agent ${agentId} after ${attempts} attempt(s) / ${elapsed}s (registrationRetrySec ${budgetSec}; last outcome ${outcome}) — ` +
+            "boot continues UNREGISTERED; heartbeats will fail visibly !!!",
+        );
+        return outcome;
+      }
+      const remaining = budgetSec - elapsed;
+      const stepSec = remaining < delaySec ? remaining : delaySec;
+      logger.info(`registration: attempt ${attempts} ${outcome} — retrying in ${stepSec}s (${elapsed}s / ${budgetSec}s)`);
+      await sleep(Number(stepSec) * 1000);
+    }
+  } catch (e) {
+    logger.warn(
+      `!!! registration: retry loop FAILED unexpectedly for agent ${agentId} after ${attempts} attempt(s) (${errMsg(e)}; last outcome ${outcome}) — ` +
+        "boot continues UNREGISTERED !!!",
+    );
+    return outcome;
+  }
+}
+
 function keyringAddresses(exec: ExecDeps): OwnAddresses | null {
   try {
     return exec.keyring.addresses();
@@ -1458,9 +1554,12 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
   let stopping: Promise<void> | null = null;
 
   // (7) Boot auto-registration (tee + cfg.registration), after every component exists and before start().
+  // SPEC-M3C §11: bounded retry loop (readFailed/sendFailed ⇒ retry); never throws; chat/schedulers start after.
   if (teeImageId !== undefined && cfg.registration !== undefined) {
-    await ensureRegistered(cfg, agentId, chain, exec, logger, clock(), {
+    await ensureRegisteredWithRetry(cfg, agentId, chain, exec, logger, {
       waitSec: rt.registrationGasWaitSec ?? DEFAULT_REGISTRATION_GAS_WAIT_SEC,
+      retrySec: rt.registrationRetrySec ?? DEFAULT_REGISTRATION_RETRY_SEC,
+      retryDelaySec: rt.registrationRetryDelaySec ?? DEFAULT_REGISTRATION_RETRY_DELAY_SEC,
       clock,
       sleep: realSleep,
     });

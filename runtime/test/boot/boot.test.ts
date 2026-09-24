@@ -509,7 +509,7 @@ describe("boot: runtime.tee (SPEC-M3 §2) — NautilusKms + attestation → cfg.
   function teeConfig(dir: string, runtime: Record<string, unknown>): string {
     const j = JSON.parse(readFileSync(FIXTURE, "utf8")) as { runtime: Record<string, unknown> };
     delete j.runtime.mockKms;
-    Object.assign(j.runtime, runtime);
+    Object.assign(j.runtime, { registrationRetrySec: 0 }, runtime); // SPEC-M3C §11: one-shot registration here (no real-sleep retries)
     const p = join(dir, "tee.config.json");
     writeFileSync(p, JSON.stringify(j));
     return p;
@@ -722,7 +722,7 @@ describe("boot: tee:true with the default LocalDirSink ⇒ loud warning", () => 
     for (const s of servers.splice(0)) await s.close();
   });
   function teeRuntime(s: MockNautilusServer): Record<string, unknown> {
-    return { tee: true, mockKms: undefined, kmsUrl: s.baseUrl, attestationUrl: s.attestationUrl, imageId: IMAGE_ID };
+    return { tee: true, mockKms: undefined, kmsUrl: s.baseUrl, attestationUrl: s.attestationUrl, imageId: IMAGE_ID, registrationRetrySec: 0 /* SPEC-M3C §11: one-shot registration here (no real-sleep retries) */ };
   }
 
   it("LocalDirSink ⇒ warns that attestationRef is a LOCAL file (not publishable on-chain)", async () => {
@@ -1008,7 +1008,7 @@ describe("SPEC-M3 §3b boot: tee:true binds to the attested config-hash (MockNau
   /** Split files for a tee:true boot + the init-params dir (passed as BootOptions.initParamsDir — never via runtime.json under tee). */
   function teeSplit(dir: string, s: MockNautilusServer, init: { agentId?: string | null; configHash?: string | null }, mutateAgent?: FrozenMutator) {
     const files = splitFiles(dir, {
-      runtime: { mockKms: undefined, tee: true, kmsUrl: s.baseUrl, attestationUrl: s.attestationUrl, imageId: IMAGE_ID },
+      runtime: { mockKms: undefined, tee: true, kmsUrl: s.baseUrl, attestationUrl: s.attestationUrl, imageId: IMAGE_ID, registrationRetrySec: 0 /* SPEC-M3C §11: one-shot registration here (no real-sleep retries) */ },
       ...(mutateAgent !== undefined ? { mutateAgent } : {}),
     });
     return { ...files, initParamsDir: boundInitDir(dir, init) };

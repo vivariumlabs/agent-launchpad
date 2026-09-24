@@ -359,7 +359,7 @@ describe("boot auto-registration (tee + cfg.registration)", () => {
   }
   async function teeBoot(dir: string, chain: MockChainClient): Promise<Env> {
     const s = await nautilus();
-    const { path, frozenHash } = config(dir, { runtime: { mockKms: undefined, tee: true, kmsUrl: s.baseUrl, attestationUrl: s.attestationUrl, imageId: IMAGE_ID } });
+    const { path, frozenHash } = config(dir, { runtime: { mockKms: undefined, tee: true, kmsUrl: s.baseUrl, attestationUrl: s.attestationUrl, imageId: IMAGE_ID, registrationRetrySec: 0 /* SPEC-M3C §11: one-shot registration here (no real-sleep retries) */ } });
     const j = JSON.parse(readFileSync(path, "utf8")) as { runtime: Record<string, unknown> };
     delete j.runtime["mockKms"];
     writeFileSync(path, JSON.stringify(j));

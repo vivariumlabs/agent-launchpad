@@ -16,7 +16,7 @@
       "maxPriorityFeePerGasWei": "10000000"
     },
     "base": {
-      "rpc": "https://base-rpc.publicnode.com",
+      "rpc": "https://mainnet.base.org",
       "chainId": 8453,
       "maxFeePerGasWei": "500000000",
       "maxPriorityFeePerGasWei": "10000000"

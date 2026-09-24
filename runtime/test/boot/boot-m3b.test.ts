@@ -294,7 +294,7 @@ describe("boot: runtime.arweave (SPEC-M3B §3)", () => {
     const j = JSON.parse(readFileSync(FIXTURE, "utf8")) as { platform: Record<string, unknown>; agent: unknown; runtime: Record<string, unknown> };
     Object.assign(j.platform, { chatDomain: DOMAIN, agentDnsRoot: DNS_ROOT });
     delete j.runtime.mockKms;
-    Object.assign(j.runtime, { tee: true, kmsUrl: s.baseUrl, attestationUrl: s.attestationUrl, imageId: IMAGE_ID, arweave: { enabled: true }, tls: { enabled: true } });
+    Object.assign(j.runtime, { tee: true, kmsUrl: s.baseUrl, attestationUrl: s.attestationUrl, imageId: IMAGE_ID, arweave: { enabled: true }, tls: { enabled: true }, registrationRetrySec: 0 /* SPEC-M3C §11: one-shot registration here (no real-sleep retries) */ });
     const cfgPath = join(dir, "tee.json");
     writeFileSync(cfgPath, JSON.stringify(j));
     const init = join(dir, "init");

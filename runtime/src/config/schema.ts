@@ -437,6 +437,14 @@ export const RuntimeOpsConfigSchema = z
      * registerInstance (DEFAULT 600; 0 ⇒ no wait). Liveness knob only — no spend authority.
      */
     registrationGasWaitSec: z.number().int().nonnegative().optional(),
+    // ---- SPEC-M3C §11 (ADDITIVE) ----
+    /**
+     * Total seconds boot keeps retrying a readFailed/sendFailed registration (DEFAULT 900; 0 ⇒ single
+     * attempt). Liveness knob only — no spend authority.
+     */
+    registrationRetrySec: z.number().int().nonnegative().optional(),
+    /** Seconds between registration attempts (DEFAULT 30). Liveness knob only — no spend authority. */
+    registrationRetryDelaySec: z.number().int().nonnegative().optional(),
   })
   .strict()
   .default({});

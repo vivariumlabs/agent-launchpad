@@ -103,3 +103,30 @@ Fix in `ensureRegistered` (boot.ts), before sending registerInstance (genesis AN
 
 Tests ("M3C §10: …"): funded-after-N-polls ⇒ registerInstance sent (fake clock/sleep); timeout ⇒
 attempted + warned; already-registered ⇒ no wait; tee:false unchanged; read-error-then-funded works.
+
+## 11. Registration retry loop (second e2e finding 2026-09-24, for v0.1.3)
+
+Agent-3 e2e on v0.1.2: preGas confirmed BEFORE the app booted, §10 wait passed (balance ≥ floor),
+yet treasury nonce stayed 0 — the single registerInstance attempt failed some other way (instanceOf
+read flake ⇒ "readFailed", or a transient rh RPC failure inside getState ⇒ G5 STATE_STALE deny ⇒
+"sendFailed"; non-debug enclave, exact trigger unobservable). Twice today a one-shot boot
+registration died to a transient; every variant needs the same cure: RETRY.
+
+Fix in boot step (7): wrap the `ensureRegistered` call in a bounded retry loop —
+- outcomes "registered" | "revived" | "alreadyRegistered" | "keyMismatch" ⇒ stop (keyMismatch is
+  permanent: retrying cannot fix pinned-key divergence);
+- "readFailed" | "sendFailed" ⇒ sleep `registrationRetryDelaySec DEFAULT 30` (same injectable
+  SleepFn as §10) and retry, until `registrationRetrySec DEFAULT 900` total has elapsed (ops config,
+  liveness knobs only). Each retry re-reads instanceOf first, so a send whose receipt was lost
+  converges to "alreadyRegistered" instead of double-sending; a genuinely duplicate send reverts
+  on-chain (RevivalWindowNotElapsed) and the NEXT read stops the loop. LOUD warn on final give-up.
+- §10's gas wait runs inside `ensureRegistered` as today, but its `waitSec` budget only applies per
+  attempt; keep DEFAULT 600 (first attempt) — pass a small `waitSec` (60) on retries so the loop's
+  cadence dominates. Boot still never throws; chat/schedulers start after the loop as today.
+- Debt (unchanged): the daemon never retries registration post-boot; revisit only if a live agent
+  ends up unregistered after the boot window.
+
+Tests ("M3C §11: …"): readFailed×2 then success ⇒ 3 calls, registered; sendFailed until budget ⇒
+gives up with warn, boot continues; keyMismatch ⇒ no retry; alreadyRegistered on retry after a
+lost-receipt send ⇒ loop stops without a second send; delays injected (fake sleep), total-budget
+arithmetic exact.
