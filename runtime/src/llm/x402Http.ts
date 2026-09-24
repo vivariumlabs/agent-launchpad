@@ -117,7 +117,10 @@ export function checkQuote(
 ): QuoteCheck {
   const j = parseJson(body);
   if (!isRecord(j)) return { ok: false, detail: "402 body is not a JSON object" };
-  if (j["x402Version"] !== X402_VERSION) return { ok: false, detail: `unsupported x402Version ${String(j["x402Version"])}` };
+  // SPEC-M3E: v1 AND v2 bodies are live in the wild (curation probes 2026-09-24: SYNTHORA/DexL v1,
+  // x402-farm/Venice v2). Accept both; the X-PAYMENT envelope we send stays v1 (paid-drill-verified).
+  const ver = j["x402Version"];
+  if (ver !== X402_VERSION && ver !== 2) return { ok: false, detail: `unsupported x402Version ${String(ver)}` };
   const accepts = j["accepts"];
   if (!Array.isArray(accepts)) return { ok: false, detail: "402 body has no accepts[]" };
   const pick = accepts.find(
@@ -141,8 +144,9 @@ export function checkQuote(
   const payTo = pick["payTo"];
   if (typeof payTo !== "string" || !isAddress(payTo, { strict: false })) return { ok: false, detail: "quote payTo is not an address" };
   if (!sameAddress(payTo, entryPayTo)) return { ok: false, detail: `quote payTo ${payTo} != allowlist payTo ${entryPayTo}` };
-  const amt = pick["maxAmountRequired"];
-  if (typeof amt !== "string" || !/^[0-9]{1,30}$/.test(amt)) return { ok: false, detail: "quote maxAmountRequired is not a decimal string" };
+  // SPEC-M3E: v1 names this maxAmountRequired; v2 names it amount. Same semantics (µUSDC cap).
+  const amt = pick["maxAmountRequired"] ?? pick["amount"];
+  if (typeof amt !== "string" || !/^[0-9]{1,30}$/.test(amt)) return { ok: false, detail: "quote maxAmountRequired/amount is not a decimal string" };
   const quoted = BigInt(amt);
   if (quoted <= 0n) return { ok: false, detail: "quote maxAmountRequired is 0" };
   if (quoted > maxPerCallUsd) return { ok: false, detail: `PER_CALL_CAP: quoted ${quoted} > maxPerCallUsd ${maxPerCallUsd}` };

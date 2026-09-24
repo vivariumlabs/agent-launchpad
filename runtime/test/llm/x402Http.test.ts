@@ -341,7 +341,7 @@ describe("quote validation ⇒ endpoint unhealthy (price) + rotate; no execute, 
     ["unknown network", { network: "ethereum" }],
     ["wrong asset (not Base USDC)", { asset: "0x1111111111111111111111111111111111111111" }],
     ["wrong scheme", { scheme: "upto" }],
-    ["unsupported x402Version", { version: 2 }],
+    ["unsupported x402Version", { version: 3 }], // M3E: v2 became a SUPPORTED live shape (was the fixture here)
     ["EIP-712 name mismatch", { extra: { name: "Fake USD", version: "2" } }],
     ["EIP-712 version mismatch", { extra: { name: "USD Coin", version: "1" } }],
     ["zero amount", { amount: "0" }],
@@ -677,6 +677,27 @@ describe("wire helpers", () => {
   it("checkQuote returns the parsed requirement", () => {
     const q = checkQuote(quote402().body, PAYTO_INF_STD, USDC_BASE_DOMAIN, EST, 500_000n);
     expect(q).toMatchObject({ ok: true, req: { scheme: "exact", network: "base", maxAmountRequired: Q, maxTimeoutSeconds: 60 } });
+  });
+  it("M3E: v2 body with `amount` (live x402-farm/Venice shape, curation 2026-09-24) parses; version 3 refused", () => {
+    const v2 = JSON.stringify({
+      x402Version: 2,
+      error: "Payment required",
+      accepts: [
+        { scheme: "exact", network: "solana", amount: "999", asset: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", payTo: "8qUL" },
+        { scheme: "exact", network: "eip155:8453", amount: Q.toString(10), asset: USDC_BASE_DOMAIN.verifyingContract, payTo: PAYTO_INF_STD, maxTimeoutSeconds: 300, extra: { name: "USD Coin", version: "2" } },
+      ],
+    });
+    const q = checkQuote(v2, PAYTO_INF_STD, USDC_BASE_DOMAIN, EST, 500_000n);
+    expect(q).toMatchObject({ ok: true, req: { scheme: "exact", network: "eip155:8453", maxAmountRequired: Q } });
+    const v3 = v2.replace('"x402Version":2', '"x402Version":3');
+    expect(checkQuote(v3, PAYTO_INF_STD, USDC_BASE_DOMAIN, EST, 500_000n)).toMatchObject({ ok: false, detail: expect.stringContaining("unsupported x402Version") });
+  });
+  it("M3E: v1 bare-'base' network with maxAmountRequired (live DexL shape) still parses", () => {
+    const v1 = JSON.stringify({
+      x402Version: 1,
+      accepts: [{ scheme: "exact", network: "base", maxAmountRequired: Q.toString(10), asset: USDC_BASE_DOMAIN.verifyingContract, payTo: PAYTO_INF_STD, resource: "https://agents.dexl.io/v1/chat/completions" }],
+    });
+    expect(checkQuote(v1, PAYTO_INF_STD, USDC_BASE_DOMAIN, EST, 500_000n)).toMatchObject({ ok: true, req: { network: "base", maxAmountRequired: Q } });
   });
   it("encodePaymentHeader / decodeSettlement round-trip shapes", () => {
     const signed: SignedX402Auth = {
