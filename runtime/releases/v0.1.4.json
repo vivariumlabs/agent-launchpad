@@ -1,0 +1,16 @@
+{
+  "version": "v0.1.4",
+  "imageRepo": "ghcr.io/vivariumlabs/agent-runtime",
+  "imageDigest": "sha256:970005fbff523b904cfeaa3838d79da0376c9fbbd5a549ee5245f5e8d3573c01",
+  "imageRef": "ghcr.io/vivariumlabs/agent-runtime@sha256:970005fbff523b904cfeaa3838d79da0376c9fbbd5a549ee5245f5e8d3573c01",
+  "platform": "linux/arm64",
+  "composeFile": "v0.1.4.yml",
+  "composeSha256": "82272ccc75a36ebe1ce4cc7ba27f943eff78ff47bac1930427e97a44da270ab8",
+  "commit": "b59bc5152883bc31b8f348093ecb3c9c0450d5e7",
+  "inputsCommit": "b59bc5152883bc31b8f348093ecb3c9c0450d5e7",
+  "inputsDirty": false,
+  "sourceDateEpoch": 1790253260,
+  "oyster": { "arch": "arm64", "preset": "blue", "initParams": ["agent-id:1:0:utf8:agent-<agentId>", "config-hash:1:0:utf8:<configHash>", "agent.json:0:0:file:<agent.json>", "runtime.json:0:0:file:<runtime.json>"] },
+  "imageIds": { "9002": "d8a853f3d77f8bc2b62864d60a95359e230757aaa1ea41ebb3e2fd20df5193d4" },
+  "configHashes": { "9002": "0x2df06a409b39eafa5a747646d82f9fb96d677e1be84a30e57b301d58cae5b43c" }
+}
