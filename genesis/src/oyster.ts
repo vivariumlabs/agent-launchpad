@@ -8,10 +8,12 @@
 //   - `verify --image-id`: runtime/spikes/m0-marlin-kms/RUNBOOK.md step 3 (M0-proven spelling);
 //   - IP lookup: runtime/spikes/m0-marlin-kms/RESULTS.md — control plane `GET <cp>/ip?id=<jobId>&region=<r>`,
 //     CP URL from the indexer GraphQL `providerById { cp }`.
-// The wallet key is passed to the CLI as a FILE PATH (`--wallet-private-key-file`), never on argv.
+// The wallet key is passed to the CLI as a FILE PATH (`--wallet-file`), never on argv.
 // SPEC-M3C §7: optional `deploy --enclave-memory <MB>` / `--bandwidth <KBps>` (oyster-cvm 5.0.1;
 // --bandwidth is KBps, default 10), pushed only when set; init params stay LAST.
+// flag names verified live against oyster-cvm 5.0.1, 2026-09-24.
 
+import { getAddress } from "viem";
 import type { Exec } from "./exec.js";
 import type { HttpClient } from "./http.js";
 
@@ -120,7 +122,7 @@ export function deployArgs(s: OysterSettings, p: DeployParams): string[] {
   const args = [
     "deploy",
     "--deployment", s.deployment,
-    "--wallet-private-key-file", p.walletKeyPath,
+    "--wallet-file", p.walletKeyPath,
     "--duration-in-minutes", String(p.durationMin),
     "--docker-compose", p.composePath,
     "--arch", s.arch,
@@ -194,7 +196,9 @@ export class OysterCli implements Oyster {
 
   private async controlPlane(): Promise<string> {
     if (this.s.cpUrl !== undefined) return this.s.cpUrl;
-    const query = `query { providerById(id: "${this.s.operator.toLowerCase()}") { cp } }`;
+    // indexer GraphQL providerById(id: …) requires the EIP-55 checksummed operator address — a
+    // lowercase id returns null (verified live against oyster-cvm 5.0.1, 2026-09-24).
+    const query = `query { providerById(id: "${getAddress(this.s.operator)}") { cp } }`;
     const res = await this.http.postJson(this.s.indexerUrl, { query }, this.s.httpTimeoutSec * 1000);
     if (res.status !== 200) throw new Error(`oyster indexer returned HTTP ${res.status}`);
     let cp: unknown;

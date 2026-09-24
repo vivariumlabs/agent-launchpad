@@ -87,7 +87,7 @@ export class FakeOyster implements Exec {
           this.script.deployFail! -= 1;
           return bad("[ERROR] Insufficient USDC balance / provider has no capacity");
         }
-        const keyFile = this.flag(args, "--wallet-private-key-file")!;
+        const keyFile = this.flag(args, "--wallet-file")!;
         const owner = readOwner(keyFile);
         const params = this.flagAll(args, "--init-params");
         const agentId = Number((initParam(params, "agent-id") ?? "agent-0").slice("agent-".length));

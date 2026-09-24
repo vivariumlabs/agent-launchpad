@@ -44,7 +44,7 @@ export function createOrchestrator(cfg: GenesisConfig, opts: OrchestratorOpts): 
   // oyster-cvm reads its own key file; it must be the SAME wallet (job owner = listJobs address).
   if (cfg.oyster.walletKeyFile === cfg.walletKeyPath) {
     if (format !== "hex") {
-      throw new Error(`oyster-cvm --wallet-private-key-file needs a raw-hex key file; ${cfg.walletKeyPath} is JSON — set oyster.walletKeyFile`);
+      throw new Error(`oyster-cvm --wallet-file needs a raw-hex key file; ${cfg.walletKeyPath} is JSON — set oyster.walletKeyFile`);
     }
   } else {
     const o = loadWallet(cfg.oyster.walletKeyFile);

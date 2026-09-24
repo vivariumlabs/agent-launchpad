@@ -54,7 +54,7 @@ describe("happy path REQUESTED → LIVE", () => {
       `agent.json:0:0:file:${join(dir, "agent.json")}`,
       `runtime.json:0:0:file:${join(dir, "runtime.json")}`,
     ]);
-    expect(dep[dep.indexOf("--wallet-private-key-file") + 1]).toBe(h.keyPath);
+    expect(dep[dep.indexOf("--wallet-file") + 1]).toBe(h.keyPath);
     expect(dep.join(" ")).not.toMatch(/--wallet-private-key\s/);
     // agent.json deployed byte-for-byte; runtime.json = ops template + tee + imageId (= registered codeHash).
     expect(readFileSync(join(dir, "agent.json"), "utf8")).toBe(f.frozenJson);

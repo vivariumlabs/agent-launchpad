@@ -107,11 +107,11 @@ describe("buildConfig", () => {
     expect(() => buildConfig(base({ seeding: { ethUsdMicro: "0" } }), d)).toThrow();
   });
 
-  it("M3C: oyster.enclaveMemoryMb / oyster.bandwidthKbps parse as positive safe ints (optional, no DEFAULT); bad values rejected", () => {
+  it("M3C-drift: oyster.enclaveMemoryMb / oyster.bandwidthKbps parse as positive safe ints, DEFAULT 3072 / 512; bad values rejected", () => {
     const d = fixtureDir();
     const unset = buildConfig(base(), d);
-    expect(unset.oyster.enclaveMemoryMb).toBeUndefined();
-    expect(unset.oyster.bandwidthKbps).toBeUndefined();
+    expect(unset.oyster.enclaveMemoryMb).toBe(3072);
+    expect(unset.oyster.bandwidthKbps).toBe(512);
     const set = buildConfig(base({ oyster: { enclaveMemoryMb: 3072, bandwidthKbps: 250 } }), d);
     expect(set.oyster.enclaveMemoryMb).toBe(3072);
     expect(set.oyster.bandwidthKbps).toBe(250);
@@ -119,6 +119,13 @@ describe("buildConfig", () => {
       expect(() => buildConfig(base({ oyster: { enclaveMemoryMb: bad } }), d), `enclaveMemoryMb ${String(bad)}`).toThrow();
       expect(() => buildConfig(base({ oyster: { bandwidthKbps: bad } }), d), `bandwidthKbps ${String(bad)}`).toThrow();
     }
+  });
+
+  it("M3C-drift: oyster.enclaveMemoryMb / oyster.bandwidthKbps DEFAULT to 3072 / 512 (required for our image; drill 2026-09-23/24)", () => {
+    const d = fixtureDir();
+    const c = buildConfig(base(), d);
+    expect(c.oyster.enclaveMemoryMb).toBe(3072);
+    expect(c.oyster.bandwidthKbps).toBe(512);
   });
 
   it("mainnet profile: every leg required", () => {

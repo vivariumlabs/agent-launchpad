@@ -5,7 +5,7 @@
 //
 // Accepted file formats:
 //   - raw hex: "0x<64 hex>" or "<64 hex>" (whitespace-trimmed) — also what `oyster-cvm
-//     --wallet-private-key-file` reads;
+//     --wallet-file` reads;
 //   - `cast wallet new --json` output: { data: [ { private_key: "0x…" } ] } or { private_key } —
 //     the .secrets/m0-drill-wallet.json format.
 

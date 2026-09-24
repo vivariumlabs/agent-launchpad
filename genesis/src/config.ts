@@ -158,7 +158,7 @@ export const GenesisConfigFileSchema = z
     oyster: z
       .object({
         bin: z.string().min(1).default("oyster-cvm"),
-        /** Raw-hex key file for `--wallet-private-key-file` (DEFAULT walletKeyPath). Same wallet. */
+        /** Raw-hex key file for `--wallet-file` (DEFAULT walletKeyPath). Same wallet. */
         walletKeyFile: z.string().min(1).optional(),
         deployment: z.string().min(1).default("arb"),
         arch: z.enum(["arm64", "amd64"]).default("arm64"),
@@ -167,10 +167,14 @@ export const GenesisConfigFileSchema = z
         operator: z.string().regex(/^0x[0-9a-fA-F]{40}$/).default(OYSTER_OPERATOR_DEFAULT),
         instanceType: z.string().min(1).optional(),
         rpc: z.string().url().optional(),
-        /** SPEC-M3C §7: `deploy --enclave-memory <MB>`; unset ⇒ omitted (CLI default). Our image REQUIRES 3072. */
-        enclaveMemoryMb: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
-        /** SPEC-M3C §7: `deploy --bandwidth <KBps>` (CLI 5.0.1: KBps, default 10); unset ⇒ omitted. */
-        bandwidthKbps: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+        /** SPEC-M3C §7: `deploy --enclave-memory <MB>`; required for our image (drill 2026-09-23/24). */
+        enclaveMemoryMb: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).default(3072),
+        /**
+         * SPEC-M3C §7: `deploy --bandwidth <KBps>` (CLI 5.0.1: KBps, default 10); testnet profile —
+         * drill-proven ≈0.24 USDC/h all-in, ~4 min pull of the 98MB image; mainnet re-pins later
+         * (pull-burst then `update` down).
+         */
+        bandwidthKbps: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).default(512),
         /** Rental per deploy, minutes. DEFAULT per profile: testnet 180, mainnet 43_200 (30 d, 04 §2). */
         durationMin: z.number().int().positive().optional(),
         /** Rental rate for the projected-cost log, µUSDC per hour (DEFAULT 51_200 = 0.0512 USDC/h, M0 RESULTS). */

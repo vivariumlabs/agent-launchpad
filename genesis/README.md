@@ -37,7 +37,7 @@ What it **cannot** do:
 
 Its own key is the **operational wallet**, loaded from `walletKeyPath` (the `.secrets/` pattern). It
 is read once into a signing account and is never logged, stored in the db or passed on a command
-line. `oyster-cvm` gets the key file *path* (`--wallet-private-key-file`). If the key is compromised,
+line. `oyster-cvm` gets the key file *path* (`--wallet-file`). If the key is compromised,
 the worst case is junk launches and a drained funding wallet (04 §7). Agent funds are never at risk.
 The response is to rotate the key and pause the factory from the multisig.
 
@@ -199,7 +199,7 @@ The only input is argv; the orchestrator reads no environment variables. Minimal
 }
 ```
 
-`oyster-cvm --wallet-private-key-file` reads a raw-hex key file. If `walletKeyPath` is a
+`oyster-cvm --wallet-file` reads a raw-hex key file. If `walletKeyPath` is a
 `cast wallet --json` file, point `oyster.walletKeyFile` at a raw-hex copy of the **same** wallet.
 Startup refuses if the two addresses differ. The compose must be a `releases/<version>.yml` written
 by `runtime/scripts/release.sh`; the PLACEHOLDER template is refused.

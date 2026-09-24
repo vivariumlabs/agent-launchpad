@@ -91,10 +91,10 @@ describe("deploy", () => {
     jobName: "agent-12",
   };
 
-  it("argv: key passed as --wallet-private-key-file (never the key), compose, duration, init params last", () => {
+  it("argv: key passed as --wallet-file (never the key), compose, duration, init params last", () => {
     const a = deployArgs(S, p);
     expect(a.slice(0, 3)).toEqual(["deploy", "--deployment", "arb"]);
-    expect(a[a.indexOf("--wallet-private-key-file") + 1]).toBe("/secrets/funding.key");
+    expect(a[a.indexOf("--wallet-file") + 1]).toBe("/secrets/funding.key");
     expect(a).not.toContain("--wallet-private-key");
     expect(a[a.indexOf("--duration-in-minutes") + 1]).toBe("43200");
     expect(a[a.indexOf("--docker-compose") + 1]).toBe("/rel/v1.yml");
@@ -103,6 +103,12 @@ describe("deploy", () => {
     expect(a[a.indexOf("--job-name") + 1]).toBe("agent-12");
     const ips = a.filter((_, i) => a[i - 1] === "--init-params");
     expect(ips).toEqual(deployInitParams(12, HASH, p.agentJsonPath, p.runtimeJsonPath));
+  });
+
+  it("M3C-drift: --wallet-file replaces --wallet-private-key-file (oyster-cvm 5.0.1 CLI rename)", () => {
+    const a = deployArgs(S, p);
+    expect(a).toContain("--wallet-file");
+    expect(a).not.toContain("--wallet-private-key-file");
   });
 
   it("M3C: --enclave-memory <MB> / --bandwidth <KBps> pushed when set (before the init params), omitted when unset", () => {
@@ -169,8 +175,16 @@ describe("ip(jobId) via indexer GraphQL + control plane (M0 RESULTS)", () => {
     const cli = new OysterCli(S, new RecordingExec(() => ok("")), h);
     expect(await cli.ip("0x37a")).toBe("3.3.3.3");
     expect(h.urls[0]).toBe(S.indexerUrl);
-    expect(JSON.stringify(h.bodies[0])).toContain(`providerById(id: \\"${S.operator}\\")`);
+    expect(JSON.stringify(h.bodies[0])).toContain(`providerById(id: \\"0xe10Fa12f580e660Ecd593Ea4119ceBC90509D642\\")`);
     expect(h.urls[1]).toBe("https://cp.example.com/ip?id=0x37a&region=ap-south-1");
+  });
+
+  it("M3C-drift: providerById query uses the EIP-55 checksummed operator address (lowercase config ⇒ checksummed query)", async () => {
+    const h = http("https://cp.example.com/", JSON.stringify({ id: "0x1", ip: "3.3.3.3" }));
+    const s: OysterSettings = { ...S, operator: "0xe10fa12f580e660ecd593ea4119cebc90509d642" };
+    const cli = new OysterCli(s, new RecordingExec(() => ok("")), h);
+    expect(await cli.ip("0x1")).toBe("3.3.3.3");
+    expect(JSON.stringify(h.bodies[0])).toContain("0xe10Fa12f580e660Ecd593Ea4119ceBC90509D642");
   });
 
   it("plain-text IP accepted; garbage / non-200 ⇒ null; bad job id refused", async () => {
