@@ -1,6 +1,7 @@
 {
   "tee": true,
-  "imageId": "0xab792b20ba3bdf6b2e53fd9845faacacdbabb88ee6a64a2d8a43aca037b9383e",
+  "imageId": "0x13cb2f550f5df40c1142fc9fef77836942b4bf41da933f0dbeaed203288d5cad",
+  "imageDigest": "sha256:fcbb93a229a4fa94b3132a25ba828e4560a46ade6ec6596f0b345d0fe74a9629",
   "dbPath": "/data/agent.db",
   "snapshotDir": "/data/snapshots",
   "rpc": {
