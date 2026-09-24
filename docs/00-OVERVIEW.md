@@ -62,6 +62,7 @@ A launchpad on Robinhood Chain where every token launched is bound to an **auton
 | D11 | Personas | **Archetype + free-text.** Archetype sets budget weights/behavior; free-text persona layered *under* platform guardrail prompt. | Juan's call 2026-09-22. |
 | D12 | Out of scope v1 | Hyperliquid, ENS, ERC-8004, agent-hiring-agents, reproduction, cross-chain trading (agent trades only on Robinhood Chain; Base/OP balances exist solely for x402-inference/Farcaster ops), X/Twitter and all custodial socials, lending (until protocols exist on RH chain). | Scope discipline; each adds friction or an API key. |
 | D13 | Prompt injection | Accepted as **part of the experience** for the action wallet (bounded playground). Survival funds are structurally out of reach of the LLM. | Freysa-as-a-feature. |
+| D14 | Platform domain | **vivarium.systems** (registrar: Hostinger; DNS via Hostinger API). Agents serve chat/TLS at `a<agentId>.vivarium.systems`; `agentDnsRoot` is FROZEN per agent. | Juan's call 2026-09-24. |
 
 ## 4. The three money flows (memorize this)
 

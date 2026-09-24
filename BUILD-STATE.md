@@ -43,7 +43,8 @@ With rental fee-accounted, a mainnet 75 USDG creation fee leaves ~9 USDG treasur
 7. Farcaster leg — needs ~$10 OP mainnet funding (ask Juan when reached).
 
 ## Blocked on Juan
-- Domain/DNS zone for agent subdomains (s3 item 4) — the ONE open decision; agentDnsRoot is frozen/permanent, TLS off until chosen.
+- ~~Domain decision~~ DECIDED 2026-09-24 (D14): **vivarium.systems**, Hostinger. Remaining: Juan creates a Hostinger API token (hPanel → API) and saves it to `.secrets/.hostinger`; then s3 item 4 (A record + ACME staging issuance on a CVM) is unblocked.
+- s3 item 5 autonomy CONFIRMED (2026-09-24 research): Turbo accepts account-less crypto top-ups (base-eth, base-usdc, usdc, ethereum, ario…) AND x402 payments in USDC on Base — genesis seeds credits from the funding wallet programmatically; agents self-top-up via x402/base-usdc from their own wallets. No manual step, no KYC anywhere. Agent self-top-up implementation = the planned research spike (T2 arweaveFunding leg → Turbo x402/crypto top-up).
 - OP ~$10: Juan sends when items 4-6 are cleared (his ruling 2026-09-24).
 - Fee-sizing flag: Juan's ruling 2026-09-24 — DEFER to the end, re-price the 75 USDG creation fee once all real costs (hosting at real bandwidth ≈0.24 USDC/h, Turbo, Across, Farcaster) are measured. Do not change it earlier.
 
