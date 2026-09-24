@@ -3,11 +3,12 @@
 import { getAddress } from "viem";
 import { describe, expect, it } from "vitest";
 import { fundable, RUNWAY_INFINITE_DAYS, runwayDays } from "../../src/policy/runway.js";
+import { resolveConfig } from "../../src/config/schema.js";
 import type { Chain, ProposedAction, TreasuryPurpose } from "../../src/policy/types.js";
 import {
   ACTION, ARWEAVE, CP, DAY, E18, E6, MARLIN_PAY, MARLIN_PAY2, NOW, PAYTO_DATA, PAYTO_INF_CHEAP, PAYTO_INF_STD,
   SPOKE, TOKEN_X, TREASURY, USDG_RH,
-  cfg, ev, expectAllow, expectDeny, mkLedger, mkRunwayState, mkState, raw,
+  agentJson, cfg, ev, expectAllow, expectDeny, mkLedger, mkRunwayState, mkState, platformJson, raw,
 } from "./helpers.js";
 
 type TT = Extract<ProposedAction, { kind: "treasuryTransfer" }>;
@@ -102,7 +103,7 @@ describe("T2: destination/chain/asset matrix", () => {
     ["acrossBridge base ETH → spokePool.base", tt("acrossBridge", "base", "ETH", SPOKE.base, E18 / 1000n, TREASURY)],
     ["acrossBridge optimism ETH → spokePool.optimism", tt("acrossBridge", "optimism", "ETH", SPOKE.optimism, E18 / 1000n, TREASURY)],
     ["acrossBridge recipient checksummed treasury", tt("acrossBridge", "rh", "USDG", SPOKE.rh, E6, getAddress(TREASURY))],
-    ["arweaveFunding rh USDG → arweave", tt("arweaveFunding", "rh", "USDG", ARWEAVE, 5n * E6)],
+    ["arweaveFunding base ETH → arweave (SPEC-M3D §1d: Turbo base-eth top-up)", tt("arweaveFunding", "base", "ETH", ARWEAVE, 5n * E6)],
     ["x402Data base USDC → data payTo", tt("x402Data", "base", "USDC", PAYTO_DATA, E6)],
     ...CHAINS.flatMap((c): Array<[string, TT]> => [
       [`gasTopUp ${c} ETH → own treasury`, tt("gasTopUp", c, "ETH", TREASURY, E18 / 1000n)],
@@ -124,9 +125,10 @@ describe("T2: destination/chain/asset matrix", () => {
     ["acrossBridge to spokePool of another chain", tt("acrossBridge", "rh", "USDG", SPOKE.base, E6, TREASURY)],
     ["acrossBridge to random", tt("acrossBridge", "arbitrum", "USDC", CP, E6, TREASURY)],
     ["acrossBridge to own treasury", tt("acrossBridge", "arbitrum", "USDC", TREASURY, E6, TREASURY)],
-    ["arweaveFunding wrong chain", tt("arweaveFunding", "base", "USDG", ARWEAVE, E6)],
-    ["arweaveFunding wrong asset", tt("arweaveFunding", "rh", "USDC", ARWEAVE, E6)],
-    ["arweaveFunding wrong to", tt("arweaveFunding", "rh", "USDG", CP, E6)],
+    ["arweaveFunding wrong chain (rh ETH)", tt("arweaveFunding", "rh", "ETH", ARWEAVE, E6)],
+    ["arweaveFunding wrong asset (base USDC)", tt("arweaveFunding", "base", "USDC", ARWEAVE, E6)],
+    ["arweaveFunding wrong to", tt("arweaveFunding", "base", "ETH", CP, E6)],
+    ["M3D: arweaveFunding rh USDG (the pre-M3D leg) now denied", tt("arweaveFunding", "rh", "USDG", ARWEAVE, E6)],
     ["gasTopUp asset USDC", tt("gasTopUp", "base", "USDC", TREASURY, E6)],
     ["gasTopUp asset USDG", tt("gasTopUp", "rh", "USDG", ACTION, E6)],
     ["gasTopUp to random", tt("gasTopUp", "rh", "ETH", CP, E18 / 1000n)],
@@ -201,7 +203,7 @@ describe("T3: per-purpose daily caps", () => {
     { name: "oysterRental 100 USDC", action: (x) => tt("oysterRental", "arbitrum", "USDC", MARLIN_PAY, x), key: "oysterRental", cap: 100n * E6, spent: 60n * E6 },
     { name: "acrossBridge 1000 (USDG)", action: (x) => tt("acrossBridge", "rh", "USDG", SPOKE.rh, x, TREASURY), key: "acrossBridge", cap: 1000n * E6, spent: 900n * E6 },
     { name: "acrossBridge 1000 (USDC summed 1:1)", action: (x) => tt("acrossBridge", "arbitrum", "USDC", SPOKE.arbitrum, x, TREASURY), key: "acrossBridge", cap: 1000n * E6, spent: 900n * E6 },
-    { name: "arweaveFunding 10 USDG", action: (x) => tt("arweaveFunding", "rh", "USDG", ARWEAVE, x), key: "arweaveFunding", cap: 10n * E6, spent: 3n * E6 },
+    { name: "arweaveFunding 0.002 ETH (base ETH, wei vs arweaveFundingDailyWei, SPEC-M3D §1d ruling)", action: (x) => tt("arweaveFunding", "base", "ETH", ARWEAVE, x), key: "arweaveFunding", cap: 2n * 10n ** 15n, spent: 5n * 10n ** 14n },
     ...CHAINS.map((c): Row => ({ name: `gasTopUp 0.01 ETH on ${c}`, action: (x) => tt("gasTopUp", c, "ETH", ACTION, x), key: `gasTopUp:${c}`, cap: 10n ** 16n, spent: 9n * 10n ** 15n })),
     ...CHAINS.map((c): Row => ({ name: `acrossBridge ETH from ${c} counts against gasTopUp:${c}`, action: (x) => tt("acrossBridge", c, "ETH", SPOKE[c], x, TREASURY), key: `gasTopUp:${c}`, cap: 10n ** 16n, spent: 9n * 10n ** 15n })),
     { name: "x402Data 2 USDC", action: (x) => tt("x402Data", "base", "USDC", PAYTO_DATA, x), key: "x402Data", cap: 2n * E6, spent: E6 },
@@ -240,8 +242,8 @@ describe("T3: per-purpose daily caps", () => {
     expectAllow(ev(tt("gasTopUp", "rh", "ETH", ACTION, 10n ** 16n), { ledger: L }));
   });
   it("T3: day rollover — yesterday's full bucket does not count today", () => {
-    const L = mkLedger({ dayKey: "2026-09-22", treasurySpent: { arweaveFunding: 10n * E6 } });
-    expectAllow(ev(tt("arweaveFunding", "rh", "USDG", ARWEAVE, 10n * E6), { ledger: L }));
+    const L = mkLedger({ dayKey: "2026-09-22", treasurySpent: { arweaveFunding: 2n * 10n ** 15n } });
+    expectAllow(ev(tt("arweaveFunding", "base", "ETH", ARWEAVE, 2n * 10n ** 15n), { ledger: L }));
   });
 });
 
@@ -287,8 +289,8 @@ describe("T0: runway gate on treasury outflows", () => {
     expectAllow(ev(tt("x402Data", "base", "USDC", PAYTO_DATA, E6), { state: at1d() }));
   });
   it("T0 rev 2: arweaveFunding is exempt — spending across the 45d haircut boundary and at 0d funded ⇒ allow", () => {
-    expectAllow(ev(tt("arweaveFunding", "rh", "USDG", ARWEAVE, 1n), { state: mkRunwayState(0n, 76_884_423n) }));
-    expectAllow(ev(tt("arweaveFunding", "rh", "USDG", ARWEAVE, 10n * E6), { state: mkRunwayState(0n, 10n * E6) }));
+    expectAllow(ev(tt("arweaveFunding", "base", "ETH", ARWEAVE, 1n), { state: mkRunwayState(0n, 76_884_423n) }));
+    expectAllow(ev(tt("arweaveFunding", "base", "ETH", ARWEAVE, 10n * E6), { state: mkRunwayState(0n, 10n * E6) }));
   });
   it("T0: acrossBridge of arbitrum USDC that drops runway 45 → 44 ⇒ RUNWAY", () => {
     expectDeny(ev(tt("acrossBridge", "arbitrum", "USDC", SPOKE.arbitrum, 1n, TREASURY), { state: at45() }), "RUNWAY");
@@ -440,5 +442,37 @@ describe("T5: treasurySwap", () => {
     const s = mkRunwayState(0n, 0n, NOW - 100n * DAY);
     s.treasury.rh = { ...s.treasury.rh, tokens: { [TOKEN_X]: 10n } };
     expectAllow(ev({ kind: "treasurySwap", tokenIn: TOKEN_X, amountIn: 10n, minOut: 1n }, { state: s }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SPEC-M3D §1d — T2[arweaveFunding] repoint: the live Turbo base-eth top-up
+// ---------------------------------------------------------------------------
+
+describe("M3D: T2 arweaveFunding = Turbo crypto top-up (base / ETH / frozen arweaveFundingAddress)", () => {
+  const TURBO_WALLET = "0x6A0A10FFD285c971B841bee8892878c0d583Bf67" as const;
+  const turboCfg = resolveConfig({ platform: { ...platformJson(), arweaveFundingAddress: TURBO_WALLET }, agent: agentJson, ownAddresses: { treasury: TREASURY, action: ACTION } });
+  const topUp = (over: Partial<TT> = {}): TT => ({ kind: "treasuryTransfer", purpose: "arweaveFunding", chain: "base", asset: "ETH", to: TURBO_WALLET, amount: 5n * E6, ...over });
+
+  it("M3D: base ETH to the configured Turbo payment wallet ⇒ allow (checksum/lowercase alike)", () => {
+    expectAllow(ev(topUp(), { cfg: turboCfg }));
+    expectAllow(ev(topUp({ to: TURBO_WALLET.toLowerCase() as `0x${string}` }), { cfg: turboCfg }));
+  });
+  it("M3D: rh/USDG (the pre-M3D leg) now denied WHITELIST; any other chain/asset denied", () => {
+    expectDeny(ev(topUp({ chain: "rh", asset: "USDG" }), { cfg: turboCfg }), "WHITELIST");
+    for (const chain of ["rh", "arbitrum", "optimism"] as const) expectDeny(ev(topUp({ chain }), { cfg: turboCfg }), "WHITELIST");
+    for (const asset of ["USDG", "USDC"] as const) expectDeny(ev(topUp({ asset }), { cfg: turboCfg }), "WHITELIST");
+  });
+  it("M3D: wrong `to` (random, own treasury, fixture ARWEAVE under the turbo cfg) ⇒ WHITELIST", () => {
+    for (const to of [CP, TREASURY, ARWEAVE]) expectDeny(ev(topUp({ to }), { cfg: turboCfg }), "WHITELIST");
+  });
+  it("M3D: T3 arweaveFunding bucket is WEI vs arweaveFundingDailyWei (DEFAULT 0.002 ETH); G3 on base native; T0-exempt", () => {
+    expect(turboCfg.arweaveFundingDailyWei).toBe(2_000_000_000_000_000n);
+    expectAllow(ev(topUp({ amount: turboCfg.arweaveFundingDailyWei }), { cfg: turboCfg }));
+    expectDeny(ev(topUp({ amount: turboCfg.arweaveFundingDailyWei + 1n }), { cfg: turboCfg }), "DAILY_CAP");
+    const poor = mkState();
+    poor.treasury.base = { native: 1n, USDC: 50n * E6 };
+    expectDeny(ev(topUp(), { cfg: turboCfg, state: poor }), "INSUFFICIENT_BALANCE");
+    expectAllow(ev(topUp(), { cfg: turboCfg, state: mkRunwayState(0n, 0n, NOW - 10n * DAY) }));
   });
 });

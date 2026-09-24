@@ -1,4 +1,4 @@
-// SPEC-M2 §4. Pure ledger reducers. No mutation: every reducer returns a new
+// SPEC-M2 §4. Pure ledger reducers. SPEC-M3D §3d: + fcUserDataToday (S3 pace counter, G4-rolled). No mutation: every reducer returns a new
 // object (structural sharing of untouched sub-objects). No clock: `now` is an
 // explicit input. Integer math only.
 
@@ -42,6 +42,7 @@ export function emptyLedger(now: UnixSeconds): BudgetLedger {
     castPostsToday: 0n,
     castRepliesToday: 0n,
     journalToday: 0n,
+    fcUserDataToday: 0n,
   };
 }
 
@@ -54,7 +55,7 @@ export function emptyLedger(now: UnixSeconds): BudgetLedger {
  * refresh daily caps. Only dayKeyOf(now) > ledger.dayKey rolls: inferenceSpent,
  * treasurySpent, counterpartySpent (incl. A2 denominator snapshots),
  * allowanceAmountToday and the SPEC-M2B pace counters (castPostsToday,
- * castRepliesToday, journalToday) → empty/0n; lastAllowanceAt and feeIncome7d
+ * castRepliesToday, journalToday) + SPEC-M3D fcUserDataToday → empty/0n; lastAllowanceAt and feeIncome7d
  * are kept.
  *
  * Used by BOTH the engine (read view) and applyApproved (write path), so the
@@ -75,6 +76,7 @@ export function rollLedger(ledger: BudgetLedger, now: UnixSeconds): BudgetLedger
     castPostsToday: 0n,
     castRepliesToday: 0n,
     journalToday: 0n,
+    fcUserDataToday: 0n,
   };
 }
 
@@ -141,6 +143,9 @@ export function applyApproved(
       return { ...L, castRepliesToday: L.castRepliesToday + 1n };
     case "journalWrite":
       return { ...L, journalToday: L.journalToday + 1n };
+    // SPEC-M3D §3d S3 pace counter.
+    case "fcUserData":
+      return { ...L, fcUserDataToday: L.fcUserDataToday + 1n };
     case "heartbeat":
     case "registerInstance":
     case "distribute":
@@ -149,6 +154,8 @@ export function applyApproved(
     case "actionLp":
     case "actionApprove":
     case "treasuryApprove":
+    case "fcRegister": // SPEC-M3D §3d: T6 caps the price per call; no daily bucket
+    case "fcAddKey":
       // No budget buckets for these kinds (A2-exempt / zero-value / income / approvals).
       return L;
   }

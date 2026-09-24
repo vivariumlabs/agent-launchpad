@@ -416,7 +416,7 @@ describe("INV7: metamorphic default-deny", () => {
   // Templates known-allowed under the default fixtures.
   const allowedTemplates: ProposedAction[] = [
     { kind: "treasuryTransfer", purpose: "oysterRental", chain: "arbitrum", asset: "USDC", to: MARLIN_PAY, amount: 50n * E6 },
-    { kind: "treasuryTransfer", purpose: "arweaveFunding", chain: "rh", asset: "USDG", to: ARWEAVE, amount: 5n * E6 },
+    { kind: "treasuryTransfer", purpose: "arweaveFunding", chain: "base", asset: "ETH", to: ARWEAVE, amount: 5n * E6 }, // SPEC-M3D §1d
     { kind: "treasuryTransfer", purpose: "gasTopUp", chain: "rh", asset: "ETH", to: TREASURY, amount: E18 / 200n },
     { kind: "treasuryTransfer", purpose: "x402Data", chain: "base", asset: "USDC", to: PAYTO_DATA, amount: E6 },
     { kind: "treasuryTransfer", purpose: "acrossBridge", chain: "rh", asset: "USDG", to: SPOKE.rh, amount: 100n * E6, recipient: TREASURY, destChain: "base" },

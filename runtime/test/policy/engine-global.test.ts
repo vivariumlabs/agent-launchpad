@@ -15,6 +15,7 @@ import { ProposedActionSchema } from "../../src/policy/validate.js";
 import {
   ACTION, CP, DAY, E18, E6, MARLIN_PAY, NOW, SPOKE, SWAP_ROUTER, TOKEN_X, TREASURY,
   cfg, ev, expectAllow, expectDeny, mkLedger, mkState, raw,
+  FC_PUBKEY,
 } from "./helpers.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -39,6 +40,10 @@ const VALID: Record<ProposedAction["kind"], ProposedAction> = {
   journalWrite: { kind: "journalWrite", contentHash: `0x${"44".repeat(32)}`, sizeBytes: 1024n },
   actionApprove: { kind: "actionApprove", token: TOKEN_X, spender: SWAP_ROUTER, amount: E18 },
   treasuryApprove: { kind: "treasuryApprove", token: TOKEN_X, spender: SWAP_ROUTER, amount: E18 },
+  // SPEC-M3D §3d
+  fcRegister: { kind: "fcRegister", priceWei: 75_000_000_000_000n },
+  fcAddKey: { kind: "fcAddKey", key: FC_PUBKEY, metadata: `0x${"ab".repeat(96)}` },
+  fcUserData: { kind: "fcUserData", contentHash: `0x${"55".repeat(32)}`, sizeBytes: 20n },
 };
 
 describe("sanity: every VALID fixture is allowed under defaults", () => {
@@ -127,7 +132,7 @@ describe("G2: default-deny dispatch", () => {
 
   it("G2: treasury rule module denies every action-wallet kind with NO_RULE", () => {
     const s = mkState();
-    for (const k of ["actionTransfer", "actionSwap", "actionLp", "actionMint", "actionApprove", "castPost", "castReply", "journalWrite"] as const) {
+    for (const k of ["actionTransfer", "actionSwap", "actionLp", "actionMint", "actionApprove", "castPost", "castReply", "journalWrite", "fcUserData"] as const) {
       const v = evaluateTreasury(VALID[k], s, mkLedger(), cfg, NOW);
       expectDeny(v, "NO_RULE");
     }
@@ -135,7 +140,7 @@ describe("G2: default-deny dispatch", () => {
 
   it("G2: action rule module denies every treasury kind with NO_RULE", () => {
     const s = mkState();
-    for (const k of ["heartbeat", "registerInstance", "distribute", "treasuryTransfer", "allowance", "treasurySwap", "inference", "treasuryApprove", "castPost", "castReply", "journalWrite"] as const) {
+    for (const k of ["heartbeat", "registerInstance", "distribute", "treasuryTransfer", "allowance", "treasurySwap", "inference", "treasuryApprove", "castPost", "castReply", "journalWrite", "fcRegister", "fcAddKey", "fcUserData"] as const) {
       const v = evaluateActionWallet(VALID[k], s.action, mkLedger(), cfg, NOW);
       expectDeny(v, "NO_RULE");
     }
@@ -282,11 +287,11 @@ describe("§6 hygiene: src/policy, src/ledger and src/exec (SPEC-M2B §10)", () 
   function stripComments(src: string): string {
     return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
   }
-  const files = [...walk(join(SRC, "policy")), ...walk(join(SRC, "ledger")), ...walk(join(SRC, "exec")), ...walk(join(SRC, "daemon")), ...walk(join(SRC, "llm")), ...walk(join(SRC, "pulse"))];
+  const files = [...walk(join(SRC, "policy")), ...walk(join(SRC, "ledger")), ...walk(join(SRC, "exec")), ...walk(join(SRC, "daemon")), ...walk(join(SRC, "llm")), ...walk(join(SRC, "pulse")), ...walk(join(SRC, "social")) /* SPEC-M3D */];
 
   it("covers the expected files", () => {
     const rel = files.map((f) => f.slice(SRC.length + 1)).sort();
-    for (const must of ["policy/engine.ts", "policy/runway.ts", "policy/rules/treasury.ts", "policy/rules/action.ts", "policy/rules/inference.ts", "policy/rules/social.ts", "ledger/ledger.ts", "exec/abi.ts", "exec/build.ts", "exec/chain.ts", "exec/execute.ts", "llm/types.ts", "llm/endpoints.ts", "llm/canaries.ts", "llm/checks.ts", "llm/mock.ts", "pulse/tier.ts", "pulse/context.ts", "pulse/tools.ts", "pulse/pulse.ts", "pulse/scheduler.ts"]) {
+    for (const must of ["social/fcMessage.ts", "social/hubClient.ts", "social/fcSink.ts", "social/fcOnboard.ts", "daemon/turboTopUp.ts", "policy/engine.ts", "policy/runway.ts", "policy/rules/treasury.ts", "policy/rules/action.ts", "policy/rules/inference.ts", "policy/rules/social.ts", "ledger/ledger.ts", "exec/abi.ts", "exec/build.ts", "exec/chain.ts", "exec/execute.ts", "llm/types.ts", "llm/endpoints.ts", "llm/canaries.ts", "llm/checks.ts", "llm/mock.ts", "pulse/tier.ts", "pulse/context.ts", "pulse/tools.ts", "pulse/pulse.ts", "pulse/scheduler.ts"]) {
       expect(rel).toContain(must);
     }
   });
@@ -301,7 +306,7 @@ describe("§6 hygiene: src/policy, src/ledger and src/exec (SPEC-M2B §10)", () 
       ["process.env", /process\.env/],
       ["randomBytes", /randomBytes|randomUUID|getRandomValues/],
     ];
-    const allow: Record<string, readonly string[]> = { "clock.ts": ["Date.now"], "chat/nonce.ts": ["randomBytes"], "llm/httpFetch.ts": ["fetch("] /* SPEC-M3 §3: the ONLY x402 network file */, "llm/allowlistFetch.ts": ["fetch("] /* SPEC-M3B §4: signed-allowlist fetcher (untrusted transport) */, "attestation/turboHttp.ts": ["fetch("] /* M3 s2 close: the ONLY Turbo/Arweave network file */ };
+    const allow: Record<string, readonly string[]> = { "clock.ts": ["Date.now"], "chat/nonce.ts": ["randomBytes"], "llm/httpFetch.ts": ["fetch("] /* SPEC-M3 §3: the ONLY x402 network file */, "llm/allowlistFetch.ts": ["fetch("] /* SPEC-M3B §4: signed-allowlist fetcher (untrusted transport) */, "attestation/turboHttp.ts": ["fetch("] /* M3 s2 close: the ONLY Turbo/Arweave network file */, "social/hubClient.ts": ["fetch("] /* SPEC-M3D §3c: the ONLY Farcaster hub network file */ };
     const hits: string[] = [];
     for (const f of walk(SRC)) {
       const rel = f.slice(SRC.length + 1);
@@ -358,6 +363,7 @@ describe("§6 hygiene: src/policy, src/ledger and src/exec (SPEC-M2B §10)", () 
       if (/from\s+["']acme-client["']/.test(code) && rel !== "tls/acme.ts") hits.push(`${rel}: acme-client`);
       if (/@ardrive\/turbo-sdk/.test(code)) hits.push(`${rel}: turbo-sdk`);
       if (/arbundles/.test(code)) hits.push(`${rel}: arbundles (dev-only)`);
+      if (/@farcaster\//.test(code)) hits.push(`${rel}: @farcaster/core (dev-only, SPEC-M3D §3a)`);
       if (!rel.startsWith("tls/")) continue;
       if (/(:\s*any\b|\bas\s+any\b|<any>|any\[\])/.test(code)) hits.push(`${rel}: any`);
       if (/new Date\(|Date\.parse/.test(code)) hits.push(`${rel}: Date`);

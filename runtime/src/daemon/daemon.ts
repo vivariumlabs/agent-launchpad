@@ -11,6 +11,14 @@
 //      platform-signed allowlist and adopt it iff every §4 gate passes (src/llm/allowlistUpdate.ts).
 //      Not a spend ⇒ no policy action for the fetch; the adoption journal goes through execute() (J1).
 //      Runs in every tier (endpoint churn matters most when the agent needs to wake).
+//   12 turboTopUp (SPEC-M3D §2; ONLY when deps.turboTopUp is wired, i.e. runtime.arweave.enabled AND
+//      runtime.turboTopUp.enabled): daily, after snapshots — Turbo balance < low watermark ⇒ verify the
+//      payment service's base-eth address against the FROZEN arweaveFundingAddress ⇒ arweaveFunding
+//      transfer through execute() ⇒ POST {tx_id} (daemon/turboTopUp.ts). Runs in every tier (it keeps
+//      snapshot publishing alive; T2/T3 bound the spend).
+//   13 fcOnboard (SPEC-M3D §3d; ONLY when deps.fcOnboard is wired, i.e. platform.farcaster AND runtime.tee):
+//      FID register → key add → DISPLAY user data (social/fcOnboard.ts), each through execute(). Runs in
+//      every tier; every failure = warn + retry next tick.
 // Every chain-touching step goes through execute() / treasurySwapExactIn() —
 // never the raw ChainClient — so the policy engine re-checks every amount the
 // daemon computes. execute() logs every ExecResult (allow AND deny) via
@@ -34,6 +42,8 @@ import { deserializeLedger, kvGet, kvSet, type MemoryDb } from "../memory/db.js"
 import { writeSnapshot, type SnapshotSink } from "../memory/snapshot.js";
 import { allowanceMax } from "../policy/rules/treasury.js";
 import { runwayDays } from "../policy/runway.js";
+import { buildCastAddData } from "../social/fcMessage.js";
+import { readFcFid } from "../social/fcOnboard.js";
 import type { BudgetLedger, Chain, ProposedAction, UnixSeconds, WalletState } from "../policy/types.js";
 import { applyBps, floorDiv, lower, minBig, SECONDS_PER_DAY, sameAddress } from "../policy/util.js";
 import { nextTickAt } from "./scheduler.js";
@@ -64,6 +74,19 @@ export interface DaemonDeps extends ExecDeps {
   tlsRenewal?: TlsRenewalHook;
   /** SPEC-M3B §4 step 11 hook (boot wires it only when the agent opted in). Absent ⇒ no step 11. */
   allowlistUpdate?: AllowlistUpdateHook;
+  /** SPEC-M3D §2 step 12 hook (boot wires it only when runtime.arweave + turboTopUp are enabled). Absent ⇒ no step 12. */
+  turboTopUp?: DaemonStepHook;
+  /** SPEC-M3D §3d step 13 hook (boot wires it only with platform.farcaster AND runtime.tee). Absent ⇒ no step 13. */
+  fcOnboard?: DaemonStepHook;
+}
+
+/**
+ * SPEC-M3D §2/§3d steps 12/13: due check + one run. run() resolves to `skip` (routine: nothing to do) or
+ * ran (results = the ExecResults it produced); it THROWS on a failed read (⇒ step error, retried next tick).
+ */
+export interface DaemonStepHook {
+  due(now: UnixSeconds): boolean;
+  run(now: UnixSeconds): Promise<{ skip?: string; notes: string[]; results: ExecResult[] }>;
 }
 
 /**
@@ -92,7 +115,9 @@ export type StepName =
   | "snapshot"
   | "tier"
   | "tlsRenewal"
-  | "allowlistUpdate";
+  | "allowlistUpdate"
+  | "turboTopUp"
+  | "fcOnboard";
 
 export type StepReport =
   | { step: StepName; status: "skipped"; reason: string }
@@ -493,7 +518,15 @@ async function stepTier(deps: DaemonDeps, now: UnixSeconds, ctx: StepCtx): Promi
   ctx.results.push(
     await execute({ kind: "journalWrite", contentHash: keccak256(jb), sizeBytes: BigInt(jb.length) }, deps, { journalBytes: jb }),
   );
-  const pb = stringToBytes(t.post);
+  // SPEC-M3D §3e ruling: kv fc.fid present ⇒ serialized CastAdd MessageData (hub-publishable); else today's bytes.
+  const fid = readFcFid(deps.memory);
+  let pb: Uint8Array;
+  try {
+    pb = fid !== undefined ? buildCastAddData(t.post, fid, now) : stringToBytes(t.post);
+  } catch (e) {
+    ctx.notes.push(`tier announcement cast skipped: ${e instanceof Error ? e.message : String(e)}`);
+    return { skip: undefined, tier: next };
+  }
   ctx.results.push(await execute({ kind: "castPost", contentHash: keccak256(pb) }, deps, { messageBytes: pb }));
   return { skip: undefined, tier: next };
 }
@@ -566,6 +599,24 @@ export async function tick(deps: DaemonDeps, now: UnixSeconds): Promise<TickRepo
       await runStep("allowlistUpdate", async (ctx) => {
         if (!alHook.due(now)) return "allowlist update checked within the interval";
         const out = await alHook.run(now);
+        ctx.results.push(...out.results);
+        ctx.notes.push(...out.notes);
+        return out.skip;
+      }),
+    );
+  }
+
+  // SPEC-M3D §2 step 12 / §3d step 13 (hook-wired; same due/run shape as step 11).
+  const hooks: Array<[StepName, DaemonStepHook | undefined, string]> = [
+    ["turboTopUp", deps.turboTopUp, "turbo top-up checked within the interval"],
+    ["fcOnboard", deps.fcOnboard, "farcaster onboarding not due"],
+  ];
+  for (const [name, hook, notDue] of hooks) {
+    if (hook === undefined) continue;
+    steps.push(
+      await runStep(name, async (ctx) => {
+        if (!hook.due(now)) return notDue;
+        const out = await hook.run(now);
         ctx.results.push(...out.results);
         ctx.notes.push(...out.notes);
         return out.skip;

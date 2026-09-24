@@ -10,7 +10,12 @@
 //       only {nonce, gasLimit, maxFeePerGas, maxPriorityFeePerGas} are taken from `fill`
 //       (any other field on `fill` is ignored); gas/fee bounds from config.
 //   K3  signX402AuthApproved: EIP-3009 TransferWithAuthorization for `inference` only.
-//   K4  signCastApproved: ed25519 over messageBytes iff keccak256(messageBytes) == contentHash.
+//   K4  signCastApproved: iff keccak256(messageBytes) == contentHash, ed25519 over the FARCASTER HASH
+//       blake3_20(messageBytes) (SPEC-M3D §3b: castPost / castReply / fcUserData are Farcaster-only;
+//       messageBytes = the serialized MessageData). Gate unchanged: approval required + hash match.
+//   signFcKeyRequest (SPEC-M3D §3d): EIP-712 SignedKeyRequest by the TREASURY account, narrow like
+//       turboSigner — refuses unless key == the own fc public key (self-signed key request, requestFid =
+//       own fid; domain chainId 10, verifyingContract = the FROZEN platform.farcaster.validator).
 //
 // Config binding: the keyring derives OwnAddresses, which ResolvedConfig needs, so
 // the config is attached once after resolveConfig() via attachConfig(cfg); it must
@@ -21,10 +26,17 @@ import { concat, hexToBytes, keccak256, stringToBytes, stringToHex, type Address
 import type { ResolvedConfig, X402AllowlistEntry } from "../config/schema.js";
 import { buildTx } from "../exec/build.js";
 import type { TxFill } from "../exec/chain.js";
-import { transferWithAuthorizationTypes } from "../exec/abi.js";
+import {
+  FC_CHAIN_ID,
+  FC_SIGNED_KEY_REQUEST_DOMAIN_NAME,
+  FC_SIGNED_KEY_REQUEST_DOMAIN_VERSION,
+  signedKeyRequestTypes,
+  transferWithAuthorizationTypes,
+} from "../exec/abi.js";
 import { actionHash as computeActionHash } from "../policy/approval.js";
 import { walletForAction, type Approval, type OwnAddresses, type ProposedAction, type UnixSeconds } from "../policy/types.js";
 import { sameAddress } from "../policy/util.js";
+import { fcMessageHash } from "../social/fcMessage.js";
 import { ed25519PublicKey, ed25519Sign } from "./ed25519.js";
 import { withRetry, type KmsClient, type WithRetryOptions } from "./kms.js";
 
@@ -69,10 +81,16 @@ export interface Keyring {
   signTxApproved(action: ProposedAction, approval: Approval, fill: TxFill, now: UnixSeconds): Promise<Hex>;
   /** K3: EIP-3009 TransferWithAuthorization signed by the treasury key. */
   signX402AuthApproved(action: ProposedAction, approval: Approval, auth: X402AuthInput, now: UnixSeconds): Promise<SignedX402Auth>;
-  /** K4: ed25519 signature (64 bytes) with the fc key. */
+  /** K4: 64-byte ed25519 signature with the fc key over blake3_20(messageBytes) (SPEC-M3D §3b). */
   signCastApproved(action: ProposedAction, approval: Approval, messageBytes: Uint8Array, now: UnixSeconds): Promise<Hex>;
-  /** ed25519 public key (32 bytes) of the fc key. */
+  /** ed25519 public key (32 bytes) of the fc key (the spec's `fcPublicKey()`). */
   farcasterPublicKey(): Hex;
+  /**
+   * SPEC-M3D §3d: EIP-712 SignedKeyRequest(requestFid, key, deadline) signed by the TREASURY account
+   * (domain "Farcaster SignedKeyRequestValidator"/"1"/chainId 10/frozen validator). Refuses unless
+   * key == farcasterPublicKey(); throws without an attached config carrying platform.farcaster.
+   */
+  signFcKeyRequest(requestFid: bigint, key: Hex, deadline: bigint): Promise<Hex>;
   /** Scoped to the memory module only: raw key material for encrypting/decrypting memory state. */
   memKeyForMemoryModule(): Hex;
   /** Scoped to the chat module only (SPEC-M2C §1): raw 32-byte HMAC key for chat session tokens. */
@@ -193,6 +211,7 @@ export async function createKeyring(kms: KmsClient, opts?: CreateKeyringOptions)
   const ownAddresses: OwnAddresses = {
     treasury: treasuryAccount.address,
     action: actionAccount.address,
+    fcPublicKey, // SPEC-M3D §3d: flows into ResolvedConfig (T7 fcAddKey key check)
   };
 
   let cfg: ResolvedConfig | undefined;
@@ -257,6 +276,9 @@ export async function createKeyring(kms: KmsClient, opts?: CreateKeyringOptions)
       if (cfg !== undefined) throw new Error("keyring: config already attached");
       if (!sameAddress(c.treasury, ownAddresses.treasury) || !sameAddress(c.action, ownAddresses.action)) {
         throw new Error("keyring: config own addresses do not match the keyring");
+      }
+      if (c.fcPublicKey !== undefined && c.fcPublicKey.toLowerCase() !== fcPublicKey.toLowerCase()) {
+        throw new Error("keyring: config fcPublicKey does not match the keyring");
       }
       cfg = c;
     },
@@ -341,15 +363,33 @@ export async function createKeyring(kms: KmsClient, opts?: CreateKeyringOptions)
     },
 
     async signCastApproved(action: ProposedAction, approval: Approval, messageBytes: Uint8Array, now: UnixSeconds): Promise<Hex> {
-      if (action.kind !== "castPost" && action.kind !== "castReply") {
-        throw new Error(`K4: kind "${action.kind}" is not a cast`);
+      if (action.kind !== "castPost" && action.kind !== "castReply" && action.kind !== "fcUserData") {
+        throw new Error(`K4: kind "${action.kind}" is not a cast / fcUserData`);
       }
       gate(action, approval, now);
       if (!(messageBytes instanceof Uint8Array)) throw new Error("K4: messageBytes must be a Uint8Array");
       if (keccak256(messageBytes) !== action.contentHash.toLowerCase()) {
         throw new Error("K4: keccak256(messageBytes) != contentHash");
       }
-      return ed25519Sign(fcSeed, messageBytes);
+      // SPEC-M3D §3b: sign the Farcaster message hash (blake3, 20 bytes), not the raw bytes.
+      return ed25519Sign(fcSeed, fcMessageHash(messageBytes));
+    },
+
+    async signFcKeyRequest(requestFid: bigint, key: Hex, deadline: bigint): Promise<Hex> {
+      const c = requireCfg();
+      const fc = c.farcaster;
+      if (fc === undefined) throw new Error("signFcKeyRequest: no platform.farcaster config");
+      if (typeof key !== "string" || key.toLowerCase() !== fcPublicKey.toLowerCase()) {
+        throw new Error("signFcKeyRequest: refusing — key is not the agent's own fc public key");
+      }
+      if (typeof requestFid !== "bigint" || requestFid <= 0n) throw new Error("signFcKeyRequest: requestFid must be a bigint > 0");
+      if (typeof deadline !== "bigint" || deadline <= 0n) throw new Error("signFcKeyRequest: deadline must be a bigint > 0");
+      return treasuryAccount.signTypedData({
+        domain: { name: FC_SIGNED_KEY_REQUEST_DOMAIN_NAME, version: FC_SIGNED_KEY_REQUEST_DOMAIN_VERSION, chainId: FC_CHAIN_ID, verifyingContract: fc.validator },
+        types: signedKeyRequestTypes,
+        primaryType: "SignedKeyRequest",
+        message: { requestFid, key: fcPublicKey, deadline },
+      });
     },
 
     farcasterPublicKey(): Hex {

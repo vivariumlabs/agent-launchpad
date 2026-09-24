@@ -327,6 +327,22 @@ describe("build pipeline wiring", () => {
     expect(dockerfile).not.toMatch(/arbundles/);
   });
 
+  it("M3D: Farcaster cross-verification lib (@farcaster/core) is DEV-only exactly like arbundles; @noble/hashes is a pinned PROD dependency (SPEC-M3D §3a/§4)", () => {
+    const p = JSON.parse(read("package.json")) as { version: string; dependencies: Record<string, string>; devDependencies: Record<string, string> };
+    expect(p.version).toBe("0.1.4");
+    expect(Object.keys(p.dependencies).filter((d) => /farcaster/.test(d))).toEqual([]);
+    expect(p.devDependencies["@farcaster/core"]).toMatch(/^\d+\.\d+\.\d+$/); // exact pin
+    expect(p.dependencies["@noble/hashes"]).toMatch(/^\d+\.\d+\.\d+$/); // exact pin, direct prod dep
+    const lock = JSON.parse(read("package-lock.json")) as { packages: Record<string, { dev?: boolean; devOptional?: boolean }> };
+    const fc = Object.entries(lock.packages).filter(([k]) => /(^|\/)node_modules\/@farcaster\/core$/.test(k));
+    expect(fc.length).toBeGreaterThan(0);
+    for (const [k, v] of fc) expect(v.dev === true, k).toBe(true);
+    for (const [k, v] of Object.entries(lock.packages)) if (k.includes("node_modules/@farcaster/core/")) expect(v.dev === true, k).toBe(true);
+    const hashes = lock.packages["node_modules/@noble/hashes"];
+    expect(hashes?.dev === true || hashes?.devOptional === true).toBe(false); // ships in the prod tree
+    expect(dockerfile).not.toMatch(/farcaster/);
+  });
+
   it("package.json has the build script the Dockerfile runs", () => {
     const p = JSON.parse(read("package.json")) as { scripts: Record<string, string> };
     expect(p.scripts.build).toBe("tsc -p tsconfig.build.json");

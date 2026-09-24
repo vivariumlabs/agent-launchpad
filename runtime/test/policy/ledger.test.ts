@@ -62,6 +62,7 @@ describe("emptyLedger / rollLedger", () => {
       castPostsToday: 0n,
       castRepliesToday: 0n,
       journalToday: 0n,
+      fcUserDataToday: 0n, // SPEC-M3D §3d
     });
   });
   it("rollLedger same day ⇒ same object", () => {
@@ -95,6 +96,7 @@ describe("emptyLedger / rollLedger", () => {
       castPostsToday: 0n,
       castRepliesToday: 0n,
       journalToday: 0n,
+      fcUserDataToday: 0n, // SPEC-M3D §3d
     });
   });
 });
@@ -112,7 +114,7 @@ describe("applyApproved", () => {
     ["acrossBridge USDG", tt("acrossBridge", "rh", "USDG", SPOKE.rh, 5n, TREASURY), "acrossBridge"],
     ["acrossBridge USDC", tt("acrossBridge", "arbitrum", "USDC", SPOKE.arbitrum, 5n, TREASURY), "acrossBridge"],
     ["acrossBridge ETH from base ⇒ gasTopUp:base", tt("acrossBridge", "base", "ETH", SPOKE.base, 5n, TREASURY), "gasTopUp:base"],
-    ["arweaveFunding", tt("arweaveFunding", "rh", "USDG", ARWEAVE, 5n), "arweaveFunding"],
+    ["arweaveFunding (base ETH, SPEC-M3D §1d)", tt("arweaveFunding", "base", "ETH", ARWEAVE, 5n), "arweaveFunding"],
     ["gasTopUp optimism ⇒ gasTopUp:optimism", tt("gasTopUp", "optimism", "ETH", ACTION, 5n), "gasTopUp:optimism"],
     ["x402Data", tt("x402Data", "base", "USDC", PAYTO_DATA, 5n), "x402Data"],
   ];
@@ -267,16 +269,16 @@ describe("engine + reducer sequences", () => {
     expectAllow(evaluate(a, s, L, cfg, NOW + 86_400n));
   });
 
-  it("T3: repeated arweaveFunding fills the 10 USDG bucket then denies; next UTC day allowed again", () => {
+  it("T3: repeated arweaveFunding fills the arweaveFundingDailyWei bucket (2e15 wei; base ETH leg per SPEC-M3D §1d) then denies; next UTC day allowed again", () => {
     const s = mkState();
-    const a: ProposedAction = { kind: "treasuryTransfer", purpose: "arweaveFunding", chain: "rh", asset: "USDG", to: ARWEAVE, amount: 4n * E6 };
+    const a: ProposedAction = { kind: "treasuryTransfer", purpose: "arweaveFunding", chain: "base", asset: "ETH", to: ARWEAVE, amount: 8n * 10n ** 14n };
     let L = mkLedger();
     for (let i = 0; i < 2; i++) {
       expectAllow(evaluate(a, s, L, cfg, NOW));
       L = applyApproved(L, a, NOW, s);
     }
-    expectDeny(evaluate(a, s, L, cfg, NOW), "DAILY_CAP"); // 8 + 4 > 10
-    expectAllow(evaluate({ ...a, amount: 2n * E6 }, s, L, cfg, NOW)); // 8 + 2 == 10
+    expectDeny(evaluate(a, s, L, cfg, NOW), "DAILY_CAP"); // 1.6e15 + 8e14 > 2e15
+    expectAllow(evaluate({ ...a, amount: 4n * 10n ** 14n }, s, L, cfg, NOW)); // 1.6e15 + 4e14 == 2e15
     expectAllow(evaluate(a, s, L, cfg, DAY0 + DAY));
   });
 

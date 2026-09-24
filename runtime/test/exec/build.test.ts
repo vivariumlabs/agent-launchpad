@@ -1,11 +1,11 @@
 // SPEC-M2B §3 buildTx golden tests. Expected calldata is encoded INDEPENDENTLY in
 // this file from human-readable Solidity signatures (parseAbi), not from src/exec/abi.ts.
-// SPEC-M3C §9.3 (appended): buildTx(a).chain ∈ chainsTouched(a) consistency.
+// SPEC-M3C §9.3 (appended): buildTx(a).chain ∈ chainsTouched(a) consistency (SPEC-M3D: + fcRegister / fcAddKey / fcUserData).
 
-import { encodeFunctionData, parseAbi, toFunctionSelector, type Address, type Hex } from "viem";
+import { decodeFunctionData, encodeFunctionData, parseAbi, toFunctionSelector, type Address, type Hex } from "viem";
 import { describe, expect, it } from "vitest";
 import { resolveConfig, type ResolvedConfig } from "../../src/config/schema.js";
-import { buildTx, NoTxError, NotImplementedError, poolKeyFor } from "../../src/exec/build.js";
+import { ACROSS_QUOTE_SAFETY_SEC, buildTx, NoTxError, NotImplementedError, poolKeyFor } from "../../src/exec/build.js";
 import { chainsTouched, type ProposedAction } from "../../src/policy/types.js";
 import {
   ACTION, AGENT_POOL_ID, ARWEAVE, CODE_HASH, CP, E18, E6, MARLIN_PAY, NOW, PAYTO_DATA, SPOKE, SWAP_ROUTER,
@@ -116,6 +116,11 @@ describe("buildTx golden: treasury kinds", () => {
       data: encodeFunctionData({ abi: ERC20, functionName: "transfer", args: [ARWEAVE, 5n * E6] }),
     });
   });
+  it("M3D: treasuryTransfer arweaveFunding ETH (base) → native value transfer to the Turbo payment address (SPEC-M3D §1d)", () => {
+    expectTx(buildTx({ kind: "treasuryTransfer", purpose: "arweaveFunding", chain: "base", asset: "ETH", to: ARWEAVE, amount: 5n * 10n ** 14n }, cfg, NOW), {
+      chain: "base", chainId: 8453, to: ARWEAVE, value: 5n * 10n ** 14n, data: "0x",
+    });
+  });
   it("treasuryTransfer x402Data USDC (base) → cfg.usdc.base transfer, chainId 8453", () => {
     expectTx(buildTx({ kind: "treasuryTransfer", purpose: "x402Data", chain: "base", asset: "USDC", to: PAYTO_DATA, amount: E6 }, cfg, NOW), {
       chain: "base", chainId: 8453, to: USDC.base, value: 0n,
@@ -133,7 +138,7 @@ describe("buildTx golden: acrossBridge depositV3", () => {
       chain: "rh", chainId: 46630, to: SPOKE.rh, value: 0n,
       data: encodeFunctionData({
         abi: SPOKE_ABI, functionName: "depositV3",
-        args: [TREASURY, TREASURY, USDG_RH, USDC.base, amount, (amount * 9900n) / 10000n, 8453n, ZERO, Number(NOW), Number(NOW + FOUR_H), 0, "0x"],
+        args: [TREASURY, TREASURY, USDG_RH, USDC.base, amount, (amount * 9900n) / 10000n, 8453n, ZERO, Number(NOW - 60n), Number(NOW + FOUR_H), 0, "0x"],
       }),
     });
   });
@@ -144,7 +149,7 @@ describe("buildTx golden: acrossBridge depositV3", () => {
       chain: "base", chainId: 8453, to: SPOKE.base, value: amount,
       data: encodeFunctionData({
         abi: SPOKE_ABI, functionName: "depositV3",
-        args: [TREASURY, TREASURY, WETH.base, WETH.rh, amount, (amount * 9900n) / 10000n, 46630n, ZERO, Number(NOW), Number(NOW + FOUR_H), 0, "0x"],
+        args: [TREASURY, TREASURY, WETH.base, WETH.rh, amount, (amount * 9900n) / 10000n, 46630n, ZERO, Number(NOW - 60n), Number(NOW + FOUR_H), 0, "0x"],
       }),
     });
   });
@@ -155,7 +160,7 @@ describe("buildTx golden: acrossBridge depositV3", () => {
       chain: "arbitrum", chainId: 42161, to: SPOKE.arbitrum, value: 0n,
       data: encodeFunctionData({
         abi: SPOKE_ABI, functionName: "depositV3",
-        args: [TREASURY, TREASURY, USDC.arbitrum, USDG_RH, amount, (amount * 9900n) / 10000n, 46630n, ZERO, Number(NOW), Number(NOW + FOUR_H), 0, "0x"],
+        args: [TREASURY, TREASURY, USDC.arbitrum, USDG_RH, amount, (amount * 9900n) / 10000n, 46630n, ZERO, Number(NOW - 60n), Number(NOW + FOUR_H), 0, "0x"],
       }),
     });
   });
@@ -163,12 +168,21 @@ describe("buildTx golden: acrossBridge depositV3", () => {
     const c = resolveConfig({ platform: platformJson({ bridgeMaxFeeBps: 0 }), agent: agentJson, ownAddresses: { treasury: TREASURY, action: ACTION } });
     const a: ProposedAction = { kind: "treasuryTransfer", purpose: "acrossBridge", chain: "rh", asset: "USDG", to: SPOKE.rh, amount: 999n, recipient: TREASURY, destChain: "optimism" };
     expect(buildTx(a, c, NOW).data).toBe(
-      encodeFunctionData({ abi: SPOKE_ABI, functionName: "depositV3", args: [TREASURY, TREASURY, USDG_RH, USDC.optimism, 999n, 999n, 10n, ZERO, Number(NOW), Number(NOW + FOUR_H), 0, "0x"] }),
+      encodeFunctionData({ abi: SPOKE_ABI, functionName: "depositV3", args: [TREASURY, TREASURY, USDG_RH, USDC.optimism, 999n, 999n, 10n, ZERO, Number(NOW - 60n), Number(NOW + FOUR_H), 0, "0x"] }),
     );
     // default 100 bps on 999 ⇒ floor(999 × 9900 / 10000) = 989
     expect(buildTx(a, cfg, NOW).data).toBe(
-      encodeFunctionData({ abi: SPOKE_ABI, functionName: "depositV3", args: [TREASURY, TREASURY, USDG_RH, USDC.optimism, 999n, 989n, 10n, ZERO, Number(NOW), Number(NOW + FOUR_H), 0, "0x"] }),
+      encodeFunctionData({ abi: SPOKE_ABI, functionName: "depositV3", args: [TREASURY, TREASURY, USDG_RH, USDC.optimism, 999n, 989n, 10n, ZERO, Number(NOW - 60n), Number(NOW + FOUR_H), 0, "0x"] }),
     );
+  });
+  it("M3D: quoteTimestamp == now − ACROSS_QUOTE_SAFETY_SEC (60), fillDeadline == now + 4h (SPEC-M3D §1c); now < 60 ⇒ throws", () => {
+    expect(ACROSS_QUOTE_SAFETY_SEC).toBe(60n);
+    const a: ProposedAction = { kind: "treasuryTransfer", purpose: "acrossBridge", chain: "rh", asset: "USDG", to: SPOKE.rh, amount: E6, recipient: TREASURY, destChain: "base" };
+    const args = decodeFunctionData({ abi: SPOKE_ABI, data: buildTx(a, cfg, NOW).data }).args;
+    expect(args[8]).toBe(Number(NOW) - 60);
+    expect(args[9]).toBe(Number(NOW) + 4 * 3600);
+    expect(() => buildTx(a, cfg, 59n)).toThrow("uint32");
+    expect(() => buildTx(a, cfg, 60n)).not.toThrow();
   });
   it("throws: to ≠ spokePool[chain], destChain missing / == source, recipient missing, ETH without cfg.weth", () => {
     const base = { kind: "treasuryTransfer", purpose: "acrossBridge", chain: "rh", asset: "USDG", to: SPOKE.rh, amount: E6, recipient: TREASURY, destChain: "base" } as const;
@@ -292,11 +306,16 @@ describe("M3C: buildTx chain ∈ chainsTouched (SPEC-M3C §9.3)", () => {
       { kind: "actionApprove", token: TOKEN_X, spender: SWAP_ROUTER, amount: E18 },
       { kind: "treasuryTransfer", purpose: "oysterRental", chain: "arbitrum", asset: "USDC", to: MARLIN_PAY, amount: E6 },
       { kind: "treasuryTransfer", purpose: "arweaveFunding", chain: "rh", asset: "USDG", to: ARWEAVE, amount: E6 },
+      { kind: "treasuryTransfer", purpose: "arweaveFunding", chain: "base", asset: "ETH", to: ARWEAVE, amount: E6 }, // SPEC-M3D §1d leg
       { kind: "treasuryTransfer", purpose: "x402Data", chain: "base", asset: "USDC", to: PAYTO_DATA, amount: E6 },
       ...chains.map((c): ProposedAction => ({ kind: "treasuryTransfer", purpose: "gasTopUp", chain: c, asset: "ETH", to: ACTION, amount: 1n })),
       { kind: "treasuryTransfer", purpose: "acrossBridge", chain: "rh", asset: "USDG", to: SPOKE.rh, amount: E6, recipient: TREASURY, destChain: "base" },
       { kind: "treasuryTransfer", purpose: "acrossBridge", chain: "rh", asset: "USDG", to: SPOKE.rh, amount: E6, recipient: TREASURY, destChain: "arbitrum" },
       { kind: "treasuryTransfer", purpose: "acrossBridge", chain: "base", asset: "ETH", to: SPOKE.base, amount: E18, recipient: TREASURY, destChain: "rh" },
+      // SPEC-M3D §3d (the default fixture cfg carries platform.farcaster)
+      { kind: "fcRegister", priceWei: 75_000_000_000_000n },
+      { kind: "fcAddKey", key: `0x${"fc".repeat(32)}`, metadata: `0x${"ab".repeat(96)}` },
+      { kind: "fcUserData", contentHash: h, sizeBytes: 1n },
       // skipped by construction (buildTx builds no tx for these):
       { kind: "actionLp", pool: `0x${"ab".repeat(32)}`, usdgAmount: 1n, tokenAmount: 1n, token: TOKEN_X },
       { kind: "inference", category: "pulse", endpointId: "inf-cheap", maxCostUsd: 1n },
@@ -321,8 +340,8 @@ describe("M3C: buildTx chain ∈ chainsTouched (SPEC-M3C §9.3)", () => {
       built.add(a.kind);
     }
     expect([...built].sort()).toEqual(
-      ["actionApprove", "actionMint", "actionSwap", "actionTransfer", "allowance", "distribute", "heartbeat", "registerInstance", "treasuryApprove", "treasurySwap", "treasuryTransfer"],
+      ["actionApprove", "actionMint", "actionSwap", "actionTransfer", "allowance", "distribute", "fcAddKey", "fcRegister", "heartbeat", "registerInstance", "treasuryApprove", "treasurySwap", "treasuryTransfer"],
     );
-    expect([...skipped].sort()).toEqual(["actionLp", "castPost", "castReply", "inference", "journalWrite"]);
+    expect([...skipped].sort()).toEqual(["actionLp", "castPost", "castReply", "fcUserData", "inference", "journalWrite"]);
   });
 });

@@ -330,6 +330,8 @@ interface SerializedBudgetLedger {
   castPostsToday: string;
   castRepliesToday: string;
   journalToday: string;
+  /** SPEC-M3D §3d; absent in pre-M3D rows/snapshots ⇒ 0. */
+  fcUserDataToday?: string;
 }
 
 /** BudgetLedger -> JSON string, all bigints as decimal strings (lossless). */
@@ -364,6 +366,7 @@ export function serializeLedger(ledger: BudgetLedger): string {
     castPostsToday: ledger.castPostsToday.toString(10),
     castRepliesToday: ledger.castRepliesToday.toString(10),
     journalToday: ledger.journalToday.toString(10),
+    fcUserDataToday: ledger.fcUserDataToday.toString(10),
   };
   return JSON.stringify(serialized);
 }
@@ -401,6 +404,7 @@ export function deserializeLedger(json: string): BudgetLedger {
     castPostsToday: BigInt(parsed.castPostsToday),
     castRepliesToday: BigInt(parsed.castRepliesToday),
     journalToday: BigInt(parsed.journalToday),
+    fcUserDataToday: parsed.fcUserDataToday !== undefined ? BigInt(parsed.fcUserDataToday) : 0n,
   };
 }
 

@@ -27,6 +27,9 @@
 //   (9) persist ledger (+ every ExecResult was logged to `actions` as it happened).
 // runPulse never throws: unexpected errors are collected in `result.errors`.
 //
+// SPEC-M3D §3e: when kv fc.fid exists, post / social.post cast bytes are serialized Farcaster MessageData
+// (fid + pulse clock injected via tools.contentAction's fc context); otherwise today's bytes.
+//
 // SPEC-M3 §3 salt: every inference action carries salt = inferenceSalt(now, phase, attempt)
 // (phase "canary" | "pulse"; attempt = canary index / LLM attempt index) — deterministic, no
 // randomness; distinct per call within a pulse ⇒ distinct actionHash ⇒ distinct K3 x402 nonce.
@@ -47,7 +50,8 @@ import type { DenyCode, ProposedAction, UnixSeconds } from "../policy/types.js";
 import { buildContext, buildPrompt, promptChars, type ContextLevel, type ContextSources } from "./context.js";
 import { budgetPressure, STRETCH_DENY_CODES, type TierTransition } from "./scheduler.js";
 import { pulsesEnabled, tierOf, type Tier } from "./tier.js";
-import { contentAction, mapToolCall, toolSchemaFor } from "./tools.js";
+import { readFcFid } from "../social/fcOnboard.js";
+import { contentAction, mapToolCall, toolSchemaFor, type FcContext } from "./tools.js";
 
 /** Primary + ONE retry on the next fallback endpoint per pulse (DEFAULT). */
 export const MAX_LLM_ATTEMPTS = 2;
@@ -159,7 +163,7 @@ export function recordTierTransition(db: MemoryDb, t: TierTransition, ts: UnixSe
 export function memoryCastSink(db: MemoryDb, clock: () => UnixSeconds): CastSink {
   return {
     async publish(action: ProposedAction, messageBytes: Uint8Array, _signature: Hex): Promise<void> {
-      const hash = action.kind === "castPost" || action.kind === "castReply" ? action.contentHash : null;
+      const hash = action.kind === "castPost" || action.kind === "castReply" || action.kind === "fcUserData" ? action.contentHash : null;
       insertPost(db, { ts: clock(), kind: action.kind, content: bytesToString(messageBytes), castHash: hash });
     },
   };
@@ -459,6 +463,9 @@ async function processOutput(output: PulseOutput, tier: Tier, ex: ExecDeps, db: 
   const calls = output.toolCalls ?? [];
   result.toolCallsReceived = calls.length;
   const K = cfg.toolCallCap;
+  // SPEC-M3D §3e: fid injection for cast bytes (absent ⇒ today's bytes).
+  const fid = readFcFid(db);
+  const fc: FcContext | undefined = fid !== undefined ? { fid, now: ex.clock() } : undefined;
   const take = calls.slice(0, K);
   const drop = calls.slice(K);
   for (const d of drop) {
@@ -471,7 +478,7 @@ async function processOutput(output: PulseOutput, tier: Tier, ex: ExecDeps, db: 
   for (const call of take) {
     let counted = false;
     try {
-      const plan = mapToolCall(call, tier, cfg);
+      const plan = mapToolCall(call, tier, cfg, fc);
       // (5b) dedup identical derived actions before evaluation.
       const key = dedupKey(plan);
       if (key !== null) {
@@ -546,7 +553,7 @@ async function processOutput(output: PulseOutput, tier: Tier, ex: ExecDeps, db: 
   }
   for (const post of output.posts ?? []) {
     if (post.length === 0) continue;
-    const p = contentAction("castPost", post, cfg);
+    const p = contentAction("castPost", post, cfg, fc);
     if (p.ok) await execute(p.action, ex, p.extras);
     else {
       result.skips.push({ tool: "posts", reason: p.reason, badArgs: false });

@@ -22,6 +22,11 @@
 // SPEC-M3 §3 (additive):
 // - inference.salt: OPTIONAL, exactly 16 bytes hex when present; forbidden on every other
 //   kind (strict objects). Passed through untouched (hashed via canonicalEncode).
+// SPEC-M3D §3d (additive):
+// - fcRegister: priceWei bigint > 0n. No target field (K2 hardcodes the frozen idGateway) —
+//   a caller-supplied target / to is an extra field ⇒ MALFORMED.
+// - fcAddKey: key 32-byte hex (ed25519 pubkey), metadata non-empty even-length hex.
+// - fcUserData: contentHash 32-byte hex, sizeBytes bigint > 0n.
 
 import type { Hex } from "viem";
 import { z } from "zod";
@@ -32,6 +37,9 @@ const positive = z.bigint().refine((v) => v > 0n, { message: "must be > 0" });
 const nonNegative = z.bigint().refine((v) => v >= 0n, { message: "must be >= 0" });
 const bytes32 = z.custom<Hex>((v) => typeof v === "string" && /^0x[0-9a-fA-F]{64}$/.test(v), {
   message: "must be 32-byte hex",
+});
+const hexBytes = z.custom<Hex>((v) => typeof v === "string" && /^0x([0-9a-fA-F]{2})+$/.test(v), {
+  message: "must be non-empty even-length hex",
 });
 const bytes16 = z.custom<Hex>((v) => typeof v === "string" && /^0x[0-9a-fA-F]{32}$/.test(v), {
   message: "must be 16-byte hex",
@@ -95,6 +103,10 @@ export const ProposedActionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("journalWrite"), contentHash: bytes32, sizeBytes: positive }).strict(),
   z.object({ kind: z.literal("actionApprove"), token: addressSchema, spender: addressSchema, amount: positive }).strict(),
   z.object({ kind: z.literal("treasuryApprove"), token: addressSchema, spender: addressSchema, amount: positive }).strict(),
+  // SPEC-M3D §3d
+  z.object({ kind: z.literal("fcRegister"), priceWei: positive }).strict(),
+  z.object({ kind: z.literal("fcAddKey"), key: bytes32, metadata: hexBytes }).strict(),
+  z.object({ kind: z.literal("fcUserData"), contentHash: bytes32, sizeBytes: positive }).strict(),
 ]);
 
 export type ValidationResult = { ok: true; action: ProposedAction } | { ok: false; detail: string };

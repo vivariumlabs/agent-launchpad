@@ -53,6 +53,17 @@ export const USDC_BASE_DOMAIN = { name: "USD Coin", version: "2", chainId: 8453,
 export const AGENT_TOKEN = TOKEN_X;
 export const AGENT_POOL_ID = `0x${"9d".repeat(32)}` as `0x${string}`;
 export const CODE_HASH = `0x${"c0de".repeat(16)}` as `0x${string}`;
+// SPEC-M3D §3c/§3d fixture: Farcaster module config (inert unless a Farcaster kind is evaluated) and a
+// fixed own fc public key for the policy-unit cfg (keyring-backed harnesses inject the real one).
+export const FC = {
+  idGateway: addr("fc000001", "00000fc1"),
+  keyGateway: addr("fc000002", "00000fc2"),
+  idRegistry: addr("fc000003", "00000fc3"),
+  keyRegistry: addr("fc000004", "00000fc4"),
+  validator: addr("fc000005", "00000fc5"),
+} as const;
+export const FC_PUBKEY = `0x${"fc".repeat(32)}` as `0x${string}`;
+export const FC_REGISTER_MAX_WEI = 200_000_000_000_000n;
 
 export const DAY = 86_400n;
 /** 2026-09-23T00:00:00Z */
@@ -96,6 +107,8 @@ export function platformJson(capsOverride: Record<string, unknown> = {}): Record
     agentTokenAddress: AGENT_TOKEN,
     agentPoolId: AGENT_POOL_ID,
     registration: { codeHash: CODE_HASH, attestationRef: "mock-attestation" },
+    // SPEC-M3D §3c (additive)
+    farcaster: { ...FC, hubs: [{ id: "hub-1", url: "https://hub1.example", operator: "platform" }] },
   };
 }
 
@@ -113,7 +126,7 @@ export function mkCfg(capsOverride: Record<string, unknown> = {}): ResolvedConfi
   return resolveConfig({
     platform: platformJson(capsOverride),
     agent: agentJson,
-    ownAddresses: { treasury: TREASURY, action: ACTION },
+    ownAddresses: { treasury: TREASURY, action: ACTION, fcPublicKey: FC_PUBKEY },
   });
 }
 

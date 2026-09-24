@@ -138,7 +138,12 @@ export const CapsSchema = z
     counterpartyPctBps: z.number().int().nonnegative().default(3000),
     oysterRentalDailyCapUsdc: bigintCoerce.default(100_000000n),
     acrossBridgeDailyCapUsd: bigintCoerce.default(1000_000000n),
-    arweaveDailyCapUsdg: bigintCoerce.default(10_000000n),
+    /**
+     * SPEC-M3D §1d ruling: T3 cap for the arweaveFunding leg (base ETH → Turbo), WEI per UTC day
+     * (DEFAULT 0.002 ETH = 4 × the 0.0005 ETH default top-up). Replaces the pre-M3D arweaveDailyCapUsdg
+     * (USDG units; the rh/USDG leg it bounded no longer exists).
+     */
+    arweaveFundingDailyWei: bigintCoerce.default(2_000_000_000_000_000n),
     gasTopUpDailyCapWeiPerChain: bigintCoerce.default(10n ** 16n),
     x402DataDailyCapUsdc: bigintCoerce.default(2_000000n),
     inferenceCategoryWeightsBps: InferenceCategoryWeightsSchema,
@@ -201,10 +206,32 @@ export const CapsSchema = z
     // ---- SPEC-M3 §3 x402 HTTP transport (ADDITIVE, Job J) ----
     /** Per-request timeout of the x402 inference HTTP transport, ms (30 s DEFAULT). */
     x402HttpTimeoutMs: z.number().int().positive().default(30_000),
+    // ---- SPEC-M3D §3d (ADDITIVE) ----
+    /** S3: fcUserData (Farcaster profile updates) per UTC day. */
+    userDataPerDay: z.number().int().nonnegative().default(4),
   })
   .default({});
 
 export type Caps = z.infer<typeof CapsSchema>;
+
+/** SPEC-M3D §3c: one allowlisted snapchain hub (D15: platform-operated; Neynar-keyed APIs never in the pipeline). */
+export const FarcasterHubSchema = z.object({ id: z.string().min(1), url: z.string().url(), operator: z.string() });
+
+/**
+ * SPEC-M3D §3c/§3d — Farcaster module (FROZEN; OP mainnet contracts + hub allowlist). ABSENT ⇒ the whole
+ * module is disabled (no fcSink, no daemon step 13; fcRegister/fcAddKey deny NO_RULE).
+ */
+export const FarcasterConfigSchema = z.object({
+  idGateway: addressSchema,
+  keyGateway: addressSchema,
+  idRegistry: addressSchema,
+  keyRegistry: addressSchema,
+  /** SignedKeyRequestValidator — the EIP-712 verifyingContract of signFcKeyRequest. */
+  validator: addressSchema,
+  hubs: z.array(FarcasterHubSchema).min(1),
+  /** T6: fcRegister priceWei cap (DEFAULT 0.0002 ETH; live price 0.000075 ETH incl. 1 storage unit). */
+  registerMaxWei: bigintCoerce.default(200_000_000_000_000n),
+});
 
 export const PlatformConfigSchema = z.object({
   registry: chainAddressMapSchema,
@@ -288,9 +315,13 @@ export const PlatformConfigSchema = z.object({
     .string()
     .regex(/^(?=.{1,240}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/, "must be a lowercase hostname")
     .optional(),
+  // ---- SPEC-M3D §3c (ADDITIVE) ----
+  /** Farcaster module config. Absent ⇒ module disabled (pre-M3D behavior preserved). */
+  farcaster: FarcasterConfigSchema.optional(),
 });
 
 export type PlatformConfig = z.infer<typeof PlatformConfigSchema>;
+export type FarcasterConfig = z.infer<typeof FarcasterConfigSchema>;
 
 // ---------------------------------------------------------------------------
 // ResolvedConfig = platform + agent + OwnAddresses
@@ -445,6 +476,16 @@ export const RuntimeOpsConfigSchema = z
     registrationRetrySec: z.number().int().nonnegative().optional(),
     /** Seconds between registration attempts (DEFAULT 30). Liveness knob only — no spend authority. */
     registrationRetryDelaySec: z.number().int().nonnegative().optional(),
+    // ---- SPEC-M3D §2 (ADDITIVE) ----
+    /**
+     * Turbo self-top-up (daemon step 12). Only meaningful with arweave.enabled; enabled DEFAULT true then.
+     * lowWatermarkWinc DEFAULT 50_000_000_000; amountWei DEFAULT 500_000_000_000_000 (0.0005 ETH). The
+     * destination is the FROZEN arweaveFundingAddress and the engine's T2/T3 bound every spend.
+     */
+    turboTopUp: z
+      .object({ enabled: z.boolean().optional(), lowWatermarkWinc: bigintCoerce.optional(), amountWei: bigintCoerce.optional() })
+      .strict()
+      .optional(),
   })
   .strict()
   .default({});

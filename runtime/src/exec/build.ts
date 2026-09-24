@@ -5,9 +5,14 @@
 // `now` is used only by acrossBridge (quoteTimestamp / fillDeadline). Both the
 // executor and the keyring pass `approval.issuedAt`, so the signed tx is a pure
 // function of (action, approval, fill, cfg).
+// SPEC-M3D §1c: quoteTimestamp = now − ACROSS_QUOTE_SAFETY_SEC (a host clock ahead of chain time
+// reverts InvalidQuoteTimestamp() 0xf722177f — live-proven); fillDeadline stays now + 4h.
 //
-// Kinds with no transaction (inference, castPost, castReply, journalWrite)
-// throw NoTxError. actionLp throws NotImplementedError: the deployments
+// Kinds with no transaction (inference, castPost, castReply, journalWrite, fcUserData)
+// throw NoTxError.
+// SPEC-M3D §3d: fcRegister ⇒ IdGateway.register(recovery = treasury){value: priceWei}; fcAddKey ⇒
+// KeyGateway.add(1, key, 1, metadata); both on optimism, targets from the FROZEN platform.farcaster
+// (never from the action) — absent config ⇒ throws. actionLp throws NotImplementedError: the deployments
 // manifest (contracts/deployments/testnet-46630.json) has no
 // modifyLiquidityRouter.
 
@@ -19,6 +24,10 @@ import {
   acrossSpokePoolAbi,
   agentRegistryAbi,
   erc20Abi,
+  FC_KEY_TYPE_ED25519,
+  FC_METADATA_TYPE_SIGNED_KEY_REQUEST,
+  fcIdGatewayAbi,
+  fcKeyGatewayAbi,
   feeSplitHookAbi,
   MAX_SQRT_PRICE,
   MIN_SQRT_PRICE,
@@ -48,8 +57,10 @@ export class NoTxError extends Error {
   }
 }
 
-/** Across fillDeadline = quoteTimestamp + 4h (SPEC-M2B §3). */
+/** Across fillDeadline = now + 4h (SPEC-M2B §3; SPEC-M3D §1c keeps it anchored on now, not on quoteTimestamp). */
 export const ACROSS_FILL_WINDOW_SEC = 4n * 3600n;
+/** SPEC-M3D §1c: quoteTimestamp = now − this (tolerates a host clock up to 60 s ahead of chain time). */
+export const ACROSS_QUOTE_SAFETY_SEC = 60n;
 const UINT32_MAX = 4_294_967_295n;
 
 /** Kinds that produce an on-chain transaction via buildTx. */
@@ -66,6 +77,9 @@ export const TX_KINDS: ReadonlySet<ProposedAction["kind"]> = new Set([
   "actionMint",
   "actionApprove",
   "treasuryApprove",
+  // SPEC-M3D §3d
+  "fcRegister",
+  "fcAddKey",
 ]);
 
 export function isTxKind(kind: ProposedAction["kind"]): boolean {
@@ -171,7 +185,7 @@ function buildAcrossDeposit(a: TreasuryTransfer, cfg: ResolvedConfig, now: UnixS
   if (a.recipient === undefined) throw new Error("buildTx: acrossBridge requires recipient");
   const spoke = cfg.across.spokePool[a.chain];
   if (!sameAddress(a.to, spoke)) throw new Error(`buildTx: acrossBridge to ${a.to} is not the ${a.chain} SpokePool`);
-  if (now < 0n || now + ACROSS_FILL_WINDOW_SEC > UINT32_MAX) throw new Error("buildTx: now out of uint32 range");
+  if (now < ACROSS_QUOTE_SAFETY_SEC || now + ACROSS_FILL_WINDOW_SEC > UINT32_MAX) throw new Error("buildTx: now out of uint32 range");
 
   const outputAmount = applyBps(a.amount, Number(BPS_DENOM) - cfg.bridgeMaxFeeBps);
   const data = encodeFunctionData({
@@ -186,7 +200,7 @@ function buildAcrossDeposit(a: TreasuryTransfer, cfg: ResolvedConfig, now: UnixS
       outputAmount,
       BigInt(cfg.chainIds[dest]),
       "0x0000000000000000000000000000000000000000", // exclusiveRelayer
-      Number(now), // quoteTimestamp
+      Number(now - ACROSS_QUOTE_SAFETY_SEC), // quoteTimestamp (SPEC-M3D §1c)
       Number(now + ACROSS_FILL_WINDOW_SEC), // fillDeadline
       0, // exclusivityDeadline
       "0x", // message
@@ -273,10 +287,33 @@ export function buildTx(action: ProposedAction, cfg: ResolvedConfig, now: UnixSe
         value: 0n,
         data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [action.spender, action.amount] }),
       });
+    case "fcRegister": {
+      const fc = cfg.farcaster;
+      if (fc === undefined) throw new Error("buildTx: fcRegister requires platform.farcaster");
+      return tx("optimism", cfg, {
+        to: fc.idGateway,
+        value: action.priceWei,
+        data: encodeFunctionData({ abi: fcIdGatewayAbi, functionName: "register", args: [cfg.treasury] }),
+      });
+    }
+    case "fcAddKey": {
+      const fc = cfg.farcaster;
+      if (fc === undefined) throw new Error("buildTx: fcAddKey requires platform.farcaster");
+      return tx("optimism", cfg, {
+        to: fc.keyGateway,
+        value: 0n,
+        data: encodeFunctionData({
+          abi: fcKeyGatewayAbi,
+          functionName: "add",
+          args: [FC_KEY_TYPE_ED25519, action.key, FC_METADATA_TYPE_SIGNED_KEY_REQUEST, action.metadata],
+        }),
+      });
+    }
     case "inference":
     case "castPost":
     case "castReply":
     case "journalWrite":
+    case "fcUserData":
       throw new NoTxError(`buildTx: kind "${action.kind}" has no transaction`);
   }
 }

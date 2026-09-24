@@ -10,6 +10,7 @@
 //   castPost:     S1 PACE_CAP  (castPostsToday   < min(agent.social.postsPerDay,   postsPerDayMax))
 //   castReply:    S2 PACE_CAP  (castRepliesToday < min(agent.social.repliesPerDay, repliesPerDayMax))
 //   journalWrite: J1 MALFORMED (sizeBytes > journalMaxBytes) → J1 PACE_CAP (journalToday < journalDailyCap)
+//   fcUserData:   S3 PACE_CAP  (fcUserDataToday < userDataPerDay, DEFAULT 4) — SPEC-M3D §3d
 
 import type { ResolvedConfig } from "../../config/schema.js";
 import type { BudgetLedger, ProposedAction, UnixSeconds, Verdict } from "../types.js";
@@ -45,6 +46,11 @@ export function evaluateSocial(a: ProposedAction, L: BudgetLedger, cfg: Resolved
       const cap = BigInt(cfg.journalDailyCap);
       if (L.journalToday < cap) return allow(a, now);
       return deny("PACE_CAP", `J1: journalToday ${L.journalToday} >= journalDailyCap ${cap}`);
+    }
+    case "fcUserData": {
+      const cap = BigInt(cfg.userDataPerDay);
+      if (L.fcUserDataToday < cap) return allow(a, now);
+      return deny("PACE_CAP", `S3: fcUserDataToday ${L.fcUserDataToday} >= userDataPerDay ${cap}`);
     }
     default:
       // G2: nothing else routes to the fc / journal paths.

@@ -16,6 +16,7 @@ import { ed25519Verify } from "../../src/keyring/ed25519.js";
 import { createKeyring, x402Nonce, type Keyring } from "../../src/keyring/keyring.js";
 import { MockKms } from "../../src/keyring/mockKms.js";
 import type { BudgetLedger, ProposedAction, WalletState } from "../../src/policy/types.js";
+import { fcMessageHash } from "../../src/social/fcMessage.js";
 import { CP, E18, E6, NOW, PAYTO_INF_CHEAP, SWAP_ROUTER, TOKEN_X, TOKEN_Y, USDG_RH, agentJson, mkLedger, mkState, platformJson } from "../policy/helpers.js";
 
 const FAST_RETRY = { retry: { attempts: 3, delayMs: 1 } };
@@ -342,7 +343,8 @@ describe("execute: non-tx kinds", () => {
     const post: ProposedAction = { kind: "castPost", contentHash: keccak256(bytes) };
     const r1 = await execute(post, h.deps, { messageBytes: bytes });
     expect(r1.castSignature).toBeDefined();
-    expect(await ed25519Verify(r1.castSignature!, bytes, h.kr.farcasterPublicKey())).toBe(true);
+    // SPEC-M3D §3b (adapted): K4 signs blake3_20(messageBytes).
+    expect(await ed25519Verify(r1.castSignature!, fcMessageHash(bytes), h.kr.farcasterPublicKey())).toBe(true);
     expect(h.published).toHaveLength(1);
     h.setNow(NOW + 1n);
     await execute(post, h.deps, { messageBytes: bytes });

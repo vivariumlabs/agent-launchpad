@@ -9,22 +9,30 @@
 //             it MUST equal our locally computed id (base64url(sha256(signature))) — a mismatch is an error.
 //             No signed request headers: the data-item signature IS the upload authentication.
 //   balance   GET <paymentUrl>/account/balance/ethereum?address=<treasury> (DEFAULT
-//             https://payment.ardrive.io/v1) → {winc}; 404 ⇒ 0 (no account yet). Only feeds the
-//             low-credit WARNING (turbo.ts checkCredits) — never a spend decision.
+//             https://payment.ardrive.io/v1) → {winc}; 404 ⇒ 0 (no account yet) WITHOUT parsing the
+//             body (SPEC-M3D §1a: the live 404 body is plain-text "User Not Found"). Feeds the
+//             low-credit WARNING (turbo.ts checkCredits) and the daemon step-12 watermark check.
+//   info      GET <paymentUrl>/info → {addresses: {"base-eth": 0x…, …}} (SPEC-M3D §2: the step-12
+//             top-up verifies the dynamic payment address against the FROZEN arweaveFundingAddress).
+//   fund      POST <paymentUrl>/account/balance/<token> body {tx_id} (SPEC-M3D §2): 200 credited,
+//             202 accepted (awaiting confirmations); anything else ⇒ error (the caller retries).
 //   cost      GET <paymentUrl>/price/bytes/<n> → {winc}.
 //   query     POST <gatewayUrl>/graphql (DEFAULT https://arweave.net) — own items by tags; owners
 //             filter = the Arweave-normalized owner address (base64url(sha256(owner pubkey))), and
 //             every returned node's owner.key is re-checked against our public key.
 //   download  GET <gatewayUrl>/<id> (id format-checked; size-capped). The gateway is UNTRUSTED: snapshot
 //             envelopes are AEAD-encrypted under the memory key (restore authenticates them).
+//             SPEC-M3D §1b: follows AT MOST ONE redirect, and only to an https Location whose host
+//             ends with ".arweave.net" (the gateway 302s to a per-item sandbox subdomain — live-proven).
 //
 // Transport rules (mirrors llm/httpFetch.ts): https only (unless allowInsecureHttp for local tests),
-// redirect: "error", hard timeout per request, capped response bodies. No clock, no randomness.
+// redirect: "error" (the ONE exception: download's first hop, above), hard timeout per request, capped
+// response bodies. No clock, no randomness.
 
-import type { Address } from "viem";
+import type { Address, Hex } from "viem";
 import type { TurboSigner } from "../keyring/keyring.js";
 import { arweaveOwnerAddress, base64url, createSignedDataItem } from "./ans104.js";
-import type { TurboTag, TurboUploader } from "./turbo.js";
+import type { TurboPayment, TurboTag, TurboUploader } from "./turbo.js";
 
 export const DEFAULT_TURBO_UPLOAD_URL = "https://upload.ardrive.io/v1/tx";
 export const DEFAULT_TURBO_PAYMENT_URL = "https://payment.ardrive.io/v1";
@@ -38,6 +46,10 @@ export const DEFAULT_MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024;
 export const MAX_QUERY_PAGES = 20;
 
 const ID_RE = /^[A-Za-z0-9_-]{43}$/;
+/** SPEC-M3D §1b: the only redirect targets download may follow (host suffix, https only). */
+export const ARWEAVE_REDIRECT_HOST_SUFFIX = ".arweave.net";
+const REDIRECT_STATUSES: readonly number[] = [301, 302, 303, 307, 308];
+const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
 const DIGITS_RE = /^\d+$/;
 
 export interface TurboHttpOptions {
@@ -78,7 +90,7 @@ function wincOf(body: unknown, what: string): bigint {
   throw new Error(`turbo: ${what}: missing/invalid winc`);
 }
 
-export class TurboHttpUploader implements TurboUploader {
+export class TurboHttpUploader implements TurboUploader, TurboPayment {
   private readonly uploadUrl: string;
   private readonly paymentUrl: string;
   private readonly gatewayUrl: string;
@@ -107,7 +119,16 @@ export class TurboHttpUploader implements TurboUploader {
     if (u.protocol !== "https:" && !(this.allowInsecure && u.protocol === "http:")) throw new Error(`turbo: refusing non-https URL (${u.protocol})`);
   }
 
-  private async request(url: string, init: { method: "GET" | "POST"; headers?: Record<string, string>; body?: Uint8Array | string }, cap: number): Promise<{ status: number; body: Uint8Array }> {
+  /**
+   * One HTTP exchange. redirect "error" everywhere except download's first hop ("manual", SPEC-M3D
+   * §1b): a manual 3xx returns its Location and an EMPTY body (never read).
+   */
+  private async request(
+    url: string,
+    init: { method: "GET" | "POST"; headers?: Record<string, string>; body?: Uint8Array | string },
+    cap: number,
+    redirect: "error" | "manual" = "error",
+  ): Promise<{ status: number; body: Uint8Array; location: string | null }> {
     const u = new URL(url);
     this.checkUrl(u);
     const res = await this.fetchImpl(u, {
@@ -115,14 +136,22 @@ export class TurboHttpUploader implements TurboUploader {
       ...(init.headers !== undefined ? { headers: init.headers } : {}),
       // Uint8Array is a valid fetch body at runtime; the cast only bridges TS's ArrayBufferLike vs BodyInit typing.
       ...(init.body !== undefined ? { body: init.body as RequestInit["body"] } : {}),
-      redirect: "error",
+      redirect,
       signal: AbortSignal.timeout(this.timeoutMs),
     });
-    return { status: res.status, body: await readCappedBytes(res, cap) };
+    if (redirect === "manual" && REDIRECT_STATUSES.includes(res.status)) {
+      await res.body?.cancel();
+      return { status: res.status, body: new Uint8Array(0), location: res.headers.get("location") };
+    }
+    return { status: res.status, body: await readCappedBytes(res, cap), location: null };
   }
 
   private async json(url: string, init: { method: "GET" | "POST"; headers?: Record<string, string>; body?: Uint8Array | string }, okStatuses: readonly number[], what: string): Promise<{ status: number; body: unknown }> {
     const r = await this.request(url, init, MAX_JSON_BYTES);
+    return this.parseJson(r, okStatuses, what);
+  }
+
+  private parseJson(r: { status: number; body: Uint8Array }, okStatuses: readonly number[], what: string): { status: number; body: unknown } {
     if (!okStatuses.includes(r.status)) throw new Error(`turbo: ${what}: HTTP ${r.status}`);
     const text = new TextDecoder().decode(r.body);
     if (text.length === 0) return { status: r.status, body: null };
@@ -144,9 +173,38 @@ export class TurboHttpUploader implements TurboUploader {
 
   async balanceWinc(): Promise<bigint> {
     const url = `${this.paymentUrl}/account/balance/ethereum?address=${encodeURIComponent(this.signer.address)}`;
-    const r = await this.json(url, { method: "GET" }, [200, 404], "balance");
-    if (r.status === 404) return 0n;
-    return wincOf(r.body, "balance");
+    const raw = await this.request(url, { method: "GET" }, MAX_JSON_BYTES);
+    // SPEC-M3D §1a: 404 ⇒ 0 WITHOUT parsing the body (live: plain-text "User Not Found").
+    if (raw.status === 404) return 0n;
+    return wincOf(this.parseJson(raw, [200], "balance").body, "balance");
+  }
+
+  /**
+   * SPEC-M3D §2: the payment service's CURRENT receiving address for `token` (GET /info →
+   * addresses[token]). UNTRUSTED — the step-12 caller pays only when it equals the frozen
+   * arweaveFundingAddress. null ⇒ the service lists no (valid) address for the token.
+   */
+  async paymentAddress(token: string): Promise<Address | null> {
+    const r = await this.json(`${this.paymentUrl}/info`, { method: "GET" }, [200], "info");
+    const addrs = r.body !== null && typeof r.body === "object" ? (r.body as Record<string, unknown>)["addresses"] : undefined;
+    const a = addrs !== null && typeof addrs === "object" ? (addrs as Record<string, unknown>)[token] : undefined;
+    return typeof a === "string" && /^0x[0-9a-fA-F]{40}$/.test(a) ? (a as Address) : null;
+  }
+
+  /**
+   * SPEC-M3D §2: POST <paymentUrl>/account/balance/<token> {tx_id} — asks the service to credit a
+   * payment tx the treasury sent. 200 = credited, 202 = accepted (awaiting confirmations); any other
+   * status ⇒ throws (the step-12 caller retries). One attempt; no retry here.
+   */
+  async submitFundTx(token: string, txId: Hex): Promise<{ status: number; body: unknown }> {
+    if (!/^[a-z0-9-]{1,32}$/.test(token)) throw new Error(`turbo: bad token ${token}`);
+    if (!TX_HASH_RE.test(txId)) throw new Error("turbo: fund: bad tx id");
+    return this.json(
+      `${this.paymentUrl}/account/balance/${token}`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tx_id: txId }) },
+      [200, 202],
+      "fund",
+    );
   }
 
   async costWinc(bytes: number): Promise<bigint> {
@@ -183,7 +241,24 @@ export class TurboHttpUploader implements TurboUploader {
 
   async download(id: string): Promise<Uint8Array> {
     if (!ID_RE.test(id)) throw new Error("turbo: bad data-item id");
-    const r = await this.request(`${this.gatewayUrl}/${id}`, { method: "GET" }, this.maxDownloadBytes);
+    let r = await this.request(`${this.gatewayUrl}/${id}`, { method: "GET" }, this.maxDownloadBytes, "manual");
+    if (REDIRECT_STATUSES.includes(r.status)) {
+      // SPEC-M3D §1b: at most ONE hop, https only, host *.arweave.net only; the hop itself is redirect: "error".
+      const loc = r.location;
+      if (loc === null) throw new Error(`turbo: download ${id}: HTTP ${r.status} without Location`);
+      let target: URL;
+      try {
+        target = new URL(loc, `${this.gatewayUrl}/${id}`);
+      } catch {
+        throw new Error(`turbo: download ${id}: unparseable redirect Location`);
+      }
+      if (target.protocol !== "https:") throw new Error(`turbo: download ${id}: refusing non-https redirect (${target.protocol})`);
+      if (!target.hostname.toLowerCase().endsWith(ARWEAVE_REDIRECT_HOST_SUFFIX)) {
+        throw new Error(`turbo: download ${id}: refusing redirect to host ${target.hostname} (only *${ARWEAVE_REDIRECT_HOST_SUFFIX})`);
+      }
+      r = await this.request(target.toString(), { method: "GET" }, this.maxDownloadBytes);
+      if (REDIRECT_STATUSES.includes(r.status)) throw new Error(`turbo: download ${id}: refusing a second redirect (HTTP ${r.status})`);
+    }
     if (r.status !== 200) throw new Error(`turbo: download ${id}: HTTP ${r.status}`);
     return r.body;
   }

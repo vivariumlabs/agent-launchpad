@@ -1,4 +1,5 @@
-// SPEC-M2B §2 keyring gates K1–K4.
+// SPEC-M2B §2 keyring gates K1–K4. SPEC-M3D §3b: K4 now signs blake3_20(messageBytes) (the Farcaster
+// message hash) — the K4 verify assertions below were adapted to verify over fcMessageHash(msg).
 
 import {
   decodeFunctionData,
@@ -18,6 +19,7 @@ import { createKeyring, x402Nonce, type Keyring, type X402AuthInput } from "../.
 import { MockKms } from "../../src/keyring/mockKms.js";
 import { issueApproval } from "../../src/policy/approval.js";
 import type { ProposedAction } from "../../src/policy/types.js";
+import { fcMessageHash } from "../../src/social/fcMessage.js";
 import { CP, E18, E6, NOW, PAYTO_DATA, PAYTO_INF_CHEAP, TOKEN_X, agentJson, platformJson } from "../policy/helpers.js";
 
 const FAST_RETRY = { retry: { attempts: 3, delayMs: 1 } };
@@ -292,13 +294,14 @@ describe("K4: signCastApproved", () => {
     const sig = await kr.signCastApproved(POST, issueApproval(POST, NOW), msg, NOW);
     expect(sig).toMatch(/^0x[0-9a-f]{128}$/);
     expect(kr.farcasterPublicKey()).toMatch(/^0x[0-9a-f]{64}$/);
-    expect(await ed25519Verify(sig, msg, kr.farcasterPublicKey())).toBe(true);
-    expect(await ed25519Verify(sig, stringToBytes("gm from the enclave!"), kr.farcasterPublicKey())).toBe(false);
+    // SPEC-M3D §3b (adapted): the signed message is the Farcaster hash blake3_20(msg), not msg itself.
+    expect(await ed25519Verify(sig, fcMessageHash(msg), kr.farcasterPublicKey())).toBe(true);
+    expect(await ed25519Verify(sig, fcMessageHash(stringToBytes("gm from the enclave!")), kr.farcasterPublicKey())).toBe(false);
   });
   it("K4: castReply signs too", async () => {
     const { kr } = await setup();
     const sig = await kr.signCastApproved(REPLY, issueApproval(REPLY, NOW), msg, NOW);
-    expect(await ed25519Verify(sig, msg, kr.farcasterPublicKey())).toBe(true);
+    expect(await ed25519Verify(sig, fcMessageHash(msg), kr.farcasterPublicKey())).toBe(true); // SPEC-M3D §3b (adapted)
   });
   it("K4: contentHash mismatch ⇒ throws", async () => {
     const { kr } = await setup();
@@ -328,7 +331,7 @@ describe("K4: signCastApproved", () => {
     const sigA = await a.kr.signCastApproved(POST, issueApproval(POST, NOW), msg, NOW);
     const sigB = await b.kr.signCastApproved(POST, issueApproval(POST, NOW), msg, NOW);
     expect(sigA).toBe(sigB); // ed25519 is deterministic
-    expect(await ed25519Verify(sigA, msg, other.kr.farcasterPublicKey())).toBe(false);
+    expect(await ed25519Verify(sigA, fcMessageHash(msg), other.kr.farcasterPublicKey())).toBe(false); // SPEC-M3D §3b (adapted)
   });
   it("K4: signApproved refuses fc kinds (no EVM key for the fc wallet)", async () => {
     const { kr } = await setup();

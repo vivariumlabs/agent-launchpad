@@ -6,11 +6,20 @@
 //   treasuryTransfer: T2 WHITELIST → T2 BRIDGE_RECIPIENT → G3 → T3 DAILY_CAP → T0 RUNWAY
 //                     (T0 rev 2: ONLY acrossBridge with asset USDG/USDC; oysterRental, gasTopUp,
 //                     ETH bridges, arweaveFunding and x402Data are T0-exempt)
+//                     SPEC-M3D §1d: T2[arweaveFunding] = the LIVE Turbo crypto top-up: base / ETH / to
+//                     cfg.arweaveFundingAddress (value = Turbo's payment wallet in real configs). T3
+//                     bucket is WEI vs cfg.arweaveFundingDailyWei (M3D ruling); T0 exemption unchanged.
 //   allowance:        T4 ALLOWANCE_EARLY → G3 → T4 ALLOWANCE_AMOUNT → T0 RUNWAY
 //   treasurySwap:     T5 (tokenIn ≠ USDG ⇒ NO_RULE) → G3 (held on RH, amountIn ≤ balance). T0-exempt.
 //   heartbeat / registerInstance / distribute: T1 allow.
 //   treasuryApprove:  AP2 APPROVE_SPENDER (spender == cfg.swapRouter.rh) → token ≠ USDG (NO_RULE)
 //                     → G3 (held on RH, amount ≤ balance). T0-exempt (no outflow).
+//   fcRegister:       T6 (SPEC-M3D §3d) platform.farcaster present (NO_RULE) → priceWei ≤ registerMaxWei
+//                     (PER_TX_CAP). Target = the FROZEN idGateway: the action carries no target — K2's
+//                     buildTx hardcodes it (a caller-supplied target is MALFORMED at G1). T0-exempt.
+//   fcAddKey:         T7 (SPEC-M3D §3d) platform.farcaster present (NO_RULE) → key == cfg.fcPublicKey
+//                     (the keyring's own fc key; absent ⇒ deny) (WHITELIST). Target = the FROZEN
+//                     keyGateway (K2, as T6). T0-exempt.
 
 import type { ResolvedConfig } from "../../config/schema.js";
 import { treasurySpentKey } from "../../ledger/ledger.js";
@@ -24,6 +33,8 @@ type TreasuryTransfer = Extract<ProposedAction, { kind: "treasuryTransfer" }>;
 type Allowance = Extract<ProposedAction, { kind: "allowance" }>;
 type TreasurySwap = Extract<ProposedAction, { kind: "treasurySwap" }>;
 type TreasuryApprove = Extract<ProposedAction, { kind: "treasuryApprove" }>;
+type FcRegister = Extract<ProposedAction, { kind: "fcRegister" }>;
+type FcAddKey = Extract<ProposedAction, { kind: "fcAddKey" }>;
 
 export function evaluateTreasury(
   a: ProposedAction,
@@ -48,6 +59,10 @@ export function evaluateTreasury(
       return evaluateInference(a, s, L, cfg, now);
     case "treasuryApprove":
       return evaluateTreasuryApprove(a, s, cfg, now);
+    case "fcRegister":
+      return evaluateFcRegister(a, cfg, now);
+    case "fcAddKey":
+      return evaluateFcAddKey(a, cfg, now);
     default:
       // G2: nothing else may come from the treasury wallet.
       return deny("NO_RULE", `G2: kind "${a.kind}" has no treasury rule`);
@@ -83,8 +98,9 @@ export function checkT2(a: TreasuryTransfer, cfg: ResolvedConfig): Verdict | nul
       return null;
     }
     case "arweaveFunding":
-      if (a.chain !== "rh") return wl(`chain must be rh, got ${a.chain}`);
-      if (a.asset !== "USDG") return wl(`asset must be USDG, got ${a.asset}`);
+      // SPEC-M3D §1d: Turbo credits the SENDER of a base-ETH payment tx (daemon step 12).
+      if (a.chain !== "base") return wl(`chain must be base, got ${a.chain}`);
+      if (a.asset !== "ETH") return wl(`asset must be ETH, got ${a.asset}`);
       if (!sameAddress(a.to, cfg.arweaveFundingAddress)) return wl(`to ${a.to} is not the Arweave funding address`);
       return null;
     case "gasTopUp":
@@ -115,7 +131,7 @@ export function t3Cap(a: TreasuryTransfer, cfg: ResolvedConfig): bigint {
       // ETH bridges count against the gasTopUp per-chain cap (source chain).
       return a.asset === "ETH" ? cfg.gasTopUpDailyCapWeiPerChain : cfg.acrossBridgeDailyCapUsd;
     case "arweaveFunding":
-      return cfg.arweaveDailyCapUsdg;
+      return cfg.arweaveFundingDailyWei; // wei (base ETH leg)
     case "gasTopUp":
       return cfg.gasTopUpDailyCapWeiPerChain;
     case "x402Data":
@@ -229,5 +245,30 @@ function evaluateTreasuryApprove(a: TreasuryApprove, s: RunwayState, cfg: Resolv
   if (held < a.amount) {
     return deny("INSUFFICIENT_BALANCE", `G3/AP2: treasury rh ${a.token} balance ${held} < amount ${a.amount}`);
   }
+  return allow(a, now);
+}
+
+// ---------------------------------------------------------------------------
+// T6 fcRegister / T7 fcAddKey (SPEC-M3D §3d) — Farcaster on-chain onboarding (OP mainnet). T0-exempt.
+// ---------------------------------------------------------------------------
+
+function evaluateFcRegister(a: FcRegister, cfg: ResolvedConfig, now: UnixSeconds): Verdict {
+  const fc = cfg.farcaster;
+  if (fc === undefined) return deny("NO_RULE", "T6: no platform.farcaster config (Farcaster module disabled)");
+  if (a.priceWei > fc.registerMaxWei) {
+    return deny("PER_TX_CAP", `T6: priceWei ${a.priceWei} > registerMaxWei ${fc.registerMaxWei}`);
+  }
+  // Target: K2's buildTx hardcodes the frozen fc.idGateway (recovery = own treasury); nothing to check here.
+  return allow(a, now);
+}
+
+function evaluateFcAddKey(a: FcAddKey, cfg: ResolvedConfig, now: UnixSeconds): Verdict {
+  if (cfg.farcaster === undefined) return deny("NO_RULE", "T7: no platform.farcaster config (Farcaster module disabled)");
+  const own = cfg.fcPublicKey;
+  if (own === undefined) return deny("WHITELIST", "T7: no own fc public key in config — refusing every key");
+  if (a.key.toLowerCase() !== own.toLowerCase()) {
+    return deny("WHITELIST", `T7: key ${a.key} is not the agent's own fc key`);
+  }
+  // Target: K2's buildTx hardcodes the frozen fc.keyGateway.
   return allow(a, now);
 }

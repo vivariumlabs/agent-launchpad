@@ -7,6 +7,7 @@ import { chainsTouched, type Chain, type ProposedAction, type WalletState } from
 import {
   CP, E18, E6, MARLIN_PAY, SPOKE, SWAP_ROUTER, TOKEN_X, TREASURY,
   ev, expectAllow, expectDeny, mkState, raw,
+  FC_PUBKEY,
 } from "./helpers.js";
 
 const ALL: readonly Chain[] = ["rh", "base", "arbitrum", "optimism"];
@@ -29,12 +30,16 @@ const VALID: Record<ProposedAction["kind"], ProposedAction> = {
   journalWrite: { kind: "journalWrite", contentHash: `0x${"44".repeat(32)}`, sizeBytes: 1024n },
   actionApprove: { kind: "actionApprove", token: TOKEN_X, spender: SWAP_ROUTER, amount: E18 },
   treasuryApprove: { kind: "treasuryApprove", token: TOKEN_X, spender: SWAP_ROUTER, amount: E18 },
+  // SPEC-M3D §3d
+  fcRegister: { kind: "fcRegister", priceWei: 75_000_000_000_000n },
+  fcAddKey: { kind: "fcAddKey", key: FC_PUBKEY, metadata: `0x${"ab".repeat(96)}` },
+  fcUserData: { kind: "fcUserData", contentHash: `0x${"55".repeat(32)}`, sizeBytes: 20n },
 };
 const BRIDGE: ProposedAction = {
   kind: "treasuryTransfer", purpose: "acrossBridge", chain: "rh", asset: "USDG", to: SPOKE.rh, amount: E6, recipient: TREASURY, destChain: "base",
 };
 
-const SOCIAL = new Set<ProposedAction["kind"]>(["castPost", "castReply", "journalWrite"]);
+const SOCIAL = new Set<ProposedAction["kind"]>(["castPost", "castReply", "journalWrite", "fcUserData" /* SPEC-M3D §3d */]);
 const RH_KINDS: ReadonlyArray<ProposedAction["kind"]> = [
   "heartbeat", "registerInstance", "distribute", "allowance", "treasurySwap", "treasuryApprove",
   "actionTransfer", "actionSwap", "actionLp", "actionMint", "actionApprove",

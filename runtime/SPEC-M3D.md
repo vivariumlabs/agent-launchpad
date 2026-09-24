@@ -20,8 +20,10 @@ c. **buildAcrossDeposit quoteTimestamp**: `quoteTimestamp = now − ACROSS_QUOTE
 d. **T2 `arweaveFunding` repoint** (rules/treasury.ts): the leg becomes the LIVE Turbo crypto
    top-up: require `chain === "base"`, `asset === "ETH"`, `to === cfg.arweaveFundingAddress`
    (unchanged frozen field — its VALUE in real configs becomes Turbo's payment wallet, today
-   `0x6A0A10FFD285c971B841bee8892878c0d583Bf67`; fixtures may keep fixture addresses). Caps and
-   T0-exemption unchanged.
+   `0x6A0A10FFD285c971B841bee8892878c0d583Bf67`; fixtures may keep fixture addresses). T0-exemption
+   unchanged. Cap (ruling, post-implementation): T3 bucket is WEI vs the frozen cap
+   `arweaveFundingDailyWei: bigintLike DEFAULT 2_000_000_000_000_000n` (0.002 ETH), replacing
+   `arweaveDailyCapUsdg` (only this leg used it).
 
 ## 2. Turbo self-top-up (runtime; replaces the genesis "arweave" seed leg long-term)
 
@@ -147,3 +149,4 @@ devDependency ONLY (repro-lint asserts it out of the prod tree, arbundles patter
 
 Live hub submission (needs the platform snapchain node — infra, next session); mentions/reads;
 Farcaster testnet flag; genesis changes beyond the optional log line; embeds/mentions in casts.
+castReply hub publication (needs parent {fid, hash20} from a future mentions/read path) — local-only in v1.

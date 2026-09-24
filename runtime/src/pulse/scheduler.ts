@@ -13,7 +13,7 @@ import { categoryBudget, inferenceBudget } from "../policy/rules/inference.js";
 import type { BudgetLedger, DenyCode, UnixSeconds } from "../policy/types.js";
 import type { ContextLevel } from "./context.js";
 import { PULSE_INTERVAL_SEC, tierOf, type Tier } from "./tier.js";
-import { contentAction } from "./tools.js";
+import { contentAction, type FcContext } from "./tools.js";
 
 export const STRETCH_FACTOR = 2n;
 
@@ -92,9 +92,13 @@ export function transitionAnnouncement(t: TierTransition): string {
   return `Status change ${t.from} → ${t.to}. I am now ${what[t.to]}.`;
 }
 
-/** Tier transition announcement: a castPost draft through the normal engine (pace caps apply). */
-export async function announceTierTransition(t: TierTransition, deps: ExecDeps): Promise<ExecResult | null> {
-  const r = contentAction("castPost", transitionAnnouncement(t), deps.cfg);
+/**
+ * Tier transition announcement: a castPost draft through the normal engine (pace caps apply).
+ * SPEC-M3D §3e ruling: `fc` present (kv fc.fid exists) ⇒ messageBytes = serialized CastAdd MessageData
+ * (buildCastAddData; 320-byte cap ⇒ null); absent ⇒ today's UTF-8 bytes.
+ */
+export async function announceTierTransition(t: TierTransition, deps: ExecDeps, fc?: FcContext): Promise<ExecResult | null> {
+  const r = contentAction("castPost", transitionAnnouncement(t), deps.cfg, fc);
   if (!r.ok) return null;
   return execute(r.action, deps, r.extras);
 }

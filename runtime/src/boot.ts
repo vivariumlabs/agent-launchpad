@@ -44,6 +44,11 @@
 //   SPEC-M3B §3 Turbo (runtime.arweave.enabled; DEFAULT off): TurboArweaveSink over the in-house
 //       TurboHttpUploader (ANS-104 data items signed by the treasury turboSigner) replaces LocalDirSink for attestation AND snapshots; LocalDirSink kept as a mirror
 //       (runtime.arweave.localMirror DEFAULT true); restore reads [turbo, local].
+//   SPEC-M3D §2 Turbo self-top-up (runtime.arweave.enabled AND runtime.turboTopUp.enabled, DEFAULT true then):
+//       daemon step 12 over the uploader's TurboPayment seam (daemon/turboTopUp.ts).
+//   SPEC-M3D §3c/§3d Farcaster (platform.farcaster present AND runtime.tee; absent ⇒ module disabled): castSink =
+//       fcSink (memoryCastSink mirror first, then the frozen hub allowlist via HubClient; overrides.castSink wins)
+//       and daemon step 13 (social/fcOnboard.ts: FID register → key add → DISPLAY user data).
 //   SPEC-M3B §4 signed allowlist updates: after (3) memory and BEFORE any deps/pulse exist, the newest
 //       adopted signed allowlist in kv is re-verified and applied onto the genesis cfg (reapplyAdoptedAllowlist).
 //       cfg is then MUTABLE in exactly one way: applyCfg(next) swaps the single cfg object on every ExecDeps
@@ -94,13 +99,15 @@ import {
   type AllowlistUpdateHook,
   type ChainReader,
   type DaemonDeps,
+  type DaemonStepHook,
   type TickReport,
   type TierStore,
 } from "./daemon/daemon.js";
+import { DEFAULT_TURBO_LOW_WATERMARK_WINC, DEFAULT_TURBO_TOPUP_AMOUNT_WEI, runTurboTopUp, turboTopUpDue } from "./daemon/turboTopUp.js";
 import { nextTickAt } from "./daemon/scheduler.js";
 import { agentRegistryAbi, erc20Abi, feeSplitHookAbi } from "./exec/abi.js";
 import { MockChainClient, type ChainClient } from "./exec/chain.js";
-import { execute, type ExecDeps, type ExecResult, type LedgerStore } from "./exec/execute.js";
+import { execute, type CastSink, type ExecDeps, type ExecResult, type LedgerStore } from "./exec/execute.js";
 import { RealChainClient } from "./exec/chainViem.js";
 import { createKeyring, type Keyring } from "./keyring/keyring.js";
 import { withRetry, type KmsClient, type WithRetryOptions } from "./keyring/kms.js";
@@ -113,7 +120,7 @@ import {
   LocalDirSink as AttestationDirSink,
   type AttestationSink,
 } from "./attestation/attestation.js";
-import { MirroredAttestationSink, MirroredSnapshotSink, TurboArweaveSink, type TurboUploader } from "./attestation/turbo.js";
+import { MirroredAttestationSink, MirroredSnapshotSink, TurboArweaveSink, type TurboPayment, type TurboUploader } from "./attestation/turbo.js";
 import { createHttpTurboUploader, DEFAULT_TURBO_UPLOAD_URL } from "./attestation/turboHttp.js";
 import { agentDomain, LETS_ENCRYPT_PRODUCTION, type AcmeApi } from "./tls/acme.js";
 import { acmeAccountKeyPem, ed25519KeyFromSeed } from "./tls/keys.js";
@@ -142,6 +149,9 @@ import { annotateExecResult, memoryCastSink, memoryJournalSink, recordExecResult
 import { announceTierTransition, budgetPressure, nextPulse, planNext, type TierTransition } from "./pulse/scheduler.js";
 import { pulsesEnabled, PULSE_INTERVAL_SEC, type Tier } from "./pulse/tier.js";
 import { contentAction } from "./pulse/tools.js";
+import { fcSink } from "./social/fcSink.js";
+import { fcOnboardDue, readFcFid, runFcOnboard } from "./social/fcOnboard.js";
+import { HubClient, type HubSubmitter } from "./social/hubClient.js";
 
 // ---------------------------------------------------------------------------
 // Config file envelope. The ops ("runtime") section schema now lives in config/schema.ts as
@@ -289,6 +299,12 @@ export interface BootOverrides {
   acme?: AcmeApi;
   /** SPEC-M3B §4: signed-allowlist transport (DEFAULT FetchAllowlistSource(runtime.allowlistUpdateUrl)). */
   allowlistSource?: AllowlistSource;
+  /** SPEC-M3D §2: Turbo payment seam for daemon step 12 (DEFAULT the uploader, when it implements TurboPayment). */
+  turboPayment?: TurboPayment;
+  /** SPEC-M3D §3c: cast sink override — wins over fcSink / memoryCastSink. */
+  castSink?: CastSink;
+  /** SPEC-M3D §3c: hub seam for fcSink (DEFAULT HubClient over the frozen platform.farcaster.hubs). */
+  hubClient?: HubSubmitter;
 }
 
 export interface BootOptions {
@@ -527,6 +543,11 @@ export async function openOrRestoreMemory(
 // ---------------------------------------------------------------------------
 // (4) chain-backed readers
 // ---------------------------------------------------------------------------
+
+/** SPEC-M3D §2: does this uploader also expose the Turbo payment seam (TurboHttpUploader does)? */
+function isTurboPayment(u: TurboUploader): u is TurboUploader & TurboPayment {
+  return "paymentAddress" in u && typeof u.paymentAddress === "function" && "submitFundTx" in u && typeof u.submitFundTx === "function";
+}
 
 function hasNativeBalance(c: ChainClient): c is ChainClient & NativeBalanceSource {
   return "getBalance" in c && typeof c.getBalance === "function";
@@ -1200,6 +1221,7 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
 
   // (2a) SPEC-M3B §3 Turbo/Arweave sink (treasury-signed via keyring.turboSigner; no raw key leaves the keyring).
   let turboSink: TurboArweaveSink | null = null;
+  let turboPayment: TurboPayment | null = null;
   if (rt.arweave.enabled) {
     const uploader =
       ov.turboUploader ??
@@ -1209,6 +1231,7 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
         ...(rt.arweave.gatewayUrl !== undefined ? { gatewayUrl: rt.arweave.gatewayUrl } : {}),
       });
     turboSink = new TurboArweaveSink({ uploader, agentId, owner: keyring.addresses().treasury, logger });
+    turboPayment = ov.turboPayment ?? (isTurboPayment(uploader) ? uploader : null);
     logger.info(
       `arweave: Turbo sink enabled for attestation + snapshots (owner ${keyring.addresses().treasury}; ` +
         `uploader ${ov.turboUploader !== undefined ? "override" : (rt.arweave.uploadUrl ?? DEFAULT_TURBO_UPLOAD_URL)}; local mirror ${rt.arweave.localMirror ? "on" : "off"})`,
@@ -1297,6 +1320,26 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
     },
   };
 
+  // SPEC-M3D §3c: platform.farcaster AND runtime.tee ⇒ fcSink (memory mirror first, then the hubs); else
+  // memoryCastSink as before; overrides.castSink wins.
+  const fcCfg = cfg.farcaster;
+  const farcasterOn = fcCfg !== undefined && rt.tee;
+  let castSink: CastSink = memoryCastSink(db, clock);
+  if (ov.castSink !== undefined) {
+    castSink = ov.castSink;
+  } else if (farcasterOn) {
+    castSink = fcSink({
+      mirror: castSink,
+      hub: ov.hubClient ?? new HubClient({ hubs: fcCfg.hubs }),
+      signerPublicKey: keyring.farcasterPublicKey(),
+      fid: () => readFcFid(db),
+      logger,
+    });
+    logger.info(`farcaster: fcSink enabled (${fcCfg.hubs.length} hub(s): ${fcCfg.hubs.map((h) => h.id).join(", ")}); fid ${readFcFid(db)?.toString(10) ?? "pending"}`);
+  } else if (fcCfg !== undefined) {
+    logger.info("farcaster: platform.farcaster present but runtime.tee is off — module disabled (casts stay local drafts)");
+  }
+
   /** Base deps WITHOUT log: runPulse wraps it with memoryExecDeps (which logs), avoiding double rows. */
   const baseExec: ExecDeps = {
     cfg,
@@ -1305,7 +1348,7 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
     getState,
     ledger,
     clock,
-    castSink: memoryCastSink(db, clock),
+    castSink,
     journalSink: memoryJournalSink(db, clock),
   };
   /** Logged deps: every ExecResult → actions row. Daemon, announcements, chat. */
@@ -1407,6 +1450,28 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
     logger.info(`allowlist updates: checking every ${intervalSec}s (signer ${allowlistSigner})`);
   }
 
+  // SPEC-M3D §2 daemon step 12: Turbo self-top-up (arweave enabled AND turboTopUp.enabled, DEFAULT true then).
+  let turboTopUpHook: DaemonStepHook | undefined;
+  if (rt.arweave.enabled && (rt.turboTopUp?.enabled ?? true)) {
+    const payment = turboPayment;
+    if (payment === null) {
+      logger.warn("turbo top-up: the Turbo uploader has no payment seam — daemon step 12 disabled");
+    } else {
+      const lowWatermarkWinc = rt.turboTopUp?.lowWatermarkWinc ?? DEFAULT_TURBO_LOW_WATERMARK_WINC;
+      const amountWei = rt.turboTopUp?.amountWei ?? DEFAULT_TURBO_TOPUP_AMOUNT_WEI;
+      turboTopUpHook = {
+        due: (now) => turboTopUpDue(db, now),
+        run: (now) => runTurboTopUp({ payment, exec, db, lowWatermarkWinc, amountWei, logger, sleep: realSleep }, now),
+      };
+      logger.info(`turbo top-up: daily; watermark ${lowWatermarkWinc} winc, amount ${amountWei} wei → frozen ${cfg.arweaveFundingAddress}`);
+    }
+  }
+
+  // SPEC-M3D §3d daemon step 13: Farcaster on-chain onboarding (platform.farcaster AND runtime.tee).
+  const fcOnboardHook: DaemonStepHook | undefined = farcasterOn
+    ? { due: () => fcOnboardDue(db), run: (now) => runFcOnboard({ exec, db, logger }, now) }
+    : undefined;
+
   const daemonDeps: DaemonDeps = {
     ...exec,
     chainReader,
@@ -1415,6 +1480,8 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
     tierStore: daemonTiers,
     ...(tls !== null ? { tlsRenewal: tls } : {}),
     ...(allowlistHook !== undefined ? { allowlistUpdate: allowlistHook } : {}),
+    ...(turboTopUpHook !== undefined ? { turboTopUp: turboTopUpHook } : {}),
+    ...(fcOnboardHook !== undefined ? { fcOnboard: fcOnboardHook } : {}),
   };
 
   /** SPEC-M3B §2 GET /attestation (wired iff there is a tee report or a TLS cert to pin). */
@@ -1480,7 +1547,8 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
     const out: ExecResult[] = [];
     const j = contentAction("journalWrite", `[pulse] tier transition ${t.from} -> ${t.to} at ${now}.`, cfg);
     if (j.ok) out.push(await execute(j.action, exec, j.extras));
-    const c = await announceTierTransition(t, exec);
+    const fid = readFcFid(db); // SPEC-M3D §3e ruling: fid injection on the announcement cast too
+    const c = await announceTierTransition(t, exec, fid !== undefined ? { fid, now } : undefined);
     if (c !== null) out.push(c);
     return out;
   }

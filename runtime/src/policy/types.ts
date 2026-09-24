@@ -1,5 +1,7 @@
 // SPEC-M2 §2 (types, normative) + §3 (DenyCode enum). Transcribed exactly.
 // SPEC-M3C §1–§3 (additive): WalletState.staleChains, DenyCode STATE_STALE, chainsTouched().
+// SPEC-M3D §3d (additive): kinds fcRegister / fcAddKey (treasury, optimism) and fcUserData (fc);
+// OwnAddresses.fcPublicKey; BudgetLedger.fcUserDataToday.
 // No `any` anywhere in this file.
 
 import type { Address, Hex } from "viem";
@@ -14,12 +16,15 @@ export interface OwnAddresses {
   // derived by keyring at boot, injected into ResolvedConfig
   treasury: Address;
   action: Address; // same EOA addresses on every EVM chain
+  // SPEC-M3D §3d: the fc key's 32-byte ed25519 public key (keyring-derived) — T7 fcAddKey only admits it.
+  // Optional: absent ⇒ T7 denies every fcAddKey (fail closed).
+  fcPublicKey?: Hex;
 }
 
 export type TreasuryPurpose =
   | "oysterRental" // USDC, arbitrum, to cfg.marlin.paymentAddresses[], own jobId only
   | "acrossBridge" // USDG(rh)/USDC, to cfg.across.spokePool[chain]; recipient MUST be own EOA
-  | "arweaveFunding" // to cfg.arweaveFundingAddress
+  | "arweaveFunding" // SPEC-M3D §1d: base ETH to cfg.arweaveFundingAddress (Turbo's payment wallet)
   | "gasTopUp" // native ETH, any supported chain, to OWN EOAs only
   | "x402Data"; // USDC, base, to an allowlisted data/search endpoint payTo
 // rev 1: "x402Inference" REMOVED as a transfer purpose — inference is paid
@@ -75,7 +80,12 @@ export type ProposedAction =
   | { kind: "castReply"; contentHash: Hex; parentHash: Hex } // Farcaster reply
   | { kind: "journalWrite"; contentHash: Hex; sizeBytes: bigint } // Arweave journal entry
   | { kind: "actionApprove"; token: Address; spender: Address; amount: bigint } // action EOA, RH
-  | { kind: "treasuryApprove"; token: Address; spender: Address; amount: bigint }; // treasury EOA, RH (for T5 swaps)
+  | { kind: "treasuryApprove"; token: Address; spender: Address; amount: bigint } // treasury EOA, RH (for T5 swaps)
+  // SPEC-M3D §3d (additive; treasury EOA, optimism; EXCLUDED from the LLM tool schema):
+  | { kind: "fcRegister"; priceWei: bigint } // IdGateway.register(recovery = treasury){value: priceWei}
+  | { kind: "fcAddKey"; key: Hex; metadata: Hex } // KeyGateway.add(1, key, 1, metadata)
+  // SPEC-M3D §3d social (fc key, K4-signed, published via fcSink like casts):
+  | { kind: "fcUserData"; contentHash: Hex; sizeBytes: bigint };
 
 // WalletBalances: the per-chain balance shape referenced by WalletState's
 // `treasury` and `action` fields ("(shape above, per wallet)" in SPEC-M2 §2).
@@ -117,6 +127,8 @@ export interface BudgetLedger {
   castPostsToday: bigint;
   castRepliesToday: bigint;
   journalToday: bigint;
+  // SPEC-M3D §3d: S3 fcUserData pace counter (today; reset on forward roll per G4).
+  fcUserDataToday: bigint;
 }
 
 // DenyCode: stable strings (logged + surfaced in chat per 03 §3).
@@ -160,6 +172,9 @@ const TREASURY_KINDS: ReadonlySet<ProposedAction["kind"]> = new Set([
   "treasurySwap",
   "inference",
   "treasuryApprove",
+  // SPEC-M3D §3d
+  "fcRegister",
+  "fcAddKey",
 ]);
 
 const ACTION_KINDS: ReadonlySet<ProposedAction["kind"]> = new Set([
@@ -171,7 +186,7 @@ const ACTION_KINDS: ReadonlySet<ProposedAction["kind"]> = new Set([
 ]);
 
 // SPEC-M2B §1: social kinds route to the fc key; journal to the arweave/mem path.
-const FC_KINDS: ReadonlySet<ProposedAction["kind"]> = new Set(["castPost", "castReply"]);
+const FC_KINDS: ReadonlySet<ProposedAction["kind"]> = new Set(["castPost", "castReply", "fcUserData"]); // + SPEC-M3D §3d
 const JOURNAL_KINDS: ReadonlySet<ProposedAction["kind"]> = new Set(["journalWrite"]);
 
 export type WalletKind = "treasury" | "action" | "fc" | "journal";
@@ -206,9 +221,13 @@ export function chainsTouched(a: ProposedAction): readonly Chain[] {
       return a.destChain !== undefined ? [a.chain, a.destChain] : [a.chain];
     case "inference":
       return ["base"]; // x402 pays Base USDC
+    case "fcRegister":
+    case "fcAddKey":
+      return ["optimism"]; // SPEC-M3D §3d: Farcaster contracts live on OP mainnet
     case "castPost":
     case "castReply":
     case "journalWrite":
+    case "fcUserData":
       return [];
     default: {
       const unknownKind: never = a;

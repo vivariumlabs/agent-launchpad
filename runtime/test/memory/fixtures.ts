@@ -44,6 +44,7 @@ export function fixtureLedger(): BudgetLedger {
     castPostsToday: 3n,
     castRepliesToday: 12n,
     journalToday: 1n,
+    fcUserDataToday: 2n, // SPEC-M3D §3d
   };
 }
 
@@ -59,6 +60,7 @@ export function emptyLedger(): BudgetLedger {
     castPostsToday: 0n,
     castRepliesToday: 0n,
     journalToday: 0n,
+    fcUserDataToday: 0n, // SPEC-M3D §3d
   };
 }
 
@@ -74,6 +76,7 @@ export function zeroLedger(): BudgetLedger {
     castPostsToday: 0n,
     castRepliesToday: 0n,
     journalToday: 0n,
+    fcUserDataToday: 0n, // SPEC-M3D §3d
   };
 }
 
@@ -89,6 +92,7 @@ export function maxLedger(): BudgetLedger {
     castPostsToday: UINT256_MAX,
     castRepliesToday: UINT256_MAX,
     journalToday: UINT256_MAX,
+    fcUserDataToday: UINT256_MAX, // SPEC-M3D §3d
   };
 }
 

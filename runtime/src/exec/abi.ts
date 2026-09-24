@@ -258,6 +258,109 @@ export const acrossSpokePoolAbi = [
 ] as const;
 
 // ---------------------------------------------------------------------------
+// Farcaster (OP mainnet) — EXTERNAL contracts, not in this repo (farcasterxyz/contracts: IdGateway,
+// IdRegistry, KeyGateway, KeyRegistry). SPEC-M3D §3d. Signatures restated from the contracts' public
+// interfaces and cross-checked against @farcaster/core's idGatewayABI / idRegistryABI / keyGatewayABI /
+// keyRegistryABI (dev-only). Live-proven 2026-09-24 (FID 3352486).
+// ---------------------------------------------------------------------------
+
+export const fcIdGatewayAbi = [
+  //   function price() external view returns (uint256)            (1 storage unit included)
+  { type: "function", name: "price", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+  //   function register(address recovery) external payable returns (uint256 fid, uint256 overpayment)
+  {
+    type: "function",
+    name: "register",
+    stateMutability: "payable",
+    inputs: [{ name: "recovery", type: "address" }],
+    outputs: [
+      { name: "fid", type: "uint256" },
+      { name: "overpayment", type: "uint256" },
+    ],
+  },
+] as const;
+
+export const fcIdRegistryAbi = [
+  //   function idOf(address owner) external view returns (uint256 fid)
+  { type: "function", name: "idOf", stateMutability: "view", inputs: [{ name: "owner", type: "address" }], outputs: [{ name: "fid", type: "uint256" }] },
+] as const;
+
+export const fcKeyGatewayAbi = [
+  //   function add(uint32 keyType, bytes calldata key, uint8 metadataType, bytes calldata metadata) external
+  {
+    type: "function",
+    name: "add",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "keyType", type: "uint32" },
+      { name: "key", type: "bytes" },
+      { name: "metadataType", type: "uint8" },
+      { name: "metadata", type: "bytes" },
+    ],
+    outputs: [],
+  },
+] as const;
+
+export const fcKeyRegistryAbi = [
+  //   function keyDataOf(uint256 fid, bytes calldata key) external view returns (KeyData memory)
+  //   struct KeyData { uint8 state; uint32 keyType; }   state: 0 NULL, 1 ADDED, 2 REMOVED
+  {
+    type: "function",
+    name: "keyDataOf",
+    stateMutability: "view",
+    inputs: [
+      { name: "fid", type: "uint256" },
+      { name: "key", type: "bytes" },
+    ],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "state", type: "uint8" },
+          { name: "keyType", type: "uint32" },
+        ],
+      },
+    ],
+  },
+] as const;
+
+/** KeyGateway.add keyType (ed25519) and metadataType (SignedKeyRequest). */
+export const FC_KEY_TYPE_ED25519 = 1;
+export const FC_METADATA_TYPE_SIGNED_KEY_REQUEST = 1;
+/** KeyRegistry KeyState.ADDED. */
+export const FC_KEY_STATE_ADDED = 1;
+
+/**
+ * SignedKeyRequestValidator EIP-712 (SPEC-M3D §3d): domain "Farcaster SignedKeyRequestValidator" / "1" /
+ * chainId 10 / frozen validator; type SignedKeyRequest(uint256 requestFid,bytes key,uint256 deadline).
+ */
+export const FC_SIGNED_KEY_REQUEST_DOMAIN_NAME = "Farcaster SignedKeyRequestValidator";
+export const FC_SIGNED_KEY_REQUEST_DOMAIN_VERSION = "1";
+export const FC_CHAIN_ID = 10;
+export const signedKeyRequestTypes = {
+  SignedKeyRequest: [
+    { name: "requestFid", type: "uint256" },
+    { name: "key", type: "bytes" },
+    { name: "deadline", type: "uint256" },
+  ],
+} as const;
+
+/** abi.encode(SignedKeyRequestMetadata{requestFid, requestSigner, signature, deadline}) — a TUPLE. */
+export const signedKeyRequestMetadataAbi = [
+  {
+    name: "metadata",
+    type: "tuple",
+    components: [
+      { name: "requestFid", type: "uint256" },
+      { name: "requestSigner", type: "address" },
+      { name: "signature", type: "bytes" },
+      { name: "deadline", type: "uint256" },
+    ],
+  },
+] as const;
+
+// ---------------------------------------------------------------------------
 // actionMint (v1 simplification, SPEC-M2B §3): bare `mint()` selector.
 // ---------------------------------------------------------------------------
 

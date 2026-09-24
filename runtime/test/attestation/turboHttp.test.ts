@@ -164,6 +164,79 @@ describe("TurboHttpUploader query / download", () => {
   });
 });
 
+describe("M3D: live-probe fixes (SPEC-M3D §1a/§1b) + payment seam (§2)", () => {
+  it("M3D: balance 404 with the live plain-text body \"User Not Found\" ⇒ 0n (body NOT parsed); other non-2xx / non-JSON stay errors", async () => {
+    const s = await signer();
+    const plain404 = fakeFetch(() => new Response("User Not Found", { status: 404, headers: { "content-type": "text/plain" } }));
+    expect(await new TurboHttpUploader(s, { fetchImpl: plain404.fetchImpl }).balanceWinc()).toBe(0n);
+    await expect(new TurboHttpUploader(s, { fetchImpl: fakeFetch(() => new Response("oops", { status: 500 })).fetchImpl }).balanceWinc()).rejects.toThrow(/HTTP 500/);
+    await expect(new TurboHttpUploader(s, { fetchImpl: fakeFetch(() => new Response("User Not Found", { status: 200 })).fetchImpl }).balanceWinc()).rejects.toThrow(/non-JSON/);
+  });
+
+  it("M3D: download follows EXACTLY ONE https *.arweave.net redirect (first hop manual, the hop itself redirect: error)", async () => {
+    const s = await signer();
+    const f = fakeFetch((c) =>
+      c.url === `https://arweave.net/${ID43}`
+        ? new Response(null, { status: 302, headers: { location: `https://sbx123abc.arweave.net/${ID43}` } })
+        : new Response(new Uint8Array([7, 8, 9]), { status: 200 }),
+    );
+    const u = new TurboHttpUploader(s, { fetchImpl: f.fetchImpl });
+    expect(await u.download(ID43)).toEqual(new Uint8Array([7, 8, 9]));
+    expect(f.calls.map((c) => [c.url, c.redirect])).toEqual([
+      [`https://arweave.net/${ID43}`, "manual"],
+      [`https://sbx123abc.arweave.net/${ID43}`, "error"],
+    ]);
+  });
+
+  it("M3D: download refuses an http Location, a foreign host, a look-alike host, a missing Location and a second redirect", async () => {
+    const s = await signer();
+    const redirectTo = (loc: string | null, second = false) =>
+      fakeFetch((c) =>
+        c.url.startsWith("https://arweave.net/")
+          ? new Response(null, { status: 302, headers: loc === null ? {} : { location: loc } })
+          : second
+            ? new Response(null, { status: 302, headers: { location: `https://again.arweave.net/${ID43}` } })
+            : new Response(new Uint8Array([1]), { status: 200 }),
+      );
+    const cases: Array<[string | null, boolean, RegExp]> = [
+      [`http://sbx.arweave.net/${ID43}`, false, /non-https redirect/],
+      [`https://evil.example/${ID43}`, false, /refusing redirect to host evil\.example/],
+      [`https://arweave.net.evil.example/${ID43}`, false, /refusing redirect to host/],
+      [`https://evilarweave.net/${ID43}`, false, /refusing redirect to host/],
+      [`/${ID43}?x=1`, false, /refusing redirect to host arweave\.net/],
+      [null, false, /without Location/],
+      [`https://sbx.arweave.net/${ID43}`, true, /second redirect/],
+    ];
+    for (const [loc, second, re] of cases) {
+      const f = redirectTo(loc, second);
+      await expect(new TurboHttpUploader(s, { fetchImpl: f.fetchImpl }).download(ID43), String(loc)).rejects.toThrow(re);
+      expect(f.calls.length).toBeLessThanOrEqual(2);
+    }
+  });
+
+  it("M3D: paymentAddress = GET <payment>/info → addresses[token] (null when absent/invalid); submitFundTx POSTs {tx_id} JSON, 200/202 ok, else throws", async () => {
+    const s = await signer();
+    const TURBO = "0x6A0A10FFD285c971B841bee8892878c0d583Bf67";
+    const f = fakeFetch((c) =>
+      c.url.endsWith("/info") ? json({ version: "x", addresses: { ethereum: "0x1111111111111111111111111111111111111111", "base-eth": TURBO } }) : json({ ok: true }, 202),
+    );
+    const u = new TurboHttpUploader(s, { fetchImpl: f.fetchImpl });
+    expect(await u.paymentAddress("base-eth")).toBe(TURBO);
+    expect(await u.paymentAddress("solana")).toBeNull();
+    expect(f.calls[0]!.url).toBe("https://payment.ardrive.io/v1/info");
+    const tx = `0x${"ab".repeat(32)}` as const;
+    expect((await u.submitFundTx("base-eth", tx)).status).toBe(202);
+    const post = f.calls[2]!;
+    expect([post.url, post.method, post.headers.get("content-type"), post.body]).toEqual([
+      "https://payment.ardrive.io/v1/account/balance/base-eth", "POST", "application/json", JSON.stringify({ tx_id: tx }),
+    ]);
+    await expect(new TurboHttpUploader(s, { fetchImpl: fakeFetch(() => json({ error: "pending" }, 400)).fetchImpl }).submitFundTx("base-eth", tx)).rejects.toThrow(/HTTP 400/);
+    await expect(u.submitFundTx("base-eth", "0x1234")).rejects.toThrow(/bad tx id/);
+    await expect(u.submitFundTx("../x", tx)).rejects.toThrow(/bad token/);
+    expect(await new TurboHttpUploader(s, { fetchImpl: fakeFetch(() => json({ addresses: { "base-eth": "not-an-address" } })).fetchImpl }).paymentAddress("base-eth")).toBeNull();
+  });
+});
+
 describe("TurboHttpUploader over a real local socket (global fetch)", () => {
   it("the POSTed bytes arrive intact and verify; the sink returns the service id", async () => {
     const s = await signer();

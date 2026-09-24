@@ -14,6 +14,11 @@
 // Arg validation: strict zod (extra fields ⇒ bad args); amounts are decimal strings or safe
 // integers ⇒ bigint (> 0; minOut ≥ 0). Content caps: post text ≤ cfg.postMaxBytes UTF-8
 // bytes, journal text ≤ cfg.journalMaxBytes bytes.
+// SPEC-M3D §3e (pulse seam): with an fc context {fid, now} (kv fc.fid exists), castPost messageBytes are
+// the serialized Farcaster MessageData (buildCastAddData) and contentHash = keccak256 of THOSE bytes;
+// without it, TODAY's bytes (UTF-8 text; drafts stay local — the hub sink refuses them). castReply keeps
+// today's bytes either way (the tool carries a 32-byte parentHash but no parent fid — no CastId to build).
+// fcRegister / fcAddKey / fcUserData are NOT in this table (SPEC-M3D §3d: excluded from the LLM schema).
 
 import { keccak256, stringToBytes, type Address } from "viem";
 import { z } from "zod";
@@ -21,7 +26,8 @@ import { addressSchema, bytes32Schema, type ResolvedConfig } from "../config/sch
 import type { SwapIntent, ExecExtras } from "../exec/execute.js";
 import type { ToolCall } from "../llm/checks.js";
 import type { ToolSpec } from "../llm/types.js";
-import type { ProposedAction } from "../policy/types.js";
+import type { ProposedAction, UnixSeconds } from "../policy/types.js";
+import { buildCastAddData } from "../social/fcMessage.js";
 import type { Tier } from "./tier.js";
 
 // ---------------------------------------------------------------------------
@@ -153,6 +159,12 @@ export const WATCHLIST_KV_KEY = "watchlist";
 
 export type ToolConfig = Pick<ResolvedConfig, "postMaxBytes" | "journalMaxBytes">;
 
+/** SPEC-M3D §3e: Farcaster context for cast bytes (present iff kv fc.fid exists). */
+export interface FcContext {
+  fid: bigint;
+  now: UnixSeconds;
+}
+
 export function utf8(s: string): Uint8Array {
   return stringToBytes(s);
 }
@@ -162,11 +174,21 @@ export function contentAction(
   kind: "castPost" | "journalWrite",
   body: string,
   cfg: ToolConfig,
+  fc?: FcContext,
 ): { ok: true; action: ProposedAction; extras: ExecExtras } | { ok: false; reason: string } {
   const bytes = utf8(body);
   if (kind === "castPost") {
     if (bytes.length > cfg.postMaxBytes) return { ok: false, reason: `post ${bytes.length} bytes > postMaxBytes ${cfg.postMaxBytes}` };
-    return { ok: true, action: { kind: "castPost", contentHash: keccak256(bytes) }, extras: { messageBytes: bytes } };
+    let msg: Uint8Array = bytes;
+    if (fc !== undefined) {
+      // SPEC-M3D §3e: serialized MessageData (fid injected); K4 signs its blake3-20 hash.
+      try {
+        msg = buildCastAddData(body, fc.fid, fc.now);
+      } catch (e) {
+        return { ok: false, reason: `post: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    }
+    return { ok: true, action: { kind: "castPost", contentHash: keccak256(msg) }, extras: { messageBytes: msg } };
   }
   if (BigInt(bytes.length) > cfg.journalMaxBytes) {
     return { ok: false, reason: `journal ${bytes.length} bytes > journalMaxBytes ${cfg.journalMaxBytes}` };
@@ -182,8 +204,8 @@ function skip(tool: string, reason: string, badArgs: boolean): ToolPlan {
   return { type: "skip", tool, reason, badArgs };
 }
 
-/** Maps one LLM tool call to a plan. Never throws. */
-export function mapToolCall(call: ToolCall, tier: Tier, cfg: ToolConfig): ToolPlan {
+/** Maps one LLM tool call to a plan. Never throws. `fc` (SPEC-M3D §3e): see contentAction. */
+export function mapToolCall(call: ToolCall, tier: Tier, cfg: ToolConfig, fc?: FcContext): ToolPlan {
   const def = toolDef(call.tool);
   if (def === undefined) return skip(call.tool, `unknown tool "${call.tool}"`, false);
   if (!def.tiers.includes(tier)) return skip(call.tool, `tool "${call.tool}" not offered in tier ${tier}`, false);
@@ -209,7 +231,7 @@ export function mapToolCall(call: ToolCall, tier: Tier, cfg: ToolConfig): ToolPl
     }
     case "social.post": {
       const x = a as { text: string };
-      const r = contentAction("castPost", x.text, cfg);
+      const r = contentAction("castPost", x.text, cfg, fc);
       if (!r.ok) return skip(def.name, r.reason, false);
       return { type: "action", tool: def.name, action: r.action, extras: r.extras, content: x.text };
     }

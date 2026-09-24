@@ -10,6 +10,7 @@
 //   4. Wallet inferred from kind (walletForAction); treasury kinds are evaluated
 //      with ONLY treasury balances, action kinds with ONLY action balances,
 //      fc/journal kinds (SPEC-M2B §1) with NO balances at all (pace caps only).
+//      SPEC-M3D §3d: fcRegister/fcAddKey are treasury kinds (T6/T7); fcUserData is an fc kind (S3).
 //   5. Rule modules; each ends in an explicit allow or a coded deny.
 //   G2: every switch has a NO_RULE default; there is no generic allow path.
 //   Any exception while evaluating (e.g. structurally broken state/config) ⇒

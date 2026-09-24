@@ -8,7 +8,9 @@
 //        inference        ⇒ keyring K3 (returns the signed EIP-3009 auth; no tx) — or, with
 //                            extras.meterOnly (free x402 endpoint), approval + ledger + log ONLY:
 //                            nothing is signed and no x402Auth is required
-//        castPost/Reply   ⇒ keyring K4 (ed25519 over messageBytes) → castSink
+//        castPost/Reply   ⇒ keyring K4 (ed25519 over blake3_20(messageBytes), SPEC-M3D §3b) → castSink
+//        fcUserData       ⇒ same K4 path → castSink (SPEC-M3D §3d; published via fcSink like casts)
+//        fcRegister/AddKey ⇒ tx kinds (optimism; SPEC-M3D §3d)
 //        journalWrite     ⇒ bytes checked vs contentHash/sizeBytes → journalSink (memory write)
 //   4. ExecResult {action, verdict, txHash?, error?, ...} — always passed to deps.log.
 // actionLp throws NotImplementedError before evaluation (no modifyLiquidityRouter
@@ -71,7 +73,7 @@ export interface ExecDeps {
 }
 
 export interface ExecExtras {
-  /** castPost/castReply: exact bytes whose keccak256 is action.contentHash. */
+  /** castPost/castReply/fcUserData: exact bytes whose keccak256 is action.contentHash (SPEC-M3D: serialized MessageData). */
   messageBytes?: Uint8Array;
   /** journalWrite: exact bytes (keccak256 == contentHash, length == sizeBytes). */
   journalBytes?: Uint8Array;
@@ -162,7 +164,8 @@ export async function execute(action: ProposedAction, deps: ExecDeps, extras: Ex
         break;
       }
       case "castPost":
-      case "castReply": {
+      case "castReply":
+      case "fcUserData": {
         const bytes = extras.messageBytes;
         if (bytes === undefined) throw new Error(`${action.kind}: messageBytes required`);
         const sig = await deps.keyring.signCastApproved(action, approval, bytes, deps.clock());

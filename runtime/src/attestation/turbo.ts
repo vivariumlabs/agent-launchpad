@@ -17,11 +17,13 @@
 // The uploader is the in-house ./turboHttp.ts (ANS-104 via ./ans104.ts; the only network file here).
 // @ardrive/turbo-sdk was rejected (211 MB, native deps) and is not a dependency.
 
-import type { Address } from "viem";
+import type { Address, Hex } from "viem";
 import type { SnapshotSink } from "../memory/snapshot.js";
 import type { AttestationSink } from "./attestation.js";
 
 export const TURBO_APP_TAG = "agent-launchpad";
+/** SPEC-M3D §2: Turbo payment-service token of the step-12 top-up (the `addresses` key in GET /info). */
+export const TURBO_BASE_ETH_TOKEN = "base-eth";
 /** DEFAULT: warn when credits cover fewer than this many daily snapshots. */
 export const LOW_CREDIT_DAYS = 30n;
 
@@ -44,6 +46,19 @@ export interface TurboUploader {
   balanceWinc(): Promise<bigint>;
   /** Estimated winc to upload `bytes`. */
   costWinc(bytes: number): Promise<bigint>;
+}
+
+/**
+ * SPEC-M3D §2 — the Turbo payment-service seam of the daemon's step-12 self-top-up (implemented by
+ * ./turboHttp.ts TurboHttpUploader; the network allowlist already covers that file).
+ */
+export interface TurboPayment {
+  /** Current Turbo credit balance of the treasury, winc (404 ⇒ 0). */
+  balanceWinc(): Promise<bigint>;
+  /** GET /info → addresses[token] (UNTRUSTED dynamic address; null ⇒ none listed). */
+  paymentAddress(token: string): Promise<Address | null>;
+  /** POST /account/balance/<token> {tx_id}: resolves on 200/202, throws otherwise. */
+  submitFundTx(token: string, txId: Hex): Promise<{ status: number; body: unknown }>;
 }
 
 export interface SinkLogger {
