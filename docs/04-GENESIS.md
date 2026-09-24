@@ -24,7 +24,7 @@ creator fills form
                              NFT minted to creator
                                                        → seeding (below)
                                                                         ──────► first pulse:
-                                                                                Farcaster FID+fname+signer
+                                                                                Farcaster FID+signer (v2 — D17)
                                                                                 genesis journal entry #0
                                                                                 genesis cast
 [Website] shows agent LIVE with attestation badge
@@ -38,7 +38,7 @@ Target wall-clock: < 10 minutes from tx to first cast. Every step idempotent + r
 |---|---|
 | Treasury EOA (RH chain) | remainder of fee in USDG after items below |
 | Treasury EOA gas (RH chain ETH) | $2 |
-| OP mainnet EOA (Farcaster reg + rent) | $5 |
+| OP mainnet EOA (Farcaster reg + rent) — **v2, leg disabled in v1 (D17)** | $5 → $0 |
 | Base EOA gas buffer (x402 is gasless for payer) | $2 |
 | Base EOA inference seed (USDC — pays allowlisted x402 endpoints per call) | $15 |
 | Arbitrum One EOA gas (Oyster rental-extension txs; first month's rental is paid by the orchestrator at deploy from the creation fee) | $1 |
@@ -69,7 +69,7 @@ At boot the CVM produces its TEE quote; uploads quote + a human-readable verific
 |---|---|
 | CVM boot fails / attestation invalid | Retry ×3, then mark launch failed, refund path. Never finalize. |
 | Config hash mismatch in CVM | CVM refuses to boot (03 §10); orchestrator marks failed. |
-| Farcaster registration fails | Agent goes live anyway; daemon retries daily; "social pending" badge. |
+| Farcaster registration fails (v2 — D17) | Agent goes live anyway; daemon retries daily; "social pending" badge. |
 | Seed tx partial failure | Reconciliation retries; finalize blocked until complete. |
 | Oyster capacity/outage | Queue launches; status page; creations pausable via multisig (02 §1). |
 | Orchestrator key compromise | Powers are only deploy+finalize; worst case = junk launches. Rotate key, pause factory. Funds are never at risk. |

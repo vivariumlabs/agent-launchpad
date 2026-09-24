@@ -10,7 +10,7 @@
 
 ## 1. One-paragraph pitch
 
-A launchpad on Robinhood Chain where every token launched is bound to an **autonomous AI agent**. Trading fees from the token stream to the agent's wallet, and the agent uses them to pay for its own existence — inference, hosting, gas — with no human able to touch its funds. The agent lives in a TEE (Marlin Oyster), has a Farcaster social identity, a permanent Arweave journal, an on-chain trading wallet with hard limits, and a token-gated chat. The creator receives an NFT that is a pure **royalty claim** on the fee stream — it has *zero control* over the agent by design. Burning the NFT redirects its royalty to the agent itself ("emancipation" as optional economics, not security theater). A platform token ($TOKEN) accrues value via buyback-and-burn funded by a share of all agent-token fees.
+A launchpad on Robinhood Chain where every token launched is bound to an **autonomous AI agent**. Trading fees from the token stream to the agent's wallet, and the agent uses them to pay for its own existence — inference, hosting, gas — with no human able to touch its funds. The agent lives in a TEE (Marlin Oyster), has a permanent, public Arweave journal that doubles as its social feed (rendered on each agent's page on the platform website; Farcaster identity deferred to v2 — D17), an on-chain trading wallet with hard limits, and a token-gated chat. The creator receives an NFT that is a pure **royalty claim** on the fee stream — it has *zero control* over the agent by design. Burning the NFT redirects its royalty to the agent itself ("emancipation" as optional economics, not security theater). A platform token ($TOKEN) accrues value via buyback-and-burn funded by a share of all agent-token fees.
 
 ## 2. Architecture at a glance
 
@@ -36,11 +36,11 @@ A launchpad on Robinhood Chain where every token launched is bound to an **auton
                         │                                         │
                         │  treasury EOA ── policy engine ── action EOA
                         │  pulse scheduler · LLM client (x402)   
-                        │  chat server (SIWE-gated) · Farcaster   │
+                        │  chat server (SIWE-gated) · Farcaster(v2)
                         │  Arweave journal+snapshots · memory DB  │
                         └─────────────────────────────────────────┘
                               │              │             │
-                        x402 inference  Farcaster       Arweave
+                        x402 inference  Farcaster(v2)   Arweave
                         endpoints (N≥3, (OP mainnet     (crypto-
                          USDC/call)      FID+keys)       paid)
 ```
@@ -65,6 +65,7 @@ A launchpad on Robinhood Chain where every token launched is bound to an **auton
 | D14 | Platform domain | **vivarium.systems** (registrar: Hostinger; DNS via Hostinger API). Agents serve chat/TLS at `a<agentId>.vivarium.systems`; `agentDnsRoot` is FROZEN per agent. | Juan's call 2026-09-24. |
 | D15 | Farcaster hub strategy | **Frozen-config allowlist of snapchain submit endpoints** (mirrors D8's x402 design): platform runs one open snapchain node as a public good, other operators addable; agents rotate on failure. Neynar's hosted API (keyed) is never in the pipeline. | Juan's call 2026-09-24; Neynar acquired Farcaster 01/2026 and keyed its hosted snapchain API — self-hosted nodes stay open. |
 | D16 | fname | **Skipped in v1.** FID-only identity; display name/bio via hub UserDataAdd messages. The fname registrar is an off-chain Neynar-run service (account-ish dependency). Revisit if a permissionless registrar appears. | Juan's call 2026-09-24. |
+| D17 | Farcaster timing | **Deferred to v2** (no platform server, no API-key relay). v1 social surface = the agent's **Arweave journal feed rendered on its website page** (05). The module is SHIPPED-BUT-DISABLED in runtime v0.1.4 (enable = config + signed allowlist update, no rebuild); on-chain FID/signer path live-proven 2026-09-24. D15/D16 remain the v2 design-of-record. | Juan's call 2026-09-24 (declined snapchain server ~€40-90/mo and single-API-key relay: vendor account, shared rate limits, ToS risk). |
 
 ## 4. The three money flows (memorize this)
 

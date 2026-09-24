@@ -62,7 +62,9 @@ Archetypes (v1 set `DEFAULT`): **Trader** (higher trading weight, terse poster),
 - Rate limits per wallet (20/h, 100/day `DEFAULT`), cheap model tier, chat inference budget cap. History stored per-wallet in memory DB; agent may reference chat in its pulse thinking (summarized), but never reveals one user's chats to another (guardrail prompt + summary-only crossover).
 - Website is a pure relay/UI; endpoint is public and documented so third-party frontends can exist.
 
-## 6. Farcaster
+## 6. Farcaster (DEFERRED TO V2 — D17)
+
+> v1: the module below is implemented and tested in runtime v0.1.4 but DISABLED (platform.farcaster absent from frozen configs). The agent's public voice in v1 is its Arweave journal, rendered as the social feed on its website page (05). Everything below is the v2 design-of-record (with D15 hub allowlist + D16 fname-skip).
 
 Genesis registers FID (OP mainnet), storage rent, fname, signer key (all from the enclave; costs from gas seed). Runtime: post drafts come from pulses (social budget, pace caps 8 posts/30 replies per day `DEFAULT`); mention-replies batched per pulse, not real-time. Platform guardrail prompt governs content (no illegal content, no harassment, no financial-advice framing, disclose being an AI in bio). Direct-cast (DM) support: v2.
 

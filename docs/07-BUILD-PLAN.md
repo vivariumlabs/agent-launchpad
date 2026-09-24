@@ -20,7 +20,7 @@ Exit gate: full test suite + invariants green; testnet lifecycle transcript in B
 Exit gate: adversarial mock-LLM suite green; snapshot→restore identity proven locally.
 
 ## M3 — TEE integration + genesis (2–4 sessions)
-Dockerize reproducibly; deploy to a short-duration Marlin Oyster CVM (control plane on Arbitrum One mainnet — rentals are cheap and wallet-based, no account); real Nautilus keyring; attestation → Arweave; `genesis/` orchestrator end-to-end on RH testnet: website-less genesis via script → agent live, casting on Farcaster (testnet-flagged account), journaling on Arweave, trading on testnet pools. Kill/restore drill with real KMS. (Needs Juan: USDC + ETH on Arbitrum One for the orchestrator wallet.)
+Dockerize reproducibly; deploy to a short-duration Marlin Oyster CVM (control plane on Arbitrum One mainnet — rentals are cheap and wallet-based, no account); real Nautilus keyring; attestation → Arweave; `genesis/` orchestrator end-to-end on RH testnet: website-less genesis via script → agent live, journaling on Arweave (= its public social feed, D17 — Farcaster casting deferred to v2), trading on testnet pools. Kill/restore drill with real KMS. (Needs Juan: USDC + ETH on Arbitrum One for the orchestrator wallet.)
 Exit gate: scripted genesis < 10 min; revival drill passes; attestation independently verifiable.
 
 ## M4 — Website + indexer (3–5 sessions)

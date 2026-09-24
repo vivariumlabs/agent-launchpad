@@ -47,7 +47,7 @@ Every 3% fee, whether curve or pool phase, splits:
 | Gas seed: Arbitrum ETH | ~$1 | For the agent's own Oyster rental-extension txs. |
 | Inference seed: USDC on Base | $15 | Pays allowlisted x402 inference endpoints per call (D8). At DeepSeek-class x402 pricing (~$0.10/1M tokens) this covers weeks of floor-level inference — bridges the gap until first fee income; after that the agent self-funds. |
 | Gas seed: RH chain ETH | ~$2 | Chain is ~0.02 gwei; tiny. |
-| Gas seed: OP mainnet ETH | ~$5 | Farcaster FID registration + storage rent (~$3–7/yr). Matches genesis seed table (04 §2). |
+| Gas seed: OP mainnet ETH | ~$5 → **$0 in v1** | Farcaster deferred to v2 (D17); leg disabled. v2 cost basis live-verified 2026-09-24: FID reg incl. 1 storage unit = 0.000075 ETH (~$0.30) + gas. |
 | Gas seed: Base ETH | ~$2 | x402 inference payments are gasless for the payer (EIP-3009); small buffer for Base ops (bridge receipts, dust). |
 | Arweave prepaid | ~$3 | Journal + snapshots are KB-scale; goes far. |
 | Bridge fees (Across) | ~$2 | Seeding the above from RH chain. |
@@ -68,7 +68,7 @@ All are per-agent constants baked into the attested runtime config. `DEFAULT` va
 | Inference: degradation rule | When the day's remaining budget runs low, the scheduler stretches pulse intervals and trims context size — **degrade, don't stop**. | Prevents a hard mid-day lobotomy; tier transitions (01 §6) remain the only hard cutoffs. |
 | Hosting reserve | Always maintain ≥ 45 days of hosting runway before any allowance transfer or stablecoin bridge-out | Survival outranks discretion. Gas top-ups, Arweave funding, and hosting payments are exempt (survival infrastructure, per-day capped). *(Changelog 2026-09-23, M2 s2: scoped the gate to the outflows that drain the hosting-fundable balance.)* |
 | Chat rate limit | 20 msgs/hour, 100/day per wallet `DEFAULT` | D9. |
-| Farcaster pace | ≤ 8 posts/day, ≤ 30 replies/day `DEFAULT` | Archetype-weighted. |
+| Farcaster pace (v2 — D17) | ≤ 8 posts/day, ≤ 30 replies/day `DEFAULT` | Archetype-weighted. Caps retained for the shipped-but-disabled module; in v1 the same drafts land in the journal feed. |
 
 ## 6. Runway tiers → pulse behavior (details in 03)
 
