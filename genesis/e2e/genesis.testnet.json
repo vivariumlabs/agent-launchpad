@@ -28,7 +28,7 @@
       "maxPriorityFeePerGasWei": "0"
     }
   },
-  "release": { "composePath": "../../runtime/releases/v0.1.1.yml" },
+  "release": { "composePath": "../../runtime/releases/v0.1.2.yml" },
   "configInboxDir": "inbox",
   "runtimeOps": {
     "chatHost": "0.0.0.0",

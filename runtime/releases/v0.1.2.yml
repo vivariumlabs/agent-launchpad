@@ -1,0 +1,66 @@
+# Agent Launchpad runtime — Oyster CVM compose TEMPLATE (SPEC-M3 §1).
+# Never deploy this file. scripts/release.sh substitutes the digest-pinned image reference and
+# writes releases/<version>.yml; THAT file's exact bytes are measured into the enclave image-id
+# together with the attested init params (scripts/compute-image-id.sh).
+#
+# Init params (oyster-cvm --init-params <enclave_path>:<attest>:<encrypt>:<type>:<value>;
+# docs.marlin.org/oyster/build-cvm/tutorials/deploy-init: attest 1 = part of the enclave's identity
+# (the image-id), 0 = excluded; encrypt 1 = decrypted only inside the enclave, 0 = clear. Files
+# appear inside the enclave under /init-params/<enclave_path>). Passed in THIS order:
+#   agent-id:1:0:utf8:agent-<agentId>            ATTESTED   → image-id → KMS key binding (M0)
+#   config-hash:1:0:utf8:0x<64 hex>               ATTESTED   → image-id → KMS key binding (SPEC-M3 §3b)
+#   agent.json:0:0:file:<path/to/agent.json>      UNATTESTED → /app/config/agent.json   (FROZEN config)
+#   runtime.json:0:0:file:<path/to/runtime.json>  UNATTESTED → /app/config/runtime.json (ops config)
+# <agentId> = canonical decimal, no padding (agent-7, never agent-007). config-hash = lowercase
+# keccak256(canonicalEncode(agent.json)) — `node dist/main.js --print-config-hash --config agent.json`.
+# Boot REFUSES to start unless /init-params/agent-id == "agent-" + agent.agentId AND
+# /init-params/config-hash == the hash of the agent.json it was given; with runtime.tee and no
+# config-hash param it refuses outright (no unbound TEE boots) — src/boot.ts. Under runtime.tee the
+# dir is fixed to /init-params: the unattested runtime.json may NOT relocate it (forged-hash guard).
+#
+# ================= WHY config-hash IS ATTESTED BUT THE CONFIG FILES ARE NOT =================
+# Nautilus KMS derives the agent's keys (treasury, action, fc, mem, chat) from the image-id, and the
+# image-id covers every ATTESTED init param. Keys therefore bind to (codeHash, agentId, configHash):
+#   - agent.json is the FROZEN identity config (addresses, x402 allowlist + payTo, caps, persona) —
+#     exactly what genesis anchors on-chain (03 §10). Attesting its HASH means a deployment with a
+#     MODIFIED agent.json either fails boot (file ≠ attested hash) or, with a matching modified hash,
+#     is a different image-id ⇒ different, EMPTY keys ⇒ it controls none of the agent's funds.
+#     Revival must supply the Arweave-published original (D10). Allowlist evolution = the 04 §4
+#     signed-update path, verified against platform.allowlistUpdateSigner (itself in the frozen file).
+#   - the hash, not the file, is attested: canonical (key order / whitespace free), 66 bytes, and the
+#     image-id is recomputable by anyone from the on-chain configHash + agentId + this compose.
+#   - runtime.json (RPC urls, ports, dirs, kmsUrl, x402 toggle, hosting…) is NOT attested and NOT
+#     hash-bound: ops changes must not rotate keys (a new image-id ⇒ a new empty treasury). It holds
+#     no spend authority: a hostile runtime.json can lie about chain state (waste / denial — txs fail
+#     on the real chain) but cannot redirect funds; destinations and caps come only from agent.json.
+# Do NOT attest agent.json or runtime.json themselves, and do NOT drop config-hash.
+# test/build/repro-lint.test.ts asserts all of this.
+#
+# Init params with encrypt=0 are PUBLICLY VISIBLE (deploy tx / operator tooling). agent.json and
+# runtime.json must NEVER contain secrets — no API-keyed RPC URLs, no tokens, no private keys.
+# ============================================================================================
+#
+# Ports (network_mode host ⇒ no port publishing; listed for operators): chat server — plain HTTP
+# on caps.chatPort, or with runtime.tls.enabled in-enclave TLS on :443 (SPEC-M3B §2; the image runs
+# as root for this — see Dockerfile), Oyster attestation server :1300
+# and Nautilus derive server 127.0.0.1:1100 are provided by the base enclave image.
+services:
+  agent:
+    image: ghcr.io/vivariumlabs/agent-runtime@sha256:c5d51d234dbf8bb8f137a033ab401cecb5bfd1c953db928517c9865183f1c1be
+    network_mode: host
+    restart: unless-stopped
+    # SPEC-M3 §3b split config: frozen agent.json + ops runtime.json (overrides the image's legacy CMD).
+    command: ["node", "dist/main.js", "--config", "/app/config/agent.json", "--runtime", "/app/config/runtime.json", "--db", "/data/agent.db"]
+    # main.ts: SIGTERM → drain → final snapshot → exit. Give it time.
+    stop_grace_period: 60s
+    volumes:
+      - agent-data:/data
+      - /init-params:/init-params:ro
+      - /init-params/agent.json:/app/config/agent.json:ro
+      - /init-params/runtime.json:/app/config/runtime.json:ro
+
+volumes:
+  # Enclave-local volume: survives container restarts, NOT enclave death (Nitro enclave storage
+  # lives in enclave memory). Durability across instances = encrypted snapshots (M2 memory module).
+  # TODO(M3-s3 probe): confirm whether Oyster offers an encrypted persistent volume and switch.
+  agent-data: {}
