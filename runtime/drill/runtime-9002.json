@@ -17,9 +17,10 @@
     "enabled": false
   },
   "tls": {
-    "enabled": true,
-    "acmeDirectoryUrl": "https://acme-staging-v02.api.letsencrypt.org/directory"
+    "enabled": true
   },
   "imageId": "0xe580506594e0ef6dc6e82e80d78e44b28e0ec7900a7e3b16795ae9fc98074aed",
-  "imageDigest": "sha256:eaf42080b9177b501cdd863ef96f170cc83831425d9b2d17fd5ecfee5466de54"
+  "imageDigest": "sha256:eaf42080b9177b501cdd863ef96f170cc83831425d9b2d17fd5ecfee5466de54",
+  "registrationRetrySec": 0,
+  "registrationGasWaitSec": 0
 }
