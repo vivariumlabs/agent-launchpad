@@ -431,6 +431,12 @@ export const RuntimeOpsConfigSchema = z
     allowlistUpdateUrl: z.string().url().optional(),
     /** Seconds between update checks (daemon step 11; DEFAULT 86 400 = once per day). */
     allowlistUpdateIntervalSec: z.number().int().positive().optional(),
+    // ---- SPEC-M3C §10 (ADDITIVE) ----
+    /**
+     * Max seconds boot waits for the treasury's rh gas (orchestrator preGas) before sending
+     * registerInstance (DEFAULT 600; 0 ⇒ no wait). Liveness knob only — no spend authority.
+     */
+    registrationGasWaitSec: z.number().int().nonnegative().optional(),
   })
   .strict()
   .default({});

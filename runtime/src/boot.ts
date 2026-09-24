@@ -57,6 +57,10 @@
 //       the new attestationRef) ⇒ execute({kind:"registerInstance"}) through the normal deps (engine T1 →
 //       keyring K2). Registered + fresh ⇒ skip (logged). Read or send failure (incl. a THROWING execute, SPEC-M3C §5) ⇒ LOUD warning and boot continues (heartbeats keep failing
 //       visibly; the genesis orchestrator watches registration and owns retry/timeout).
+//       SPEC-M3C §10: before that send (genesis AND revival), when the chain client is a NativeBalanceSource
+//       and the treasury's rh balance < REGISTRATION_GAS_FLOOR_WEI, poll it every 10 s (clock + injectable
+//       sleep) up to runtime.registrationGasWaitSec (DEFAULT 600) for the orchestrator's preGas; timeout ⇒
+//       attempt anyway with a LOUD warning. Read errors = "not yet funded" (warned once). Never throws.
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -842,6 +846,91 @@ function parseInstance(v: unknown): RegistryInstance {
   return { treasuryEOA: treasuryEOA as Address, actionEOA: actionEOA as Address, codeHash: codeHash as Hex, lastHeartbeat, generation: Number(generation) };
 }
 
+// ---------------------------------------------------------------------------
+// SPEC-M3C §10 — registration gas wait (e2e finding 2026-09-24: the enclave can boot BEFORE the
+// orchestrator's preGas confirms; a single unfunded registerInstance attempt ⇒ AWAITING_REGISTER deadlock).
+// ---------------------------------------------------------------------------
+
+/** 0.0001 ETH: real registerInstance cost ≈ 2e14 max at the 1-gwei cap; preGas sends 3.33e14. */
+export const REGISTRATION_GAS_FLOOR_WEI = 100_000_000_000_000n;
+/** DEFAULT runtime.registrationGasWaitSec. */
+export const DEFAULT_REGISTRATION_GAS_WAIT_SEC = 600;
+/** Balance poll interval while waiting. */
+export const REGISTRATION_GAS_POLL_SEC = 10n;
+/** Info-log cadence while waiting. */
+export const REGISTRATION_GAS_LOG_SEC = 30n;
+
+/** Awaitable sleep (injectable so tests drive a fake clock instantly). */
+export type SleepFn = (ms: number) => Promise<void>;
+export const realSleep: SleepFn = (ms) => new Promise<void>((res) => setTimeout(res, ms));
+
+export interface RegistrationGasWaitOptions {
+  /** Max wait in seconds (DEFAULT DEFAULT_REGISTRATION_GAS_WAIT_SEC). */
+  waitSec?: number;
+  /** DEFAULT systemClock. */
+  clock?: Clock;
+  /** DEFAULT realSleep. */
+  sleep?: SleepFn;
+}
+
+/**
+ * SPEC-M3C §10: wait until the treasury's rh native balance ≥ REGISTRATION_GAS_FLOOR_WEI, polling every
+ * REGISTRATION_GAS_POLL_SEC up to waitSec. No NativeBalanceSource ⇒ returns at once (mock chain). A read
+ * error counts as "not yet funded" (warned once). Timeout ⇒ LOUD warning and return (the caller attempts
+ * anyway; the send surfaces the real error). Resolves "funded" | "timeout" | "noBalanceSource".
+ */
+export async function waitForRegistrationGas(
+  chain: ChainClient,
+  treasury: Address,
+  agentId: number,
+  logger: BootLogger,
+  opts: RegistrationGasWaitOptions = {},
+): Promise<"funded" | "timeout" | "noBalanceSource"> {
+  if (!hasNativeBalance(chain)) return "noBalanceSource";
+  const clock = opts.clock ?? systemClock;
+  const sleep = opts.sleep ?? realSleep;
+  const waitSec = BigInt(opts.waitSec ?? DEFAULT_REGISTRATION_GAS_WAIT_SEC);
+  const start = clock();
+  let readWarned = false;
+  let lastLogAt: bigint | null = null;
+  let lastBalance: bigint | null = null;
+  for (;;) {
+    try {
+      const b: unknown = await chain.getBalance("rh", treasury);
+      lastBalance = asBigint(b, `getBalance(${treasury})@rh`);
+    } catch (e) {
+      lastBalance = null;
+      if (!readWarned) {
+        readWarned = true;
+        logger.warn(`!!! registration: treasury rh balance read FAILED (${errMsg(e)}) — treating as not yet funded; still polling !!!`);
+      }
+    }
+    const now = clock();
+    const elapsed = now - start;
+    if (lastBalance !== null && lastBalance >= REGISTRATION_GAS_FLOOR_WEI) {
+      if (lastLogAt !== null || readWarned) logger.info(`registration: treasury ${treasury} funded on rh (${lastBalance} wei) after ${elapsed}s — proceeding`);
+      return "funded";
+    }
+    if (elapsed >= waitSec) {
+      logger.warn(
+        `!!! registration: treasury ${treasury} rh balance ${lastBalance === null ? "unreadable" : `${lastBalance} wei`} < floor ${REGISTRATION_GAS_FLOOR_WEI} wei after ${elapsed}s ` +
+          `(registrationGasWaitSec ${waitSec}) — attempting registerInstance for agent ${agentId} ANYWAY !!!`,
+      );
+      return "timeout";
+    }
+    if (lastLogAt === null || now - lastLogAt >= REGISTRATION_GAS_LOG_SEC) {
+      lastLogAt = now;
+      logger.info(
+        `registration: waiting for preGas … treasury ${treasury} rh balance ${lastBalance === null ? "unreadable" : `${lastBalance} wei`} < ${REGISTRATION_GAS_FLOOR_WEI} wei ` +
+          `(${elapsed}s / ${waitSec}s)`,
+      );
+    }
+    const remaining = waitSec - elapsed;
+    const stepSec = remaining < REGISTRATION_GAS_POLL_SEC ? remaining : REGISTRATION_GAS_POLL_SEC;
+    await sleep(Number(stepSec) * 1000);
+  }
+}
+
 /**
  * Boot registration gate (revival-aware). Reads registry.instanceOf(agentId) on rh
  * (lastHeartbeat == 0 ⇔ unregistered, = the contract's isRegistered):
@@ -856,6 +945,8 @@ function parseInstance(v: unknown): RegistryInstance {
  * sent. Registration goes through the normal deps (engine T1 → keyring K2 rebuilds the tx from its attached
  * cfg). Never throws (SPEC-M3C §5: a throwing execute ⇒ "sendFailed"): a failed read or send is a LOUD warning and boot continues (heartbeats will keep
  * failing visibly; the genesis orchestrator / reviver watches registration). A failed read sends nothing.
+ * SPEC-M3C §10: right before the send (genesis and revival only — never on skip / keyMismatch), waits for
+ * the treasury's rh gas via waitForRegistrationGas (`wait`: DEFAULT 600 s, systemClock, real sleep).
  */
 export async function ensureRegistered(
   cfg: ResolvedConfig,
@@ -864,6 +955,7 @@ export async function ensureRegistered(
   exec: ExecDeps,
   logger: BootLogger,
   now: UnixSeconds,
+  wait: RegistrationGasWaitOptions = {},
 ): Promise<RegistrationOutcome> {
   let inst: RegistryInstance;
   let windowSec: bigint | null = null;
@@ -905,6 +997,13 @@ export async function ensureRegistered(
     }
     revival = true;
     logger.info(`registration: agent ${agentId} heartbeat stale (${age}s > revival window ${windowSec}s) — REVIVING (generation ${inst.generation} → ${inst.generation + 1})`);
+  }
+
+  // SPEC-M3C §10: a registerInstance send is about to happen — wait (bounded) for the preGas.
+  try {
+    await waitForRegistrationGas(chain, cfg.treasury, agentId, logger, wait);
+  } catch (e) {
+    logger.warn(`!!! registration: gas wait FAILED unexpectedly (${errMsg(e)}) — attempting registerInstance anyway !!!`);
   }
 
   // SPEC-M3C §5: execute can still throw (chain.getNonce / sendRaw, or a throwing getState) — honor
@@ -1360,7 +1459,11 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
 
   // (7) Boot auto-registration (tee + cfg.registration), after every component exists and before start().
   if (teeImageId !== undefined && cfg.registration !== undefined) {
-    await ensureRegistered(cfg, agentId, chain, exec, logger, clock());
+    await ensureRegistered(cfg, agentId, chain, exec, logger, clock(), {
+      waitSec: rt.registrationGasWaitSec ?? DEFAULT_REGISTRATION_GAS_WAIT_SEC,
+      clock,
+      sleep: realSleep,
+    });
   }
 
   const runtime: Runtime = {

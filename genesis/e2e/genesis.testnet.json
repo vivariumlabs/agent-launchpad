@@ -1,0 +1,53 @@
+{
+  "dataDir": "data",
+  "walletKeyPath": "../../.secrets/m0-drill-wallet.json",
+  "deploymentManifest": "../../contracts/deployments/testnet-46630.json",
+  "contracts": {
+    "factory": "0x7b257abd9BDf3377Af03DD67e2D67a8D5717b118",
+    "registry": "0xDBA9680C0F1958Af7Bc34a225863D93df2B92f59",
+    "usdg": "0xe6f7E5832991f5af335C2A21d4F35cea3d47ccAb",
+    "startBlock": "123536000"
+  },
+  "chains": {
+    "rh": {
+      "rpc": "https://rpc.testnet.chain.robinhood.com",
+      "chainId": 46630,
+      "maxFeePerGasWei": "1000000000",
+      "maxPriorityFeePerGasWei": "10000000"
+    },
+    "base": {
+      "rpc": "https://base-rpc.publicnode.com",
+      "chainId": 8453,
+      "maxFeePerGasWei": "500000000",
+      "maxPriorityFeePerGasWei": "10000000"
+    },
+    "arbitrum": {
+      "rpc": "https://arb1.arbitrum.io/rpc",
+      "chainId": 42161,
+      "maxFeePerGasWei": "500000000",
+      "maxPriorityFeePerGasWei": "0"
+    }
+  },
+  "release": { "composePath": "../../runtime/releases/v0.1.1.yml" },
+  "configInboxDir": "inbox",
+  "runtimeOps": {
+    "chatHost": "0.0.0.0",
+    "dbPath": "/data/agent.db",
+    "snapshotDir": "/data/snapshots",
+    "rpc": {
+      "rh": "https://rpc.testnet.chain.robinhood.com",
+      "base": "https://base-rpc.publicnode.com",
+      "arbitrum": "https://arbitrum-one-rpc.publicnode.com",
+      "optimism": "https://optimism-rpc.publicnode.com"
+    },
+    "hosting": { "paidUntil": "1791028800", "ratePerDay": "1700000" },
+    "x402": { "enabled": false }
+  },
+  "seeding": { "profile": "testnet" },
+  "oyster": {
+    "bin": "/sessions/magical-zealous-davinci/oyster-cvm",
+    "walletKeyFile": "../../.secrets/m0-drill-wallet.key",
+    "durationMin": 60
+  },
+  "turbo": { "enabled": false }
+}

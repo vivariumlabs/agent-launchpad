@@ -6,3 +6,4 @@ contracts/cache/
 contracts/out-*/
 contracts/cache-*/
 backups/
+genesis/e2e/data/

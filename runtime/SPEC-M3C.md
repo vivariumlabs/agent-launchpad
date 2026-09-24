@@ -82,3 +82,24 @@ runtime/package.json (+lockfile) `0.1.0` → `0.1.1`.
 5. deployArgs includes both flags when set, omits when unset; config.ts parses/rejects them.
 
 Existing suites stay green untouched except where a test asserts the old throwing behavior.
+
+## 10. Registration gas wait (e2e finding 2026-09-24, for v0.1.2)
+
+Live e2e: the enclave booted 26 s BEFORE the orchestrator's preGas confirmed ⇒ boot's single
+registerInstance attempt failed on gas and NOTHING retries ⇒ AWAITING_REGISTER deadlock (recovered
+by redeploy). Oyster's :1300 comes up near-simultaneously with the app when the pull is fast, so the
+"verify+preGas during pull" ordering is a coin flip, not a guarantee.
+
+Fix in `ensureRegistered` (boot.ts), before sending registerInstance (genesis AND revival paths):
+- If the chain client implements NativeBalanceSource and `getBalance("rh", treasury)` <
+  `REGISTRATION_GAS_FLOOR_WEI = 100_000_000_000_000n` (0.0001 ETH; real cost ≈ 2e14 max at the
+  1-gwei cap, preGas sends 3.33e14): poll the balance every 10 s (clock-injected, timers via the
+  existing injectable clock — a plain awaited sleep loop reading `clock()` is fine in boot) up to
+  `runtime.registrationGasWaitSec DEFAULT 600` (ops config — liveness knob, no spend authority).
+  Log info every 30 s while waiting ("registration: waiting for preGas …").
+- Funded ⇒ proceed. Timeout ⇒ attempt anyway with a LOUD warn (the send surfaces the real error).
+- Balance read errors count as "not yet funded" (warn once, keep polling). Never throws.
+- No NativeBalanceSource (mock chain) or already registered/fresh ⇒ no wait (existing behavior).
+
+Tests ("M3C §10: …"): funded-after-N-polls ⇒ registerInstance sent (fake clock/sleep); timeout ⇒
+attempted + warned; already-registered ⇒ no wait; tee:false unchanged; read-error-then-funded works.
