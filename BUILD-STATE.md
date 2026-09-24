@@ -43,7 +43,9 @@ With rental fee-accounted, a mainnet 75 USDG creation fee leaves ~9 USDG treasur
 7. Farcaster leg — needs ~$10 OP mainnet funding (ask Juan when reached).
 
 ## Blocked on Juan
-- Domain/DNS zone for agent subdomains (s3 item 4). OP funds when Farcaster lands. Fee-sizing flag above (whenever convenient).
+- Domain/DNS zone for agent subdomains (s3 item 4) — the ONE open decision; agentDnsRoot is frozen/permanent, TLS off until chosen.
+- OP ~$10: Juan sends when items 4-6 are cleared (his ruling 2026-09-24).
+- Fee-sizing flag: Juan's ruling 2026-09-24 — DEFER to the end, re-price the 75 USDG creation fee once all real costs (hosting at real bandwidth ≈0.24 USDC/h, Turbo, Across, Farcaster) are measured. Do not change it earlier.
 
 ## Known issues / debt
 - ACME ToS auto-agreed in code (LE requirement; documented); ACME directory URL is ops-config (worst case DoS/untrusted cert); challenge-window seconds serve the challenge cert; SNI required (no bare-IP TLS).
