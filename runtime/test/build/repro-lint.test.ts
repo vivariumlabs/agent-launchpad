@@ -329,7 +329,9 @@ describe("build pipeline wiring", () => {
 
   it("M3D: Farcaster cross-verification lib (@farcaster/core) is DEV-only exactly like arbundles; @noble/hashes is a pinned PROD dependency (SPEC-M3D §3a/§4)", () => {
     const p = JSON.parse(read("package.json")) as { version: string; dependencies: Record<string, string>; devDependencies: Record<string, string> };
-    expect(p.version).toBe("0.1.4");
+    // Version literal was a stale pin (broke silently at the v0.1.5 cut — found M4 session 10);
+    // the assertion's real subject is dep hygiene, so require well-formed semver instead.
+    expect(p.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(Object.keys(p.dependencies).filter((d) => /farcaster/.test(d))).toEqual([]);
     expect(p.devDependencies["@farcaster/core"]).toMatch(/^\d+\.\d+\.\d+$/); // exact pin
     expect(p.dependencies["@noble/hashes"]).toMatch(/^\d+\.\d+\.\d+$/); // exact pin, direct prod dep

@@ -1,0 +1,47 @@
+{
+  "agentId": 9,
+  "name": "Marcus",
+  "symbol": "MRCS",
+  "imageURI": null,
+  "creator": "0x1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d",
+  "configHash": "0x3abd6e6f2a1b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c",
+  "token": "0x9a1b2c3d4e5f60718293a1b2c3d4e5f60718293a1",
+  "curve": "0x1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d",
+  "poolId": "0x5a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a",
+  "state": "live",
+  "requestTx": "0x0d3962c7acc30186b636b8b0ecaf3072d72319d5ac30186b636b8b0ecaf3072",
+  "requestBlock": 11399900,
+  "createdAt": 1745971200,
+  "status": "evicted",
+  "instance": {
+    "treasuryEOA": "0x72c4a2b1d3e4f5061728394a5b6c7d8e9f0a1b2c",
+    "actionEOA": "0xa1b2c3d4e5f60718293a1b2c3d4e5f60718293a1b",
+    "codeHash": "0x13cb2f550f5df40c1142fc9fef77836942b4bf41da933f0dbeaed203288d5ca",
+    "attestationRef": "arweave:attn-marcus-gen2-1c4d",
+    "lastHeartbeat": 1748908800,
+    "generation": 2
+  },
+  "market": {
+    "price": "0.0008043",
+    "priceE18": "804300000000000",
+    "priceSource": "pool",
+    "totalSupply": "500000000000000000000000",
+    "mcapUsdg": "402150000",
+    "volume24hUsdg": "0"
+  },
+  "balances": {
+    "treasuryUsdg": "1180000",
+    "treasuryRhEth": "0",
+    "actionUsdg": "0",
+    "actionRhEth": "0",
+    "actionToken": "0",
+    "updatedAt": 1748908800
+  },
+  "fees": {
+    "buybackLeg": "3120000",
+    "treasuryLeg": "4160000",
+    "royaltyLeg": "3120000",
+    "converted": "0",
+    "count": 1
+  }
+}

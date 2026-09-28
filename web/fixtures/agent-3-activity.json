@@ -1,0 +1,100 @@
+{
+  "agentId": 3,
+  "events": [
+    {
+      "id": 61,
+      "kind": "heartbeat",
+      "txHash": "0xf6521bdd7353b412c66cbe4fe297bed2c8e96d0f6521bdd7353b412c66cbe4f",
+      "logIndex": 0,
+      "blockNumber": 11762104,
+      "ts": 1759023300,
+      "data": { "timestamp": 1759023300 }
+    },
+    {
+      "id": 58,
+      "kind": "swap",
+      "txHash": "0xc6f5e3e00ea7929a785a86518591fddc53491c13d04b683f914b0d63b42785d",
+      "logIndex": 2,
+      "blockNumber": 11761988,
+      "ts": 1759020600,
+      "data": {
+        "poolId": "0xfcc61dbf2a1c3d4e5f60718293a1b2c3d4e5f6071829a3d4e5f60718293a395",
+        "sender": "0xe2bb6abf1c2d3e4f5061728394a5b6c7d8e9f07f67",
+        "amount0": "-2204007000000000000000",
+        "amount1": "1000000",
+        "sqrtPriceX96": "1361129467683753853853498429727072845",
+        "liquidity": "500000000000000000000000",
+        "tick": -276324,
+        "fee": 10000,
+        "agentIsCurrency0": true
+      }
+    },
+    {
+      "id": 57,
+      "kind": "distributed",
+      "txHash": "0xc6f5e3e00ea7929a785a86518591fddc53491c13d04b683f914b0d63b42785d",
+      "logIndex": 3,
+      "blockNumber": 11761988,
+      "ts": 1759020600,
+      "data": {
+        "poolId": "0xfcc61dbf2a1c3d4e5f60718293a1b2c3d4e5f6071829a3d4e5f60718293a395",
+        "buybackLeg": "20449500",
+        "treasuryLeg": "27266000",
+        "royaltyLeg": "20449500",
+        "converted": "68165000000000000000"
+      }
+    },
+    {
+      "id": 44,
+      "kind": "curve_sell",
+      "txHash": "0x88dc228b1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f60718293a1b4d9",
+      "logIndex": 1,
+      "blockNumber": 11759940,
+      "ts": 1759003980,
+      "data": {
+        "trader": "0xe2bb6abf1c2d3e4f5061728394a5b6c7d8e9f07f67",
+        "usdg": "4275000",
+        "tokens": "1500000000000000000000",
+        "fee": "128250"
+      }
+    },
+    {
+      "id": 12,
+      "kind": "registered",
+      "txHash": "0x2daa1f4a1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f60718293a1b2c3",
+      "logIndex": 0,
+      "blockNumber": 11758312,
+      "ts": 1758844980,
+      "data": {
+        "treasuryEOA": "0x272f1e15c1d2e3f405162738495061728394a2eea",
+        "actionEOA": "0xe2bb6abf1c2d3e4f5061728394a5b6c7d8e9f07f67",
+        "codeHash": "0xcd5040ae13cb2f550f5df40c1142fc9fef77836942b4bf41da933f0dbeaed804",
+        "generation": 1
+      }
+    },
+    {
+      "id": 3,
+      "kind": "live",
+      "txHash": "0x2daa1f4a1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f60718293a1b2c2",
+      "logIndex": 0,
+      "blockNumber": 11758305,
+      "ts": 1758844920,
+      "data": {
+        "token": "0x308ceBcf4e2a1b4d9e6f2a1c3d4e5f60718293a1",
+        "curve": "0xE667a1c2b3d4e5f60718293a1b2c3d4e5f607182"
+      }
+    },
+    {
+      "id": 1,
+      "kind": "requested",
+      "txHash": "0xa21018adf2a1b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4",
+      "logIndex": 0,
+      "blockNumber": 11758300,
+      "ts": 1758844800,
+      "data": {
+        "configHash": "0x6a9c8559f2a1b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192305e",
+        "creator": "0x9f3a1b2c3d4e5f60718293a1b2c3d4e5f6071829"
+      }
+    }
+  ]
+}

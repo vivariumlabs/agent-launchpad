@@ -1,0 +1,16 @@
+import Link from "next/link";
+
+import { ConnectButton } from "./ConnectButton";
+
+export function Header() {
+  return (
+    <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur">
+      <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4">
+        <Link href="/" className="text-lg font-semibold tracking-tight text-slate-50">
+          agent<span className="text-accent">-launchpad</span>
+        </Link>
+        <ConnectButton />
+      </div>
+    </header>
+  );
+}

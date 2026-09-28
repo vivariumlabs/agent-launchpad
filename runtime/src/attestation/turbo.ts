@@ -9,6 +9,9 @@
 // self-top-up path is an s3+ item): after each snapshot the sink compares the balance with the
 // estimated cost of LOW_CREDIT_DAYS daily snapshots and logs LOUDLY when short.
 //
+// SPEC-M4A §3: TurboJournalSink (Kind "journal") wraps memoryJournalSink — local row first (the audit
+// source, its ref returned), then a best-effort plaintext upload of {v:1, agentId, ts, text}.
+//
 // Mirrors (belt and suspenders, DEFAULT on): MirroredSnapshotSink / MirroredAttestationSink write
 // the primary (Turbo) AND every mirror (LocalDirSink); a failing mirror is logged, a failing primary
 // throws after the mirrors are written. Restore reads the sinks separately ([turbo, local] ⇒ Turbo
@@ -17,8 +20,10 @@
 // The uploader is the in-house ./turboHttp.ts (ANS-104 via ./ans104.ts; the only network file here).
 // @ardrive/turbo-sdk was rejected (211 MB, native deps) and is not a dependency.
 
-import type { Address, Hex } from "viem";
+import { bytesToString, type Address, type Hex } from "viem";
+import type { JournalSink } from "../exec/execute.js";
 import type { SnapshotSink } from "../memory/snapshot.js";
+import type { ProposedAction, UnixSeconds } from "../policy/types.js";
 import type { AttestationSink } from "./attestation.js";
 
 export const TURBO_APP_TAG = "agent-launchpad";
@@ -27,7 +32,7 @@ export const TURBO_BASE_ETH_TOKEN = "base-eth";
 /** DEFAULT: warn when credits cover fewer than this many daily snapshots. */
 export const LOW_CREDIT_DAYS = 30n;
 
-export type TurboKind = "attestation" | "snapshot";
+export type TurboKind = "attestation" | "snapshot" | "journal";
 
 export interface TurboTag {
   name: string;
@@ -132,6 +137,57 @@ export class TurboArweaveSink implements AttestationSink, SnapshotSink {
       this.o.logger?.warn(`turbo: credit check failed: ${e instanceof Error ? e.message : String(e)}`);
       return null;
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-M4A §3 — journal → Arweave (additive sink swap; zero policy change)
+// ---------------------------------------------------------------------------
+
+/** SPEC-M4A §3: version of the journal item payload `{v, agentId, ts, text}`. */
+export const JOURNAL_ENVELOPE_VERSION = 1;
+
+/** UTF-8 JSON `{"v":1,"agentId":<n>,"ts":<unix s>,"text":<entry text>}` (key order fixed). */
+export function journalEnvelope(agentId: number, ts: UnixSeconds, text: string): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify({ v: JOURNAL_ENVELOPE_VERSION, agentId, ts: Number(ts), text }));
+}
+
+export interface TurboJournalSinkOptions {
+  /** The authoritative local sink (memoryJournalSink): written FIRST; its ref is returned. */
+  inner: JournalSink;
+  uploader: TurboUploader;
+  agentId: number;
+  /** Injected clock (unix seconds): envelope ts + Timestamp tag. */
+  clock: () => UnixSeconds;
+  logger?: SinkLogger;
+}
+
+/**
+ * Mirror-first journal sink: the inner (memory) write happens first and its ref is THE result; then
+ * the entry is uploaded to Arweave as a plaintext journal item. Upload failure ⇒ LOUD warn, never
+ * throws, nothing queued (the next entry still tries). Inner-write failure propagates (no upload).
+ */
+export class TurboJournalSink implements JournalSink {
+  private readonly o: TurboJournalSinkOptions;
+
+  constructor(o: TurboJournalSinkOptions) {
+    if (!Number.isSafeInteger(o.agentId) || o.agentId <= 0) throw new Error(`TurboJournalSink: bad agentId ${o.agentId}`);
+    this.o = o;
+  }
+
+  async write(action: ProposedAction, bytes: Uint8Array): Promise<string> {
+    const ref = await this.o.inner.write(action, bytes);
+    const now = this.o.clock();
+    try {
+      const { id } = await this.o.uploader.upload(journalEnvelope(this.o.agentId, now, bytesToString(bytes)), turboTags("journal", this.o.agentId, now));
+      this.o.logger?.info(`journal: ${ref} published to Arweave (${id})`);
+    } catch (e) {
+      this.o.logger?.warn(
+        `!!! JOURNAL ARWEAVE UPLOAD FAILED for ${ref}: ${e instanceof Error ? e.message : String(e)} — ` +
+          "entry kept locally only (not queued; next entries still try) !!!",
+      );
+    }
+    return ref;
   }
 }
 

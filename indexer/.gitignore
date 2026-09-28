@@ -1,0 +1,3 @@
+node_modules/
+# indexer sqlite state (npm start -- --config indexer/e2e/testnet.json)
+e2e/data/

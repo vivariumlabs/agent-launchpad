@@ -1,0 +1,104 @@
+// SPEC-M4A §1 main.ts — argv only (no environment variables, no secrets).
+//
+//   npm start -- --config <indexer.json>
+//     config → db (migrations) → watcher loop (every pollMs; backfill from startBlock in maxBlockRange
+//     chunks) + balance refresh loop (every balanceRefreshSec) + journal enrich loop (every enrichSec,
+//     only when arweave.enabled) + HTTP API on host:port. SIGINT/SIGTERM ⇒ stop the loops after their
+//     current step, close the server, close the db.
+//
+// The --config path resolves against the directory npm was invoked from (INIT_CWD) first, then the
+// process cwd — so `npm --prefix indexer start -- --config indexer/e2e/testnet.json` from the repo
+// root and `npm start -- --config e2e/testnet.json` from indexer/ both work.
+
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { IndexerApi } from "./api.js";
+import { BalanceRefresher } from "./balances.js";
+import { ViemIndexerChain } from "./chain.js";
+import { sleep, systemClock } from "./clock.js";
+import { loadConfig } from "./config.js";
+import { IndexerDb } from "./db.js";
+import { Enricher, HttpArweaveClient } from "./enrich.js";
+import { errMsg, type Logger } from "./log.js";
+import { Watcher } from "./watcher.js";
+
+const stamp = (): string => new Date(Number(systemClock.now()) * 1000).toISOString();
+const consoleLogger: Logger = {
+  info: (m) => console.log(`${stamp()} INFO  ${m}`),
+  warn: (m) => console.warn(`${stamp()} WARN  ${m}`),
+  error: (m) => console.error(`${stamp()} ERROR ${m}`),
+};
+
+function configPath(argv: readonly string[]): string {
+  const i = argv.indexOf("--config");
+  const p = i >= 0 ? argv[i + 1] : undefined;
+  if (p === undefined || p.startsWith("--")) throw new Error("usage: npm start -- --config <indexer.json>");
+  const candidates = [process.env.INIT_CWD, process.cwd()].filter((d): d is string => d !== undefined).map((d) => resolve(d, p));
+  const hit = candidates.find((c) => existsSync(c));
+  if (hit === undefined) throw new Error(`config not found: ${candidates.join(" | ")}`);
+  return hit;
+}
+
+async function main(): Promise<void> {
+  const log = consoleLogger;
+  const cfg = loadConfig(configPath(process.argv.slice(2)));
+  if (cfg.dbPath !== ":memory:") mkdirSync(dirname(cfg.dbPath), { recursive: true });
+  const db = new IndexerDb(cfg.dbPath);
+  const chain = new ViemIndexerChain({ rpc: cfg.chain.rpc, factory: cfg.contracts.factory, registry: cfg.contracts.registry, nft: cfg.contracts.nft });
+  const watcher = new Watcher(db, chain, { contracts: cfg.contracts, reorgWindowBlocks: cfg.reorgWindowBlocks, maxBlockRange: cfg.maxBlockRange }, systemClock, log);
+  const balances = new BalanceRefresher(db, chain, cfg.contracts.usdg, systemClock, log);
+  const enricher = cfg.arweave.enabled
+    ? new Enricher(db, new HttpArweaveClient({ graphqlUrl: cfg.arweave.graphqlUrl, gatewayUrl: cfg.arweave.gatewayUrl }), systemClock, log)
+    : null;
+  const api = new IndexerApi(db, systemClock, { staleAfterSec: cfg.staleAfterSec, startBlock: cfg.contracts.startBlock, gatewayUrl: cfg.arweave.gatewayUrl }, log);
+  const server = api.server();
+
+  let stopping = false;
+  const stop = (sig: string): void => {
+    if (!stopping) log.info(`${sig}: stopping after the current step…`);
+    stopping = true;
+  };
+  process.on("SIGINT", () => stop("SIGINT"));
+  process.on("SIGTERM", () => stop("SIGTERM"));
+
+  await new Promise<void>((res, rej) => {
+    server.once("error", rej);
+    server.listen(cfg.port, cfg.host, () => res());
+  });
+  log.info(`indexer up: api http://${cfg.host}:${cfg.port}, db ${cfg.dbPath}, factory ${cfg.contracts.factory}, from block ${watcher.cursor()} (startBlock ${cfg.contracts.startBlock})`);
+  if (enricher === null) log.info("arweave.enabled = false: journal enrichment off");
+
+  /** Sleep in ≤ 250 ms slices so SIGINT is honored promptly. */
+  const nap = async (ms: number): Promise<void> => {
+    for (let left = ms; !stopping && left > 0; left -= 250) await sleep(Math.min(250, left));
+  };
+
+  const watcherLoop = async (): Promise<void> => {
+    while (!stopping) await nap(await watcher.pollSafe(cfg.pollMs));
+  };
+  const periodic = async (name: string, everySec: number, fn: () => Promise<unknown>): Promise<void> => {
+    while (!stopping) {
+      try {
+        await fn();
+      } catch (e) {
+        log.warn(`${name} LOOP FAILED: ${errMsg(e)}`); // fn() never throws by contract; belt only
+      }
+      await nap(everySec * 1000);
+    }
+  };
+
+  await Promise.all([
+    watcherLoop(),
+    periodic("balances", cfg.balanceRefreshSec, () => balances.refreshAll()),
+    enricher === null ? Promise.resolve() : periodic("enrich", cfg.enrichSec, () => enricher.runOnce()),
+  ]);
+
+  await new Promise<void>((res) => server.close(() => res()));
+  db.close();
+  log.info("indexer stopped (db closed)");
+}
+
+main().catch((e: unknown) => {
+  console.error(`indexer: ${errMsg(e)}`);
+  process.exit(1);
+});

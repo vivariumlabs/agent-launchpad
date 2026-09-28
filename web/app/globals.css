@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@theme {
+  /* Single accent color, per SPEC-M4A §2 (clean and restrained design). */
+  --color-accent: #38bdf8;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background-color: #020617; /* slate-950 */
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+body {
+  color: #e2e8f0; /* slate-200 */
+  -webkit-font-smoothing: antialiased;
+}

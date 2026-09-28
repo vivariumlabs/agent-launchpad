@@ -1,0 +1,20 @@
+{
+  "chain": {
+    "rpc": "https://rpc.testnet.chain.robinhood.com",
+    "chainId": 46630
+  },
+  "deploymentManifest": "../../contracts/deployments/testnet-46630.json",
+  "dbPath": "data/indexer.sqlite",
+  "port": 8425,
+  "pollMs": 3000,
+  "balanceRefreshSec": 300,
+  "enrichSec": 120,
+  "staleAfterSec": 1800,
+  "reorgWindowBlocks": 30,
+  "maxBlockRange": 10000,
+  "arweave": {
+    "graphqlUrl": "https://arweave.net/graphql",
+    "gatewayUrl": "https://arweave.net",
+    "enabled": true
+  }
+}

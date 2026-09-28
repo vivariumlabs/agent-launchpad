@@ -49,6 +49,9 @@
 //   SPEC-M3D §3c/§3d Farcaster (platform.farcaster present AND runtime.tee; absent ⇒ module disabled): castSink =
 //       fcSink (memoryCastSink mirror first, then the frozen hub allowlist via HubClient; overrides.castSink wins)
 //       and daemon step 13 (social/fcOnboard.ts: FID register → key add → DISPLAY user data).
+//   SPEC-M4A §3 journal → Arweave (runtime.arweave.enabled AND runtime.tee): journalSink = TurboJournalSink over
+//       the Turbo uploader, WRAPPING memoryJournalSink (local row first; upload best-effort, failure = LOUD
+//       warn); overrides.journalSink wins. Zero policy change (J1 untouched).
 //   SPEC-M3B §4 signed allowlist updates: after (3) memory and BEFORE any deps/pulse exist, the newest
 //       adopted signed allowlist in kv is re-verified and applied onto the genesis cfg (reapplyAdoptedAllowlist).
 //       cfg is then MUTABLE in exactly one way: applyCfg(next) swaps the single cfg object on every ExecDeps
@@ -107,7 +110,7 @@ import { DEFAULT_TURBO_LOW_WATERMARK_WINC, DEFAULT_TURBO_TOPUP_AMOUNT_WEI, runTu
 import { nextTickAt } from "./daemon/scheduler.js";
 import { agentRegistryAbi, erc20Abi, feeSplitHookAbi } from "./exec/abi.js";
 import { MockChainClient, type ChainClient } from "./exec/chain.js";
-import { execute, type CastSink, type ExecDeps, type ExecResult, type LedgerStore } from "./exec/execute.js";
+import { execute, type CastSink, type ExecDeps, type ExecResult, type JournalSink, type LedgerStore } from "./exec/execute.js";
 import { RealChainClient } from "./exec/chainViem.js";
 import { createKeyring, type Keyring } from "./keyring/keyring.js";
 import { withRetry, type KmsClient, type WithRetryOptions } from "./keyring/kms.js";
@@ -120,7 +123,7 @@ import {
   LocalDirSink as AttestationDirSink,
   type AttestationSink,
 } from "./attestation/attestation.js";
-import { MirroredAttestationSink, MirroredSnapshotSink, TurboArweaveSink, type TurboPayment, type TurboUploader } from "./attestation/turbo.js";
+import { MirroredAttestationSink, MirroredSnapshotSink, TurboArweaveSink, TurboJournalSink, type TurboPayment, type TurboUploader } from "./attestation/turbo.js";
 import { createHttpTurboUploader, DEFAULT_TURBO_UPLOAD_URL } from "./attestation/turboHttp.js";
 import { agentDomain, LETS_ENCRYPT_PRODUCTION, type AcmeApi } from "./tls/acme.js";
 import { acmeAccountKeyPem, ed25519KeyFromSeed } from "./tls/keys.js";
@@ -305,6 +308,8 @@ export interface BootOverrides {
   castSink?: CastSink;
   /** SPEC-M3D §3c: hub seam for fcSink (DEFAULT HubClient over the frozen platform.farcaster.hubs). */
   hubClient?: HubSubmitter;
+  /** SPEC-M4A §3: journal sink override — wins over TurboJournalSink / memoryJournalSink. */
+  journalSink?: JournalSink;
 }
 
 export interface BootOptions {
@@ -1222,6 +1227,8 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
   // (2a) SPEC-M3B §3 Turbo/Arweave sink (treasury-signed via keyring.turboSigner; no raw key leaves the keyring).
   let turboSink: TurboArweaveSink | null = null;
   let turboPayment: TurboPayment | null = null;
+  /** SPEC-M4A §3: the same uploader backs TurboJournalSink (tee only) — wired in (4). */
+  let turboUploader: TurboUploader | null = null;
   if (rt.arweave.enabled) {
     const uploader =
       ov.turboUploader ??
@@ -1230,6 +1237,7 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
         ...(rt.arweave.paymentUrl !== undefined ? { paymentUrl: rt.arweave.paymentUrl } : {}),
         ...(rt.arweave.gatewayUrl !== undefined ? { gatewayUrl: rt.arweave.gatewayUrl } : {}),
       });
+    turboUploader = uploader;
     turboSink = new TurboArweaveSink({ uploader, agentId, owner: keyring.addresses().treasury, logger });
     turboPayment = ov.turboPayment ?? (isTurboPayment(uploader) ? uploader : null);
     logger.info(
@@ -1340,6 +1348,19 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
     logger.info("farcaster: platform.farcaster present but runtime.tee is off — module disabled (casts stay local drafts)");
   }
 
+  // SPEC-M4A §3: runtime.arweave.enabled AND runtime.tee ⇒ TurboJournalSink WRAPPING memoryJournalSink
+  // (local row first = the audit source; upload best-effort, failure = LOUD warn); else
+  // memoryJournalSink as before; overrides.journalSink wins.
+  let journalSink: JournalSink = memoryJournalSink(db, clock);
+  if (ov.journalSink !== undefined) {
+    journalSink = ov.journalSink;
+  } else if (rt.arweave.enabled && rt.tee && turboUploader !== null) {
+    journalSink = new TurboJournalSink({ inner: journalSink, uploader: turboUploader, agentId, clock, logger });
+    logger.info("arweave: journal entries mirrored to Arweave (Kind journal; local memory row first)");
+  } else if (rt.arweave.enabled) {
+    logger.info("arweave: runtime.tee is off — journal stays local (memoryJournalSink)");
+  }
+
   /** Base deps WITHOUT log: runPulse wraps it with memoryExecDeps (which logs), avoiding double rows. */
   const baseExec: ExecDeps = {
     cfg,
@@ -1349,7 +1370,7 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
     ledger,
     clock,
     castSink,
-    journalSink: memoryJournalSink(db, clock),
+    journalSink,
   };
   /** Logged deps: every ExecResult → actions row. Daemon, announcements, chat. */
   const exec: ExecDeps = { ...baseExec, log: (r) => recordExecResult(db, r, clock()), annotate: (r) => annotateExecResult(db, r) };

@@ -1,0 +1,33 @@
+{
+  "agentId": 5,
+  "name": null,
+  "symbol": null,
+  "imageURI": null,
+  "creator": "0x4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7",
+  "configHash": "0x9e1b2c3d4e5f60718293a1b2c3d4e5f60718293a1b2c3d4e5f60718293a1b2",
+  "token": null,
+  "curve": null,
+  "poolId": null,
+  "state": "requested",
+  "requestTx": "0x9e1b2c3d4e5f60718293a1b2c3d4e5f60718293a1b2c3d4e5f60718293a1b2c",
+  "requestBlock": 11763900,
+  "createdAt": null,
+  "status": "pending",
+  "instance": null,
+  "market": {
+    "price": null,
+    "priceE18": null,
+    "priceSource": null,
+    "totalSupply": null,
+    "mcapUsdg": null,
+    "volume24hUsdg": "0"
+  },
+  "balances": null,
+  "fees": {
+    "buybackLeg": "0",
+    "treasuryLeg": "0",
+    "royaltyLeg": "0",
+    "converted": "0",
+    "count": 0
+  }
+}
