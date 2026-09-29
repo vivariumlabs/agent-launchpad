@@ -54,7 +54,7 @@ async function main(): Promise<void> {
   const enricher = arweave === null ? null : new Enricher(db, arweave, systemClock, log);
   const releasesDir = cfg.releasesDir;
   const verifier = new Verifier(db, arweave, () => (releasesDir === undefined ? null : loadReleaseTable(releasesDir, log)), systemClock, log);
-  const api = new IndexerApi(db, systemClock, { staleAfterSec: cfg.staleAfterSec, startBlock: cfg.contracts.startBlock, gatewayUrl: cfg.arweave.gatewayUrl }, log);
+  const api = new IndexerApi(db, systemClock, { staleAfterSec: cfg.staleAfterSec, startBlock: cfg.contracts.startBlock, gatewayUrl: cfg.arweave.gatewayUrl, contracts: cfg.contractsView }, log);
   const server = api.server();
 
   let stopping = false;

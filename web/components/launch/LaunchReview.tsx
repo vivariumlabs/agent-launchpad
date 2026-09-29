@@ -8,8 +8,10 @@ import { readContract, waitForTransactionReceipt } from "wagmi/actions";
 
 import { ConnectButton } from "../ConnectButton";
 import { CopyButton } from "../CopyButton";
+import { ARWEAVE_GATEWAY } from "@/lib/config";
 import { erc20Abi, factoryAbi, isAddress, isBytes32, parseUint } from "@/lib/factory";
 import { formatUsdg } from "@/lib/format";
+import { exactAgentJsonText, type PublishState } from "@/lib/launch";
 import { rhTestnet } from "@/lib/wagmi";
 import type { LaunchAgentInput, LaunchPrepared } from "@/lib/types";
 
@@ -32,9 +34,10 @@ function Field({ label, value, mono = true }: { label: string; value: string; mo
   );
 }
 
-function trackUrl(agentId: string, since: number, predicted: number, tx?: string): string {
+function trackUrl(agentId: string, since: number, predicted: number, tx?: string, ar?: string): string {
   const q = new URLSearchParams({ since: String(since), predicted: String(predicted) });
   if (tx) q.set("tx", tx);
+  if (ar) q.set("ar", ar);
   return `/launch/track/${agentId}?${q.toString()}`;
 }
 
@@ -55,11 +58,16 @@ export function LaunchReview({
   input,
   prepared,
   fixtures,
+  publish,
+  onRetryPublish,
   onBack,
 }: {
   input: LaunchAgentInput;
   prepared: LaunchPrepared;
   fixtures: boolean;
+  /** SPEC-M4E R3: the config must be on Arweave before the createAgent tx. */
+  publish: PublishState;
+  onRetryPublish: () => void;
   onBack: () => void;
 }) {
   const router = useRouter();
@@ -69,10 +77,10 @@ export function LaunchReview({
   const { writeContractAsync } = useWriteContract();
   const [step, setStep] = useState<TxStep>({ kind: "idle" });
 
+  // Show the exact bytes that were hashed + published when the helper returned them.
   const agentJsonText =
-    typeof prepared.agentJson === "string"
-      ? prepared.agentJson
-      : JSON.stringify(prepared.agentJson, null, 2);
+    exactAgentJsonText(prepared) ?? JSON.stringify(prepared.agentJson, null, 2);
+  const arTxId = publish.kind === "published" ? publish.txId : undefined;
 
   const { factory, usdg, fee } = prepared.createArgs;
   const feeAmount = parseUint(fee);
@@ -84,10 +92,11 @@ export function LaunchReview({
     feeAmount !== null;
 
   const busy = step.kind === "allowance" || step.kind === "approving" || step.kind === "creating";
+  const published = publish.kind === "published";
   const wrongChain = isConnected && chainId !== rhTestnet.id;
 
   async function launch() {
-    if (!address || !argsValid || feeAmount === null) return;
+    if (!address || !argsValid || feeAmount === null || !published) return;
     const factoryAddr = factory as `0x${string}`;
     const usdgAddr = usdg as `0x${string}`;
     try {
@@ -146,14 +155,15 @@ export function LaunchReview({
       }).find((l) => l.address.toLowerCase() === factory.toLowerCase());
       const realId = requested ? requested.args.agentId.toString() : String(prepared.agentId);
 
-      router.push(trackUrl(realId, Math.floor(Date.now() / 1000), prepared.agentId, createHash));
+      router.push(trackUrl(realId, Math.floor(Date.now() / 1000), prepared.agentId, createHash, arTxId));
     } catch (err) {
       setStep({ kind: "error", message: errMessage(err) });
     }
   }
 
   function simulate() {
-    router.push(trackUrl(String(prepared.agentId), Math.floor(Date.now() / 1000), prepared.agentId));
+    if (!published) return;
+    router.push(trackUrl(String(prepared.agentId), Math.floor(Date.now() / 1000), prepared.agentId, undefined, arTxId));
   }
 
   return (
@@ -175,6 +185,7 @@ export function LaunchReview({
         <Field label="Image id" value={prepared.imageId} />
         <Field label="Factory" value={factory} />
         <Field label="Creation fee" value={`${formatUsdg(fee)} USDG`} mono={false} />
+        <PublishRow publish={publish} onRetry={onRetryPublish} disabled={busy} />
       </div>
       <p className="-mt-3 text-xs text-slate-500">
         The agent id is a prediction (next factory id) — if someone else launches first, your
@@ -195,6 +206,13 @@ export function LaunchReview({
         </div>
       </details>
 
+      {!published ? (
+        <p className="-mt-3 text-xs text-slate-500">
+          The launch transaction unlocks once your config is on Arweave — the orchestrator finds it there by its
+          configHash and trusts only the hash you anchor on-chain.
+        </p>
+      ) : null}
+
       {!argsValid ? (
         <p className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
           The launch helper returned malformed transaction arguments — not submitting. Go back and
@@ -209,7 +227,8 @@ export function LaunchReview({
           <button
             type="button"
             onClick={simulate}
-            className="self-start rounded-md border border-accent/40 bg-accent/15 px-4 py-2 text-sm font-medium text-accent transition hover:bg-accent/25"
+            disabled={!published}
+            className="self-start rounded-md border border-accent/40 bg-accent/15 px-4 py-2 text-sm font-medium text-accent transition hover:bg-accent/25 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Simulate launch →
           </button>
@@ -238,7 +257,7 @@ export function LaunchReview({
               <button
                 type="button"
                 onClick={launch}
-                disabled={busy}
+                disabled={busy || !published}
                 className="self-start rounded-md border border-accent/40 bg-accent/15 px-4 py-2 text-sm font-medium text-accent transition hover:bg-accent/25 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {step.kind === "allowance"
@@ -273,4 +292,57 @@ export function LaunchReview({
       </button>
     </div>
   );
+}
+
+/**
+ * SPEC-M4E R3 review row: the frozen config's permanent Arweave copy. The
+ * item is pure transport (R1) — genesis re-hashes it against the on-chain
+ * configHash, so this link is for the user's own verification and revival.
+ */
+function PublishRow({
+  publish,
+  onRetry,
+  disabled,
+}: {
+  publish: PublishState;
+  onRetry: () => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-1 px-4 py-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+      <span className="text-xs uppercase tracking-wide text-slate-500">Config on Arweave</span>
+      {publish.kind === "publishing" ? (
+        <span className="text-sm text-slate-400">Publishing to Arweave…</span>
+      ) : publish.kind === "published" ? (
+        <span className="flex min-w-0 flex-col items-start gap-0.5 sm:items-end">
+          <span className="flex min-w-0 items-center gap-1">
+            <span className="break-all font-mono text-sm text-slate-200">{publish.ref}</span>
+            <CopyButton value={publish.ref} label="Arweave ref" />
+          </span>
+          <a
+            href={`${ARWEAVE_GATEWAY}/${publish.txId}`}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="text-xs text-accent hover:underline"
+          >
+            config published permanently ↗
+          </a>
+        </span>
+      ) : (
+        <span className="flex max-w-md flex-col items-start gap-1 sm:items-end">
+          <span className="text-xs text-red-300 sm:text-right">{publish.message}</span>
+          {publish.retryable ? (
+            <button
+              type="button"
+              onClick={onRetry}
+              disabled={disabled}
+              className="rounded-md border border-slate-700 px-2.5 py-1 text-xs text-slate-200 hover:border-slate-600 disabled:opacity-50"
+            >
+              Retry publish
+            </button>
+          ) : null}
+        </span>
+      )}
+    </div>
+  )
 }

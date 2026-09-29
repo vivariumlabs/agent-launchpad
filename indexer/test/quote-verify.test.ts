@@ -253,8 +253,8 @@ describe("M4D §2: migration v4", () => {
     raw.close();
 
     const db = new IndexerDb(p);
-    expect(MIGRATIONS).toHaveLength(4);
-    expect(db.schemaVersion()).toBe(4);
+    expect(MIGRATIONS.length).toBeGreaterThanOrEqual(4); // M4E appended v5 (nft_owners)
+    expect(db.schemaVersion()).toBe(MIGRATIONS.length);
     expect(db.attestationChecks(8)).toEqual({
       agentId: 8,
       verifiedAt: 123,
@@ -274,7 +274,7 @@ describe("M4D §2: migration v4", () => {
     expect(db.attestationChecks(8)).toMatchObject({ verifiedAt: 456, quoteValid: "pass", measurementMatch: "fail" });
     db.close();
     const again = new IndexerDb(p); // reopen: no-op
-    expect(again.schemaVersion()).toBe(4);
+    expect(again.schemaVersion()).toBe(MIGRATIONS.length);
     expect(again.attestationChecks(8)).toMatchObject({ quoteValid: "pass", measurementMatch: "fail" });
     again.close();
   });

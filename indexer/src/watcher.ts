@@ -558,6 +558,8 @@ export class Watcher {
           const id = idArg("tokenId");
           if (id === null) break;
           ops.push(event(id, "nft_transfer", await ts(l.blockNumber), { from: a.from, to: a.to }));
+          // SPEC-M4E §2: re-derive the current owner from the stored transfers (idempotent, order-independent).
+          ops.push(() => this.db.refreshNftOwner(id));
           break;
         }
         default:

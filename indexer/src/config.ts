@@ -91,10 +91,32 @@ export interface ContractsCfg {
   startBlock: bigint;
 }
 
+/**
+ * SPEC-M4E §2 / R5 — GET /api/contracts body: chainId + every address the deployments manifest
+ * carries (checksummed; non-address keys such as hookSalt / deployedAtBlock omitted), or the
+ * explicit `contracts` addresses when the config names no manifest. Web carries NO hardcoded addresses.
+ */
+export type ContractsView = { chainId: number } & Record<string, string | number>;
+
 export type IndexerConfig = Omit<IndexerConfigFile, "contracts" | "deploymentManifest" | "chain"> & {
   chain: { rpc: string[]; chainId: number };
   contracts: ContractsCfg;
+  contractsView: ContractsView;
 };
+
+const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+
+/** ContractsView from the resolved contracts + (optionally) the raw manifest's other address-valued keys. */
+export function contractsViewOf(chainId: number, contracts: ContractsCfg, manifestRaw: unknown): ContractsView {
+  const view: ContractsView = { chainId };
+  if (manifestRaw !== null && typeof manifestRaw === "object" && !Array.isArray(manifestRaw)) {
+    for (const [k, v] of Object.entries(manifestRaw as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+      if (k !== "chainId" && typeof v === "string" && ADDRESS_RE.test(v)) view[k] = getAddress(v);
+    }
+  }
+  for (const k of CONTRACT_KEYS) view[k] = contracts[k];
+  return view;
+}
 
 const ManifestSchema = z
   .object({
@@ -146,8 +168,10 @@ function abs(base: string, p: string): string {
 export function buildConfig(rawJson: unknown, baseDir: string): IndexerConfig {
   const f = IndexerConfigFileSchema.parse(rawJson);
   let contracts = f.contracts;
+  let manifestRaw: unknown = null;
   if (f.deploymentManifest !== undefined) {
     const m = configFromDeployment(abs(baseDir, f.deploymentManifest));
+    manifestRaw = JSON.parse(readFileSync(abs(baseDir, f.deploymentManifest), "utf8")) as unknown;
     if (m.chainId !== f.chain.chainId) throw new Error(`deployment manifest chainId ${m.chainId} ≠ chain.chainId ${f.chain.chainId}`);
     if (contracts !== undefined) {
       for (const k of CONTRACT_KEYS) {
@@ -164,6 +188,7 @@ export function buildConfig(rawJson: unknown, baseDir: string): IndexerConfig {
     dbPath: f.dbPath === ":memory:" ? f.dbPath : abs(baseDir, f.dbPath),
     ...(f.releasesDir === undefined ? {} : { releasesDir: abs(baseDir, f.releasesDir) }),
     contracts,
+    contractsView: contractsViewOf(f.chain.chainId, contracts, manifestRaw),
   };
 }
 

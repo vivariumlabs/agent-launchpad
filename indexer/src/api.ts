@@ -7,6 +7,8 @@
 //   GET /api/status                          StatusView
 //   GET /api/agents/:id/attestation          AttestationView (SPEC-M4B §1c)
 //   GET /api/attestation/summary             AttestationSummary (SPEC-M4B §1c; alert ⇔ a `live` agent has a `fail`)
+//   GET /api/contracts                       ContractsView (SPEC-M4E §2: chainId + the manifest's addresses; 404 when not configured)
+//   GET /api/wallets/:address/nfts           { address, nfts: WalletNft[] } (SPEC-M4E §2: owned + burned-by-this-wallet, agentId ascending)
 //
 // Units (see derive.ts): every bigint is a base-10 STRING — USDG amounts in USDG base units (6 dec),
 // native balances in wei, agent-token amounts in token base units (18 dec); `price` is a decimal
@@ -17,6 +19,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Clock } from "./clock.js";
+import type { ContractsView } from "./config.js";
 import { CHECK_NAMES, type AgentRow, type CheckName, type CheckStatus, type IndexerDb } from "./db.js";
 import {
   DAY_SEC,
@@ -46,7 +49,24 @@ export interface ApiOpts {
   startBlock: bigint;
   /** Arweave gateway base for journal item links. */
   gatewayUrl: string;
+  /** SPEC-M4E §2 GET /api/contracts body (config.contractsView). Absent ⇒ 404. */
+  contracts?: ContractsView;
 }
+
+/** SPEC-M4E §2 wallet NFT card data. tokenId == agentId (AgentNFT.sol:9). */
+export interface WalletNft {
+  agentId: number;
+  name: string | null;
+  symbol: string | null;
+  /** unix seconds the wallet became owner. */
+  since: number;
+  /** An Emancipated event exists (the NFT was burned; royalty leg → agent treasury forever, D7). */
+  emancipated: boolean;
+  /** Σ Claimed royalty amounts for the agent, USDG base units (6 dec), base-10 string. */
+  lifetimeClaimed: string;
+}
+
+const WALLET_RE = /^0x[0-9a-fA-F]{40}$/;
 
 export interface AgentView {
   agentId: number;
@@ -286,6 +306,17 @@ export class IndexerApi {
     if (parts[0] !== "api") throw new HttpError(404, "not found");
     if (parts.length === 2 && parts[1] === "status") return this.statusView();
     if (parts.length === 3 && parts[1] === "attestation" && parts[2] === "summary") return this.attestationSummary(now);
+    if (parts.length === 2 && parts[1] === "contracts") {
+      if (this.opts.contracts === undefined) throw new HttpError(404, "contracts not configured");
+      return this.opts.contracts;
+    }
+    if (parts[1] === "wallets") {
+      if (parts.length !== 4 || parts[3] !== "nfts") throw new HttpError(404, "not found");
+      const addr = parts[2]!;
+      if (!WALLET_RE.test(addr)) throw new HttpError(400, `bad wallet address ${JSON.stringify(addr.slice(0, 64))}`);
+      const nfts: WalletNft[] = this.db.walletNfts(addr);
+      return { address: addr.toLowerCase(), nfts };
+    }
     if (parts[1] !== "agents") throw new HttpError(404, "not found");
     if (parts.length === 2) return { agents: this.db.agents().map((a) => this.agentView(a, now)) };
     const id = parseId(parts[2]!);

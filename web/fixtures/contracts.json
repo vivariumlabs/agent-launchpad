@@ -1,0 +1,10 @@
+{
+  "chainId": 46630,
+  "addresses": {
+    "factory": "0x7b257abd9BDf3377Af03DD67e2D67a8D5717b118",
+    "registry": "0xDBA9680C0F1958Af7Bc34a225863D93df2B92f59",
+    "nft": "0x08024EDD43dcc639d2b99f17f85b4E527301B1A5",
+    "distributor": "0x25138BDF01F7b7E0e7ea6761ef54Ac8e8250d53B",
+    "usdg": "0xe6f7E5832991f5af335C2A21d4F35cea3d47ccAb"
+  }
+}

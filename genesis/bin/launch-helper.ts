@@ -12,7 +12,7 @@ import { agentFactoryAbi } from "../src/abi.js";
 import { systemClock } from "../src/clock.js";
 import { loadConfig } from "../src/config.js";
 import { errMsg } from "../src/errors.js";
-import { createLaunchHelper, MAX_BODY_BYTES, type FactoryReader, type LaunchHelper } from "../src/launchHelper.js";
+import { createLaunchHelper, MAX_BODY_BYTES, MAX_PUBLISH_BODY_BYTES, PUBLISH_PATH, type FactoryReader, type LaunchHelper } from "../src/launchHelper.js";
 import type { Logger } from "../src/log.js";
 
 const stamp = (): string => new Date(Number(systemClock.now()) * 1000).toISOString();
@@ -65,11 +65,13 @@ export async function startLaunchHelperServer(helper: LaunchHelper, port: number
   const server = createServer((req, res) => {
     void (async () => {
       let body: string | null = null;
+      // SPEC-M4E §1b: /publish carries a JSON-escaped agent.json text (larger cap; the handler 413s the text itself).
+      const cap = new URL(req.url ?? "/", "http://localhost").pathname.replace(/\/+$/, "") === PUBLISH_PATH ? MAX_PUBLISH_BODY_BYTES : MAX_BODY_BYTES;
       try {
-        body = req.method === "POST" ? await readBody(req, MAX_BODY_BYTES) : null;
+        body = req.method === "POST" ? await readBody(req, cap) : null;
       } catch (e) {
         res.writeHead(e instanceof TooLarge ? 413 : 400, { "content-type": "application/json; charset=utf-8", connection: "close" });
-        res.end(JSON.stringify({ error: e instanceof TooLarge ? `body exceeds ${MAX_BODY_BYTES} bytes` : "bad request body" }));
+        res.end(JSON.stringify({ error: e instanceof TooLarge ? `body exceeds ${cap} bytes` : "bad request body" }));
         return;
       }
       const r = await helper.handle({ method: req.method ?? "GET", url: req.url ?? "/", body });
@@ -99,7 +101,7 @@ async function main(): Promise<void> {
   const factory = new ViemFactoryReader(cfg.chains.rh.rpc, cfg.contracts.factory, lhCfg.httpTimeoutSec * 1000);
   const { helper, lh } = createLaunchHelper(cfg, consoleLogger, { factory });
   const server = await startLaunchHelperServer(helper, lh.port, lh.host, consoleLogger);
-  consoleLogger.info(`launch-helper up: http://${lh.host}:${lh.port} (compose ${lh.composePath}, kms ${lh.kmsEndpoint}, factory ${cfg.contracts.factory}) — secret-free, no wallet`);
+  consoleLogger.info(`launch-helper up: http://${lh.host}:${lh.port} (compose ${lh.composePath}, kms ${lh.kmsEndpoint}, factory ${cfg.contracts.factory}) — secret-free, no wallet (Arweave publish signs with a per-process ephemeral key)`);
   const stop = (sig: string): void => {
     consoleLogger.info(`${sig}: closing`);
     server.close(() => process.exit(0));

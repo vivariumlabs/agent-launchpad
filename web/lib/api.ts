@@ -18,12 +18,14 @@
  * itself is a number per the indexer's canonical shape.
  */
 import { normalizeAttestation, normalizeSummary } from "./attestation";
+import { normalizeContracts } from "./nfts";
 import { FIXTURES_MODE, INDEXER_URL, LAUNCH_HELPER_URL } from "./config";
 import {
   fixtureActivity,
   fixtureAgents,
   fixtureAttestationRaw,
   fixtureAttestationSummaryRaw,
+  fixtureContractsRaw,
   fixtureJournal,
   fixtureLaunchTemplate,
   fixtureProfiles,
@@ -35,6 +37,7 @@ import type {
   AgentsResponse,
   AttestationSummary,
   AttestationView,
+  ContractsResponse,
   JournalEntry,
   JournalResponse,
   LaunchTemplate,
@@ -164,6 +167,25 @@ export async function getAgentFresh(
     }
   }
   return { agent, attestation };
+}
+
+/**
+ * Deployment addresses + chainId from the indexer (SPEC-M4E R5 — the web's
+ * ONLY source of contract addresses). null = indexer unreachable / garbage;
+ * callers disable chain reads/writes rather than guess.
+ */
+export async function getContracts(): Promise<ContractsResponse | null> {
+  if (FIXTURES_MODE) return normalizeContracts(fixtureContractsRaw);
+  try {
+    const res = await fetch(`${INDEXER_URL}/api/contracts`, {
+      next: { revalidate: 300 },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    return normalizeContracts(await res.json());
+  } catch {
+    return null;
+  }
 }
 
 async function fetchIndexer(path: string): Promise<Response> {

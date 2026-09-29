@@ -11,8 +11,16 @@
 //        400 { error, issues }         malformed body / unknown model
 //        422 { error, rubricVersion, violations }   R5 moderation (appended to <dataDir>/launch-helper/moderation-rejections.jsonl)
 //        502 { error, stage, reason }  RPC / compute-image-id / KMS failure — NEVER a partial prediction
-//        200 { predicted: true, note, agentId, agentJson, configHash, imageId, expectedTreasuryEOA, actionEOA,
+//        200 { predicted: true, note, agentId, agentJson, agentJsonText, configHash, imageId, expectedTreasuryEOA, actionEOA,
 //              createArgs: { factory, usdg, fee }, composeVersion, rubricVersion }
+//        agentJsonText (SPEC-M4E §1b) = the EXACT file text whose frozenConfigHash is configHash — the
+//        client round-trips these bytes to /publish (never re-serializes the object).
+//   POST /api/launch/publish   body { agentJsonText, configHash? }   (SPEC-M4E §1b / R3)
+//        uploads the exact text to Arweave (arweavePublish.ts: ephemeral key, free < 100 KiB, §1a tags)
+//        400 malformed body · 413 text over the free-upload limit · 422 { error: config_invalid |
+//        config_hash_mismatch | moderation } · 502 { error, stage: "arweave-upload", reason } ·
+//        503 publishing not configured · 200 { txId, ref: "ar://<txId>", configHash }
+//        One JSONL line per upload attempt → <dataDir>/launch-helper/publishes.jsonl.
 //
 // Race honesty: agentId = factory agentCount() + 1 at prepare time. A concurrent createAgent can take
 // that id; configHash, imageId and both EOAs all bind to agentId, so the UI MUST compare the
@@ -29,6 +37,7 @@ import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { getAddress, type Address } from "viem";
 import { z } from "zod";
+import { ConfigInvalid, createEphemeralUploader, frozenTextHash, MAX_CONFIG_TEXT_BYTES, publishFrozenConfig } from "./arweavePublish.js";
 import { frozenConfigHash } from "./canonical.js";
 import { systemClock, type Clock } from "./clock.js";
 import type { GenesisConfig, LaunchHelperCfg } from "./config.js";
@@ -39,6 +48,7 @@ import { PublicKmsDeriver, type KmsDeriver } from "./kmsDerive.js";
 import type { Logger } from "./log.js";
 import { moderateAgent, MODERATION_RUBRIC_VERSION, type Violation } from "./moderation.js";
 import { OysterCli, type Oyster } from "./oyster.js";
+import type { TurboUploader } from "./runtimeArweave.js";
 
 /** contracts/src/AgentFactory.sol:74 CREATION_FEE = 75e6 (USDG base units). */
 export const CREATION_FEE_USDG = "75000000";
@@ -80,7 +90,14 @@ export function assertLaunchPlatform(platform: Record<string, unknown>): void {
 
 /** POST body cap (bin/launch-helper.ts enforces it while reading). */
 export const MAX_BODY_BYTES = 64 * 1024;
+/**
+ * SPEC-M4E §1b: /api/launch/publish body cap — the JSON-escaped agentJsonText of a config at the
+ * free-upload limit exceeds MAX_BODY_BYTES; the handler's own size check answers 413 for the text.
+ */
+export const MAX_PUBLISH_BODY_BYTES = 256 * 1024;
+export const PUBLISH_PATH = "/api/launch/publish";
 export const REJECTIONS_FILE = "moderation-rejections.jsonl";
+export const PUBLISHES_FILE = "publishes.jsonl";
 export const PREDICTION_NOTE =
   "agentId is PREDICTED (factory agentCount()+1 at prepare time). A concurrent createAgent can take it; configHash, imageId and both EOAs bind to agentId — check AgentRequested(agentId) in the createAgent receipt and re-prepare on mismatch.";
 
@@ -255,6 +272,11 @@ export interface LaunchHelperDeps {
   corsOrigin: string;
   clock: Clock;
   log: Logger;
+  /**
+   * SPEC-M4E §1b: Arweave publication (createLaunchHelper: the runtime Turbo client over ONE ephemeral
+   * key per process + publishes.jsonl). Absent ⇒ /api/launch/publish answers 503.
+   */
+  publisher?: { uploader: Pick<TurboUploader, "upload">; log: RejectionSink };
 }
 
 export interface HelperRequest {
@@ -292,6 +314,14 @@ const PrepareSchema = z
           .strict(),
       })
       .strict(),
+  })
+  .strict();
+
+const PublishSchema = z
+  .object({
+    agentJsonText: z.string().min(1),
+    /** Optional client-side expectation (the prepare response's configHash): mismatch ⇒ 422. */
+    configHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional(),
   })
   .strict();
 
@@ -359,6 +389,8 @@ export class LaunchHelper {
     };
     const agentJson = { platform: this.d.platform, agent };
     const configHash = frozenConfigHash(agentJson).toLowerCase();
+    // SPEC-M4E §1b: the exact file bytes (deployed byte-for-byte as agent.json and published to Arweave).
+    const agentJsonText = `${JSON.stringify(agentJson, null, 2)}\n`;
 
     let imageId: string;
     try {
@@ -380,6 +412,7 @@ export class LaunchHelper {
       note: PREDICTION_NOTE,
       agentId,
       agentJson,
+      agentJsonText,
       configHash,
       imageId,
       expectedTreasuryEOA: treasury,
@@ -388,6 +421,61 @@ export class LaunchHelper {
       composeVersion: this.d.composeVersion,
       rubricVersion: MODERATION_RUBRIC_VERSION,
     });
+  }
+
+  /** POST /api/launch/publish (SPEC-M4E §1b). Never throws; every failure is a status. */
+  async publish(raw: unknown): Promise<Reply> {
+    const p = PublishSchema.safeParse(raw);
+    if (!p.success) return new Reply(400, { error: "invalid request", issues: p.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })) });
+    const text = p.data.agentJsonText;
+    const bytes = new TextEncoder().encode(text).length;
+    if (bytes > MAX_CONFIG_TEXT_BYTES) return new Reply(413, { error: "config too large for the free Arweave upload path", bytes, maxBytes: MAX_CONFIG_TEXT_BYTES });
+
+    let configHash: string;
+    let agent: unknown;
+    try {
+      ({ configHash, agent } = frozenTextHash(text));
+    } catch (e) {
+      if (e instanceof ConfigInvalid) return new Reply(422, { error: e.code, reason: e.message });
+      throw e;
+    }
+    if (p.data.configHash !== undefined && p.data.configHash.toLowerCase() !== configHash) {
+      return new Reply(422, { error: "config_hash_mismatch", reason: `agentJsonText hashes to ${configHash}, not ${p.data.configHash.toLowerCase()}`, configHash });
+    }
+    const a = agent !== null && typeof agent === "object" && !Array.isArray(agent) ? (agent as Json) : null;
+    if (a === null || typeof a.name !== "string" || typeof a.persona !== "string") {
+      return new Reply(422, { error: "config_invalid", reason: "agent must be an object with string name and persona" });
+    }
+    const mod = moderateAgent({ name: a.name, persona: a.persona });
+    if (!mod.ok) {
+      this.reject({ name: a.name, symbol: String(a.symbol), archetype: String(a.archetype), persona: a.persona }, mod.violations);
+      return new Reply(422, { error: "moderation", rubricVersion: mod.rubricVersion, violations: mod.violations });
+    }
+
+    const pub = this.d.publisher;
+    if (pub === undefined) return new Reply(503, { error: "publishing not configured" });
+    const agentId = typeof a.agentId === "number" ? a.agentId : null;
+    const ts = Number(this.d.clock.now());
+    let txId: string;
+    try {
+      ({ txId } = await publishFrozenConfig(text, { uploader: pub.uploader, clock: this.d.clock }));
+    } catch (e) {
+      const reason = errMsg(e);
+      this.logPublish(pub.log, { ts, ok: false, configHash, agentId, bytes, reason });
+      this.d.log.warn(`launch-helper: publish of ${configHash} FAILED (502): ${reason}`);
+      return new Reply(502, { error: "upstream failure", stage: "arweave-upload", reason });
+    }
+    this.logPublish(pub.log, { ts, ok: true, configHash, agentId, bytes, txId });
+    this.d.log.info(`launch-helper: published config ${configHash} (agent ${String(agentId)}, ${bytes} bytes) → ar://${txId}`);
+    return new Reply(200, { txId, ref: `ar://${txId}`, configHash });
+  }
+
+  private logPublish(sink: RejectionSink, entry: Json): void {
+    try {
+      sink(entry);
+    } catch (e) {
+      this.d.log.warn(`launch-helper: publish log line NOT written: ${errMsg(e)}`);
+    }
   }
 
   private upstream(stage: "rpc" | "compute-image-id" | "kms-derive", e: unknown): Reply {
@@ -439,6 +527,17 @@ export class LaunchHelper {
         const r = await this.prepare(body);
         return json(r.status, r.body);
       }
+      if (path === PUBLISH_PATH) {
+        if (req.method !== "POST") return json(405, { error: "method not allowed" });
+        let body: unknown;
+        try {
+          body = JSON.parse(req.body ?? "");
+        } catch {
+          return json(400, { error: "body is not JSON" });
+        }
+        const r = await this.publish(body);
+        return json(r.status, r.body);
+      }
       return json(404, { error: "not found" });
     } catch (e) {
       this.d.log.error(`launch-helper: ${req.method} ${req.url}: ${errMsg(e)}`);
@@ -451,7 +550,7 @@ export class LaunchHelper {
 // Production wiring (config → seams). Reads NO key: walletKeyPath is never touched.
 // ---------------------------------------------------------------------------
 
-export function createLaunchHelper(cfg: GenesisConfig, log: Logger, o: { factory: FactoryReader; clock?: Clock }): { helper: LaunchHelper; lh: LaunchHelperCfg } {
+export function createLaunchHelper(cfg: GenesisConfig, log: Logger, o: { factory: FactoryReader; clock?: Clock; uploader?: Pick<TurboUploader, "upload"> }): { helper: LaunchHelper; lh: LaunchHelperCfg } {
   const lh = cfg.launchHelper;
   if (lh === undefined) throw new Error("genesis config has no launchHelper section");
   const manifest = lh.deploymentManifestPath === null ? null : readManifestAddrs(lh.deploymentManifestPath);
@@ -478,6 +577,11 @@ export function createLaunchHelper(cfg: GenesisConfig, log: Logger, o: { factory
     corsOrigin: lh.corsOrigin,
     clock: o.clock ?? systemClock,
     log,
+    // SPEC-M4E R2: ONE fresh ephemeral key for this process (never persisted; free uploads need no funds).
+    publisher: {
+      uploader: o.uploader ?? createEphemeralUploader({ ...(lh.turboUploadUrl === undefined ? {} : { uploadUrl: lh.turboUploadUrl }), timeoutMs }),
+      log: jsonlSink(join(cfg.dataDir, "launch-helper", PUBLISHES_FILE)),
+    },
   });
   return { helper, lh };
 }

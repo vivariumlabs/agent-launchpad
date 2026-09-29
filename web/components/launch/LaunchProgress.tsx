@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { CopyButton } from "../CopyButton";
-import { LAUNCH_TIMEOUT_SECONDS, ORCHESTRATOR_TRUST_BOUNDARY } from "@/lib/config";
+import { ARWEAVE_GATEWAY, LAUNCH_TIMEOUT_SECONDS, ORCHESTRATOR_TRUST_BOUNDARY } from "@/lib/config";
 import { truncateAddress } from "@/lib/format";
 import type { AttestationChecks, LaunchStatus } from "@/lib/types";
 
@@ -59,12 +59,15 @@ export function LaunchProgress({
   since,
   predicted,
   tx,
+  configTxId = null,
   fixtures,
 }: {
   agentId: number;
   since: number | null;
   predicted: number | null;
   tx: string | null;
+  /** SPEC-M4E R3: the published config's Arweave item id, when known (from the launch flow). */
+  configTxId?: string | null;
   fixtures: boolean;
 }) {
   const [start, setStart] = useState<number | null>(since);
@@ -176,6 +179,31 @@ export function LaunchProgress({
           <CopyButton value={tx} label="transaction hash" />
         </p>
       ) : null}
+
+      <p className="text-xs text-slate-500">
+        {configTxId ? (
+          <>
+            Config published to Arweave:{" "}
+            <a
+              href={`${ARWEAVE_GATEWAY}/${configTxId}`}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="font-mono text-accent hover:underline"
+            >
+              ar://{truncateAddress(configTxId, 6)} ↗
+            </a>{" "}
+            <CopyButton value={`ar://${configTxId}`} label="Arweave ref" />
+            {" "}— the orchestrator discovers it by its configHash tag. Arweave indexing can lag a few minutes, so
+            &ldquo;TEE booted&rdquo; may wait on it; that is expected, not a failure.
+          </>
+        ) : (
+          <>
+            Genesis needs your config to be discoverable on Arweave (the launch flow publishes it before the
+            transaction). Arweave indexing can lag a few minutes after publishing, so &ldquo;TEE booted&rdquo; may wait
+            on it.
+          </>
+        )}
+      </p>
 
       <ol className="flex flex-col divide-y divide-slate-800 rounded-xl border border-slate-800 bg-slate-900/40">
         {steps.map((step) => (

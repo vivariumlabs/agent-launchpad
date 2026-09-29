@@ -5,9 +5,12 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { CONFIG_KIND } from "./arweavePublish.js";
 import { FrozenConfigFileSchema, frozenConfigHash } from "./canonical.js";
-import { Fatal } from "./errors.js";
+import { errMsg, Fatal } from "./errors.js";
 import type { HttpClient } from "./http.js";
+import type { Logger } from "./log.js";
+import { TURBO_APP_TAG } from "./runtimeArweave.js";
 
 export interface FrozenConfigDoc {
   /** Exact file text (deployed byte-for-byte as agent.json). */
@@ -36,19 +39,114 @@ export class DirConfigSource implements ConfigSource {
   }
 }
 
-/** Arweave gateway fetch for `ar://<txid>` refs (revival: "fetched from Arweave ref recorded at genesis"). */
+/**
+ * Arweave fetch for `ar://<txid>` refs (revival: "fetched from Arweave ref recorded at genesis").
+ * M4E fix (Fable, 2026-09-29): reads through ArweaveReader (the runtime's one-redirect download) —
+ * the old raw-HttpClient GET refused redirects, and arweave.net 302s item fetches to its data door,
+ * so the ref path (the one REVIVAL uses) would have failed on every live fetch.
+ */
 export class ArweaveConfigSource implements ConfigSource {
-  constructor(
-    private readonly gateway: string,
-    private readonly http: HttpClient,
-    private readonly timeoutMs: number,
-  ) {}
+  constructor(private readonly reader: ArweaveReader) {}
 
   async load(q: { ref?: string | null }): Promise<FrozenConfigDoc | null> {
     const m = q.ref === undefined || q.ref === null ? null : /^ar:\/\/([A-Za-z0-9_-]{43})$/.exec(q.ref);
     if (m === null) return null;
-    const res = await this.http.get(`${this.gateway.replace(/\/+$/, "")}/${m[1]!}`, this.timeoutMs);
-    return res.status === 200 ? { text: res.text, ref: q.ref! } : null;
+    try {
+      return { text: Buffer.from(await this.reader.download(m[1]!)).toString("utf8"), ref: q.ref! };
+    } catch {
+      return null; // retry semantics, like the tag source
+    }
+  }
+}
+
+/** DEFAULT cap on discovery candidates fetched per load (R1: tag spam is a bounded DoS at worst). */
+export const DEFAULT_DISCOVERY_CANDIDATES = 5;
+
+const ID_RE = /^[A-Za-z0-9_-]{43}$/;
+
+/** Gateway byte reader (production: the runtime Turbo client's one-redirect download, arweavePublish.ts). */
+export interface ArweaveReader {
+  download(id: string): Promise<Uint8Array>;
+}
+
+/**
+ * SPEC-M4E §1c — discovers a frozen config published by the launch-helper (arweavePublish.ts) by its
+ * §1a tags {App: "agent-launchpad", Kind: "config", ConfigHash: <0x lowercase>}: Arweave GraphQL,
+ * newest first, at most `maxCandidates` items; each is fetched and the FIRST whose text hashes to the
+ * configHash (frozenConfigHash — a cheap local pre-check; the caller's verifyFrozen still runs) wins.
+ * Tags/owners are untrusted hints (R1): a spoofed item with the right tags and wrong bytes is skipped.
+ * None found / GraphQL or gateway failure ⇒ null (R4: null is a retry — GraphQL indexing lags minutes).
+ */
+export class ArweaveTagConfigSource implements ConfigSource {
+  constructor(
+    private readonly o: {
+      graphqlUrl: string;
+      http: HttpClient;
+      reader: ArweaveReader;
+      timeoutMs: number;
+      log: Logger;
+      maxCandidates?: number;
+    },
+  ) {}
+
+  private async candidates(h: string, first: number): Promise<string[]> {
+    const query =
+      "query($tags:[TagFilter!],$first:Int){transactions(tags:$tags,first:$first,sort:HEIGHT_DESC){edges{node{id}}}}";
+    const variables = {
+      tags: [
+        { name: "App", values: [TURBO_APP_TAG] },
+        { name: "Kind", values: [CONFIG_KIND] },
+        { name: "ConfigHash", values: [h] },
+      ],
+      first,
+    };
+    const res = await this.o.http.postJson(this.o.graphqlUrl, { query, variables }, this.o.timeoutMs);
+    if (res.status !== 200) throw new Error(`graphql HTTP ${res.status}`);
+    const body = JSON.parse(res.text) as { data?: { transactions?: { edges?: unknown } } } | null;
+    const edges = body?.data?.transactions?.edges;
+    if (!Array.isArray(edges)) throw new Error("graphql: malformed response");
+    const ids: string[] = [];
+    for (const e of edges as Array<{ node?: { id?: unknown } } | null>) {
+      const id = e?.node?.id;
+      if (typeof id === "string" && ID_RE.test(id) && !ids.includes(id)) ids.push(id);
+    }
+    return ids.slice(0, first);
+  }
+
+  async load(q: { configHash: string }): Promise<FrozenConfigDoc | null> {
+    const h = q.configHash.toLowerCase();
+    if (!HASH_RE.test(h)) throw new Error(`bad configHash ${q.configHash}`);
+    const max = this.o.maxCandidates ?? DEFAULT_DISCOVERY_CANDIDATES;
+    let ids: string[];
+    try {
+      ids = await this.candidates(h, max);
+    } catch (e) {
+      this.o.log.warn(`arweave discovery: GraphQL lookup for ${h} failed (retrying later): ${errMsg(e)}`);
+      return null;
+    }
+    const dec = new TextDecoder("utf-8", { fatal: true });
+    for (const id of ids) {
+      let text: string;
+      try {
+        text = dec.decode(await this.o.reader.download(id));
+      } catch (e) {
+        this.o.log.warn(`arweave discovery: fetch ar://${id} for ${h} failed (retrying later): ${errMsg(e)}`);
+        continue;
+      }
+      if (hashesTo(text, h)) return { text, ref: `ar://${id}` };
+      this.o.log.warn(`arweave discovery: ar://${id} carries ConfigHash ${h} but its bytes do not hash to it — SKIPPED (spoofed/corrupt)`);
+    }
+    return null;
+  }
+}
+
+/** Local pre-check: text is a {platform, agent} JSON whose frozenConfigHash equals h (never throws). */
+function hashesTo(text: string, h: string): boolean {
+  try {
+    const env = FrozenConfigFileSchema.safeParse(JSON.parse(text));
+    return env.success && frozenConfigHash({ platform: env.data.platform, agent: env.data.agent }).toLowerCase() === h;
+  } catch {
+    return false;
   }
 }
 

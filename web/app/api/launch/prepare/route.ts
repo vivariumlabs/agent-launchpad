@@ -3,7 +3,8 @@
  * (SPEC-M4B R4: the browser never calls the helper directly).
  *
  *   fixtures mode (INDEXER_URL unset) -> mock helper: web-side moderation +
- *                                        fixtures/launch-prepare.json
+ *                                        fixtures/launch-prepare.json (+ the
+ *                                        SPEC-M4E agentJsonText)
  *   live mode (LAUNCH_HELPER_URL set) -> forward {agent} verbatim, pass the
  *                                        helper's status + JSON through
  *   manual mode                        -> 503 (the form is not rendered)
@@ -48,12 +49,15 @@ export async function POST(req: Request): Promise<Response> {
       const issues = Object.entries(v.errors).map(([path, message]) => ({ path: `agent.${path}`, message }));
       return Response.json({ error: "invalid request", issues }, { status: 400 });
     }
+    const agentJson = {
+      platform: fixtureLaunchTemplate.platform,
+      agent: { ...input, name: input.name.trim(), agentId: fixtureLaunchPrepare.agentId },
+    };
     const prepared: LaunchPrepared = {
       ...fixtureLaunchPrepare,
-      agentJson: {
-        platform: fixtureLaunchTemplate.platform,
-        agent: { ...input, name: input.name.trim(), agentId: fixtureLaunchPrepare.agentId },
-      },
+      agentJson,
+      // SPEC-M4E §1b: the exact file text (mock: not really hash-anchored in fixtures).
+      agentJsonText: `${JSON.stringify(agentJson, null, 2)}\n`,
     };
     // Simulate helper latency so the "preparing" state is visible.
     await new Promise((r) => setTimeout(r, 600));

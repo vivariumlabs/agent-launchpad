@@ -334,6 +334,27 @@ export interface LaunchPrepared {
     /** USDG base units integer string. */
     fee: string;
   };
+  /**
+   * SPEC-M4E §1b: the EXACT canonical file text the helper hashed. The web
+   * round-trips these bytes (never re-serializes agentJson) to the publish
+   * step. Optional: an older helper omits it (publish is then impossible).
+   */
+  agentJsonText?: string;
+}
+
+/**
+ * SPEC-M4E §1b — POST /api/launch/publish {agentJsonText, configHash?} (helper,
+ * proxied by web/app/api/launch/publish/route.ts) -> 200 LaunchPublished |
+ * 413 (over 100 KiB) | 422 (hash/schema/moderation) | 502 (upload failed) |
+ * 503 (publishing not configured on the helper).
+ */
+export interface LaunchPublished {
+  /** 43-char base64url Arweave item id. */
+  txId: string;
+  /** "ar://<txId>". */
+  ref: string;
+  /** bytes32 hex — must equal the prepared configHash. */
+  configHash: string;
 }
 
 /** A server-side moderation violation: a string (pinned shape) or the helper's structured object. */
@@ -366,4 +387,45 @@ export interface LaunchStatus {
   checks: AttestationChecks | null;
   /** Unix seconds this status was assembled. */
   observedAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-M4E §2 — indexer NFT endpoints (being built in parallel). Pinned
+// contract DUPLICATED here by design (SPEC-M4A §2); web/lib/nfts.ts parses
+// the wire shape TOLERANTLY (unknown fields ignored, bad values -> null).
+//
+//   GET /api/contracts                  -> ContractsResponse
+//   GET /api/wallets/:address/nfts      -> WalletNftsResponse
+// ---------------------------------------------------------------------------
+
+/** R5: the ONLY source of contract addresses for the web — nothing hardcoded. */
+export interface ContractsResponse {
+  chainId: number;
+  /** factory, registry, nft, distributor, usdg, ... (whatever the deployments manifest carries). */
+  addresses: Record<string, string>;
+}
+
+/** One agent NFT (tokenId == agentId, AgentNFT.sol:9) held by the wallet, as the web consumes it. */
+export interface WalletNft {
+  agentId: number;
+  name: string | null;
+  symbol: string | null;
+  /** Unix seconds the wallet became owner, null if absent/unparseable. */
+  since: number | null;
+  /** From indexer Emancipated events (true only on a literal `true`). */
+  emancipated: boolean;
+  /** USDG base units integer string (sum of Claimed events), null if absent/malformed. */
+  lifetimeClaimed: string | null;
+  /**
+   * USDG base units integer string swept to the treasury at burn (Emancipated
+   * `sweptToTreasury`), null when unknown. Not in the pinned shape — read
+   * tolerantly from the row, or enriched by the web route from the agent's
+   * `emancipated` activity event.
+   */
+  sweptToTreasury: string | null;
+}
+
+export interface WalletNftsResponse {
+  address: string;
+  nfts: WalletNft[];
 }

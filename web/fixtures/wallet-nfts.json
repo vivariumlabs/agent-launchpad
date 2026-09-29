@@ -1,0 +1,22 @@
+{
+  "address": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+  "nfts": [
+    {
+      "agentId": 3,
+      "name": "Cato",
+      "symbol": "CATO",
+      "since": 1789257600,
+      "emancipated": false,
+      "lifetimeClaimed": "8250000"
+    },
+    {
+      "agentId": 9,
+      "name": "Marcus",
+      "symbol": "MRCS",
+      "since": 1789862400,
+      "emancipated": true,
+      "lifetimeClaimed": "1870000",
+      "sweptToTreasury": "1250000"
+    }
+  ]
+}

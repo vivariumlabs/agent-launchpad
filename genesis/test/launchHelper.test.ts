@@ -22,6 +22,7 @@ import {
   readManifestAddrs,
   type FactoryReader,
   type HelperResponse,
+  type LaunchHelperDeps,
 } from "../src/launchHelper.js";
 import { memoryLogger, type MemoryLogger } from "../src/log.js";
 import { computeImageIdArgs, OysterCli, type OysterSettings } from "../src/oyster.js";
@@ -123,7 +124,7 @@ function platform8(): Record<string, unknown> {
   return buildPlatform({ template: AGENT8, contracts: { registry: REGISTRY, usdg: USDG }, manifest: readManifestAddrs(MANIFEST), allowlist: null });
 }
 
-function world(o: { sink?: (e: Record<string, unknown>) => void } = {}): World {
+function world(o: { sink?: (e: Record<string, unknown>) => void; publisher?: LaunchHelperDeps["publisher"] } = {}): World {
   const exec = new MockExec();
   const kmsHttp = new MockKmsHttp();
   const factoryState = { count: 7n as bigint | Error, calls: 0 };
@@ -151,6 +152,7 @@ function world(o: { sink?: (e: Record<string, unknown>) => void } = {}): World {
     corsOrigin: "*",
     clock: { now: () => 1_790_700_000n },
     log,
+    ...(o.publisher === undefined ? {} : { publisher: o.publisher }),
   });
   return { helper, exec, kmsHttp, factory: factoryState, rejections, log };
 }
@@ -484,6 +486,144 @@ describe("M4B §2: server + config", () => {
       expect([f, /from\s+["']\.\.?\/(?:src\/)?(?:keyfile|machine|seeder|orchestrator|revival|chain)\.js["']/.test(src)]).toEqual([f, false]);
       expect([f, /walletKeyPath\b(?!\s*is never)/.test(src.replace(/\/\/.*$/gm, ""))]).toEqual([f, false]);
       expect([f, /privateKeyToAccount|signTransaction|sendTransaction|writeContract/.test(src)]).toEqual([f, false]);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SPEC-M4E §1b — prepare's agentJsonText + POST /api/launch/publish
+// ---------------------------------------------------------------------------
+
+const AGENT8_TEXT = readFileSync(join(here, "fixtures", "agent-8.json"), "utf8");
+
+function mockPublisher(): { publisher: NonNullable<LaunchHelperDeps["publisher"]>; uploads: Array<{ data: Uint8Array; tags: readonly { name: string; value: string }[] }>; lines: Array<Record<string, unknown>>; fail: Error | null } {
+  const st = { uploads: [] as Array<{ data: Uint8Array; tags: readonly { name: string; value: string }[] }>, lines: [] as Array<Record<string, unknown>>, fail: null as Error | null };
+  return Object.assign(st, {
+    publisher: {
+      uploader: {
+        upload: async (data: Uint8Array, tags: readonly { name: string; value: string }[]) => {
+          st.uploads.push({ data, tags });
+          if (st.fail !== null) throw st.fail;
+          return { id: "T".repeat(43) };
+        },
+      },
+      log: (e: Record<string, unknown>) => {
+        st.lines.push(e);
+      },
+    },
+  });
+}
+
+describe("M4E §1b: prepare agentJsonText + publish endpoint", () => {
+  it("M4E §1: prepare returns agentJsonText whose frozenConfigHash equals the returned configHash (golden agent 8)", async () => {
+    const w = world();
+    const r = await call(w, "POST", "/api/launch/prepare", AGENT8_BODY);
+    expect(r.status).toBe(200);
+    expect(typeof r.body.agentJsonText).toBe("string");
+    const parsed = JSON.parse(r.body.agentJsonText as string) as { platform: unknown; agent: unknown };
+    expect(parsed).toEqual(r.body.agentJson);
+    expect(frozenConfigHash(parsed).toLowerCase()).toBe(r.body.configHash);
+    expect(r.body.configHash).toBe(CFG8);
+    // Round trip: the exact text publish would upload re-hashes to the same value.
+    const p = mockPublisher();
+    const w2 = world({ publisher: p.publisher });
+    const pub = await call(w2, "POST", "/api/launch/publish", { agentJsonText: r.body.agentJsonText, configHash: r.body.configHash });
+    expect(pub.status).toBe(200);
+    expect(pub.body.configHash).toBe(CFG8);
+    expect(new TextDecoder().decode(p.uploads[0]!.data)).toBe(r.body.agentJsonText);
+  });
+
+  it("M4E §1: launch-helper publish endpoint status matrix — 200 / 400 / 405 / 413 / 422 (schema, hash mismatch, moderation) / 502 / 503; one JSONL line per upload attempt", async () => {
+    const p = mockPublisher();
+    const w = world({ publisher: p.publisher });
+
+    // 200: exact bytes uploaded, §1a tags, {txId, ref, configHash}.
+    const ok = await call(w, "POST", "/api/launch/publish", { agentJsonText: AGENT8_TEXT });
+    expect(ok.status).toBe(200);
+    expect(ok.body).toEqual({ txId: "T".repeat(43), ref: `ar://${"T".repeat(43)}`, configHash: CFG8 });
+    expect(ok.res.headers["access-control-allow-origin"]).toBe("*");
+    expect(Buffer.from(p.uploads[0]!.data).equals(Buffer.from(AGENT8_TEXT, "utf8"))).toBe(true);
+    expect(p.uploads[0]!.tags).toEqual([
+      { name: "App", value: "agent-launchpad" },
+      { name: "Kind", value: "config" },
+      { name: "ConfigHash", value: CFG8 },
+      { name: "Timestamp", value: "1790700000" },
+    ]);
+    expect(p.lines).toEqual([{ ts: 1_790_700_000, ok: true, configHash: CFG8, agentId: 8, bytes: Buffer.byteLength(AGENT8_TEXT), txId: "T".repeat(43) }]);
+    expect((await call(w, "POST", "/api/launch/publish", { agentJsonText: AGENT8_TEXT, configHash: CFG8.toUpperCase().replace("0X", "0x") })).status).toBe(200);
+
+    // 400: malformed body — non-JSON, object form (ruling: text ONLY), unknown keys, missing text.
+    for (const body of ["{", { agentJson: JSON.parse(AGENT8_TEXT) }, { agentJsonText: AGENT8_TEXT, extra: 1 }, {}, { agentJsonText: 5 }, { agentJsonText: AGENT8_TEXT, configHash: "0x12" }]) {
+      expect([body, (await call(w, "POST", "/api/launch/publish", body)).status]).toEqual([body, 400]);
+    }
+    expect((await call(w, "GET", "/api/launch/publish")).status).toBe(405);
+
+    // 413: over the free-upload limit (checked before any upload).
+    const big = await call(w, "POST", "/api/launch/publish", { agentJsonText: JSON.stringify({ platform: { pad: "x".repeat(100 * 1024) }, agent: {} }) });
+    expect(big.status).toBe(413);
+    expect(big.body.maxBytes).toBeLessThan(100 * 1024);
+
+    // 422: not JSON / not exactly {platform, agent} / hash mismatch / agent shape / moderation.
+    const u422 = async (body: unknown): Promise<string> => {
+      const r = await call(w, "POST", "/api/launch/publish", body);
+      expect(r.status).toBe(422);
+      return r.body.error as string;
+    };
+    expect(await u422({ agentJsonText: "not json" })).toBe("config_invalid");
+    expect(await u422({ agentJsonText: JSON.stringify({ platform: {}, agent: {}, runtime: {} }) })).toBe("config_invalid");
+    expect(await u422({ agentJsonText: AGENT8_TEXT, configHash: `0x${"ab".repeat(32)}` })).toBe("config_hash_mismatch");
+    expect(await u422({ agentJsonText: JSON.stringify({ platform: {}, agent: { name: 1 } }) })).toBe("config_invalid");
+    const bad = JSON.parse(AGENT8_TEXT) as { platform: unknown; agent: Record<string, unknown> };
+    bad.agent.persona = "Holders will earn 50% every month. Invest in this token!";
+    expect(await u422({ agentJsonText: JSON.stringify(bad, null, 2) })).toBe("moderation");
+    expect(w.rejections).toHaveLength(1);
+    expect(p.uploads).toHaveLength(2); // nothing uploaded for any 4xx
+
+    // 502: upload failure (reason surfaced, JSONL ok:false).
+    p.fail = new Error("turbo: upload: HTTP 402");
+    const up = await call(w, "POST", "/api/launch/publish", { agentJsonText: AGENT8_TEXT });
+    expect(up.status).toBe(502);
+    expect(up.body).toEqual({ error: "upstream failure", stage: "arweave-upload", reason: "turbo: upload: HTTP 402" });
+    expect(p.lines.at(-1)).toMatchObject({ ok: false, configHash: CFG8, agentId: 8, reason: "turbo: upload: HTTP 402" });
+    expect(p.lines).toHaveLength(3);
+
+    // 503: a helper without a publisher.
+    expect((await call(world(), "POST", "/api/launch/publish", { agentJsonText: AGENT8_TEXT })).status).toBe(503);
+  });
+
+  it("M4E §1: node:http listener — /publish takes a body above the 64 KiB prepare cap (text limit enforced by the handler), prepare keeps its cap; createLaunchHelper wires an ephemeral publisher + publishes.jsonl", async () => {
+    const p = mockPublisher();
+    const w = world({ publisher: p.publisher });
+    const server: Server = await startLaunchHelperServer(w.helper, 0, "127.0.0.1", w.log);
+    try {
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      const text = JSON.stringify({ platform: { pad: "z".repeat(90 * 1024) }, agent: { agentId: 99, name: "Pad", persona: "A padded but harmless persona." } });
+      const r = await fetch(`${base}/api/launch/publish`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ agentJsonText: text }) });
+      expect(r.status).toBe(200);
+      expect(new TextDecoder().decode(p.uploads[0]!.data)).toBe(text);
+      const tooBig = await fetch(`${base}/api/launch/publish`, { method: "POST", body: "x".repeat(300 * 1024) });
+      expect(tooBig.status).toBe(413);
+      const prep = await fetch(`${base}/api/launch/prepare`, { method: "POST", body: "x".repeat(70 * 1024) });
+      expect(prep.status).toBe(413);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+
+    const cfg = loadConfig(join(REPO, "genesis", "e2e", "genesis.testnet.json"));
+    const d = mkdtempSync(join(tmpdir(), "lh-pub-"));
+    try {
+      const up = mockPublisher();
+      const { helper } = createLaunchHelper({ ...cfg, dataDir: d }, memoryLogger(), { factory: { agentCount: async () => 7n }, uploader: up.publisher.uploader, clock: { now: () => 5n } });
+      const res = await helper.handle({ method: "POST", url: "/api/launch/publish", body: JSON.stringify({ agentJsonText: AGENT8_TEXT }) });
+      expect(res.status).toBe(200);
+      const lines = readFileSync(join(d, "launch-helper", "publishes.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+      expect(lines).toEqual([{ ts: 5, ok: true, configHash: CFG8, agentId: 8, bytes: Buffer.byteLength(AGENT8_TEXT), txId: "T".repeat(43) }]);
+      // Default wiring (no injected uploader): a publisher exists — no key file, no config secret.
+      const { helper: h2 } = createLaunchHelper({ ...cfg, dataDir: d }, memoryLogger(), { factory: { agentCount: async () => 7n } });
+      const r2 = await h2.handle({ method: "POST", url: "/api/launch/publish", body: JSON.stringify({ agentJsonText: "nope" }) });
+      expect(r2.status).toBe(422);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
     }
   });
 });

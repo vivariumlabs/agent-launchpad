@@ -138,6 +138,20 @@ export const GenesisConfigFileSchema = z
     configInboxDir: z.string().min(1),
     /** Arweave gateway for `ar://<txid>` config refs (revival path). */
     arweaveGateway: z.string().url().optional(),
+    /** SPEC-M4E §1c: Arweave GraphQL endpoint for config tag discovery DEFAULT <arweaveGateway ?? https://arweave.net>/graphql. */
+    arweaveGraphqlUrl: z.string().url().optional(),
+    /**
+     * SPEC-M4E §1c tag discovery of launch-helper-published configs (ArweaveTagConfigSource), chained
+     * after the inbox. enabled DEFAULT true; maxCandidates DEFAULT 5 (R1: bounded tag-spam DoS). The
+     * gateway fetch uses arweaveGateway DEFAULT https://arweave.net.
+     */
+    arweaveDiscovery: z
+      .object({
+        enabled: z.boolean().default(true),
+        maxCandidates: z.number().int().positive().max(100).default(5),
+      })
+      .strict()
+      .default({}),
     /** runtime.json template (ops config, unattested); the orchestrator sets tee + imageId. */
     runtimeOps: z.record(z.string(), z.unknown()).default({}),
     seeding: z
@@ -220,8 +234,10 @@ export const GenesisConfigFileSchema = z
         platformTemplate: z.string().min(1),
         /** Allowlist file ({entries:[…]} or […]) replacing platform.x402Allowlist; `_`-prefixed keys stripped, invalid entries dropped loudly. */
         allowlistPath: z.string().min(1).optional(),
-        /** KMS / RPC timeout DEFAULT 20 s. */
+        /** KMS / RPC / Turbo upload timeout DEFAULT 20 s. */
         httpTimeoutSec: z.number().int().positive().default(20),
+        /** SPEC-M4E §1b: Turbo upload endpoint for /api/launch/publish DEFAULT https://upload.ardrive.io/v1/tx (runtime turboHttp). */
+        turboUploadUrl: z.string().url().optional(),
       })
       .strict()
       .optional(),

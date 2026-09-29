@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 
 import { LaunchProgress } from "@/components/launch/LaunchProgress";
-import { FIXTURES_MODE } from "@/lib/config";
+import { FIXTURES_MODE, isArweaveItemId } from "@/lib/config";
 
 export const metadata = { title: "Launch progress — agent-launchpad" };
 
@@ -10,10 +10,11 @@ function one(v: string | string[] | undefined): string | undefined {
 }
 
 /**
- * /launch/track/[id]?since=<unix s>&predicted=<id>&tx=<hash> — deep-linkable
+ * /launch/track/[id]?since=<unix s>&predicted=<id>&tx=<hash>&ar=<item id> — deep-linkable
  * progress tracker (SPEC-M4B §3b), refresh-safe. `since` = tx-confirmed time
  * (drives the 15-min timeout message); `predicted` = the helper's predicted
- * id, shown as a race warning when it differs from the real one.
+ * id, shown as a race warning when it differs from the real one; `ar` = the
+ * published config's Arweave item id (SPEC-M4E R3), linked as a hint.
  */
 export default async function LaunchTrackPage({
   params,
@@ -29,10 +30,12 @@ export default async function LaunchTrackPage({
   const sinceRaw = one(sp.since);
   const predictedRaw = one(sp.predicted);
   const txRaw = one(sp.tx);
+  const arRaw = one(sp.ar);
 
   const since = sinceRaw && /^\d+$/.test(sinceRaw) ? Number(sinceRaw) : null;
   const predicted = predictedRaw && /^\d+$/.test(predictedRaw) ? Number(predictedRaw) : null;
   const tx = txRaw && /^0x[0-9a-fA-F]{64}$/.test(txRaw) ? txRaw : null;
+  const configTxId = arRaw && isArweaveItemId(arRaw) ? arRaw : null;
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-6">
@@ -48,6 +51,7 @@ export default async function LaunchTrackPage({
         since={since}
         predicted={predicted}
         tx={tx}
+        configTxId={configTxId}
         fixtures={FIXTURES_MODE}
       />
     </div>

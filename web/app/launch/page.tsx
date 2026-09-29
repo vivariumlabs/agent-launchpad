@@ -8,7 +8,9 @@ export const metadata = { title: "Launch an agent — agent-launchpad" };
 /**
  * /launch (SPEC-M4B §3b). The template is read server-side (R4). Modes:
  *   fixtures — mock helper fixtures, full flow walkable, no chain;
- *              `?preview=manual` previews manual mode (fixtures only)
+ *              `?preview=manual` previews manual mode (fixtures only);
+ *              `?publish=fail` makes the first Arweave publish attempt
+ *              fail, to walk the retry UI (SPEC-M4E, fixtures only)
  *   live     — real helper + wallet
  *   manual   — LAUNCH_HELPER_URL unset: operator instructions only
  */
@@ -19,6 +21,7 @@ export default async function LaunchPage({
 }) {
   const sp = await searchParams;
   const previewManual = LAUNCH_MODE === "fixtures" && sp.preview === "manual";
+  const publishFail = LAUNCH_MODE === "fixtures" && sp.publish === "fail";
 
   const template = LAUNCH_MODE === "manual" || previewManual ? null : await getLaunchTemplate();
 
@@ -43,7 +46,11 @@ export default async function LaunchPage({
       ) : template === null ? (
         <ManualLaunchInstructions reason="unreachable" />
       ) : (
-        <LaunchFlow template={template} fixtures={LAUNCH_MODE === "fixtures"} />
+        <LaunchFlow
+          template={template}
+          fixtures={LAUNCH_MODE === "fixtures"}
+          fixtureFailFirstPublish={publishFail}
+        />
       )}
 
       <p className="text-xs text-slate-500">{ORCHESTRATOR_TRUST_BOUNDARY}</p>

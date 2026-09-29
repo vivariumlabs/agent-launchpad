@@ -4,7 +4,7 @@
  * form-time layer.
  */
 import { moderateAgent, type ModerationViolation } from "./moderation";
-import type { LaunchAgentInput, LaunchModelOption, LaunchTemplate } from "./types";
+import type { LaunchAgentInput, LaunchModelOption, LaunchPrepared, LaunchTemplate } from "./types";
 
 export const NAME_MAX = 32;
 export const SYMBOL_MAX = 8;
@@ -129,4 +129,17 @@ export function parseLaunchBody(body: unknown): LaunchAgentInput | null {
     persona: a.persona,
     models: { primary: m.primary, fallbacks: m.fallbacks as string[], chatTier: m.chatTier },
   };
+}
+
+/** SPEC-M4E R3 publish step: after prepare, before the createAgent tx. */
+export type PublishState =
+  | { kind: "publishing" }
+  | { kind: "published"; txId: string; ref: string }
+  | { kind: "error"; message: string; retryable: boolean };
+
+/** The exact bytes prepare hashed (SPEC-M4E §1b) — never a re-serialization of agentJson. */
+export function exactAgentJsonText(p: LaunchPrepared): string | null {
+  if (typeof p.agentJsonText === "string" && p.agentJsonText !== "") return p.agentJsonText;
+  if (typeof p.agentJson === "string" && p.agentJson !== "") return p.agentJson;
+  return null;
 }

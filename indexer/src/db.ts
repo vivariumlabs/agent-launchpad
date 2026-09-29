@@ -127,6 +127,28 @@ export interface JournalRow {
   blockHeight: number | null;
 }
 
+export interface NftOwnerRow {
+  agentId: number;
+  /** lowercase */
+  owner: string;
+  /** unix seconds of the transfer that made `owner` the owner. */
+  since: number;
+  txHash: string;
+}
+
+/** SPEC-M4E §2 wallet NFT row (API: /api/wallets/:address/nfts). */
+export interface WalletNftRow {
+  agentId: number;
+  name: string | null;
+  symbol: string | null;
+  since: number;
+  emancipated: boolean;
+  /** Emancipated event's sweptToTreasury (USDG base units), null unless emancipated + recorded. */
+  sweptToTreasury: string | null;
+  /** Σ Claimed amounts (USDG base units, base-10). */
+  lifetimeClaimed: string;
+}
+
 export interface JournalOwnerRow {
   agentId: number;
   owner: string;
@@ -252,7 +274,23 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE attestation_checks ADD COLUMN quoteValid TEXT NOT NULL DEFAULT 'pending';
   ALTER TABLE attestation_checks ADD COLUMN measurementMatch TEXT NOT NULL DEFAULT 'pending';
   `,
+  // SPEC-M4E §2 — current AgentNFT owner per agentId (tokenId == agentId), derived from the ingested
+  // nft_transfer events: the latest transfer (blockNumber, logIndex) names the owner; a latest
+  // transfer TO 0x0 (burn ⇒ emancipation) means NO row. Backfilled here from the existing events
+  // (same rule as IndexerDb.refreshNftOwner). owner is lowercase.
+  `
+  CREATE TABLE nft_owners (agentId INTEGER PRIMARY KEY, owner TEXT NOT NULL, since INTEGER NOT NULL, txHash TEXT NOT NULL);
+  CREATE INDEX nft_owners_owner ON nft_owners (owner);
+  INSERT INTO nft_owners (agentId, owner, since, txHash)
+    SELECT e.agentId, lower(json_extract(e.data, '$.to')), e.ts, e.txHash FROM events e
+    WHERE e.kind = 'nft_transfer' AND e.agentId IS NOT NULL
+      AND e.id = (SELECT l.id FROM events l WHERE l.kind = 'nft_transfer' AND l.agentId = e.agentId ORDER BY l.blockNumber DESC, l.logIndex DESC LIMIT 1)
+      AND lower(json_extract(e.data, '$.to')) != '0x0000000000000000000000000000000000000000';
+  `,
 ];
+
+/** AgentNFT mint source / burn destination. */
+export const NFT_ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 /** "action" ⇔ the tx sender is an agent's actionEOA; "treasury" ⇔ its treasuryEOA. */
 export type SenderWallet = "action" | "treasury";
@@ -286,7 +324,7 @@ function toAgent(r: Raw): AgentRow {
   };
 }
 
-export const TABLES = ["agents", "instances", "events", "pools", "swaps", "trades_curve", "fees", "balances", "journal", "journal_owner", "attestation_checks"] as const;
+export const TABLES = ["agents", "instances", "events", "pools", "swaps", "trades_curve", "fees", "balances", "journal", "journal_owner", "attestation_checks", "nft_owners"] as const;
 
 export class IndexerDb {
   readonly db: Database.Database;
@@ -510,6 +548,100 @@ export class IndexerDb {
       ts: Number(r.ts),
       data: String(r.data),
     }));
+  }
+
+  // ---- NFT ownership (SPEC-M4E §2) ----
+
+  /**
+   * Recompute agentId's current owner from its nft_transfer events: the latest (blockNumber,
+   * logIndex) transfer's `to`; a burn (to 0x0) or no transfer ⇒ no row. Order-independent and
+   * idempotent (a re-scanned older transfer never regresses the owner) — the migration v5 rule.
+   */
+  refreshNftOwner(agentId: number): void {
+    const r = this.db
+      .prepare(`SELECT txHash, ts, data FROM events WHERE kind = 'nft_transfer' AND agentId = ? ORDER BY blockNumber DESC, logIndex DESC LIMIT 1`)
+      .get(agentId) as { txHash: string; ts: number; data: string } | undefined;
+    const to = r === undefined ? null : String((JSON.parse(r.data) as { to?: unknown }).to ?? "").toLowerCase();
+    if (r === undefined || to === null || to === "" || to === NFT_ZERO_ADDRESS) {
+      this.db.prepare(`DELETE FROM nft_owners WHERE agentId = ?`).run(agentId);
+      return;
+    }
+    this.db
+      .prepare(
+        `INSERT INTO nft_owners (agentId, owner, since, txHash) VALUES (?, ?, ?, ?)
+         ON CONFLICT(agentId) DO UPDATE SET owner = excluded.owner, since = excluded.since, txHash = excluded.txHash`,
+      )
+      .run(agentId, to, Number(r.ts), String(r.txHash));
+  }
+
+  nftOwner(agentId: number): NftOwnerRow | undefined {
+    const r = this.db.prepare(`SELECT * FROM nft_owners WHERE agentId = ?`).get(agentId) as Raw | undefined;
+    return r === undefined ? undefined : { agentId: Number(r.agentId), owner: String(r.owner), since: Number(r.since), txHash: String(r.txHash) };
+  }
+
+  nftOwners(): NftOwnerRow[] {
+    return (this.db.prepare(`SELECT * FROM nft_owners ORDER BY agentId`).all() as Raw[]).map((r) => ({ agentId: Number(r.agentId), owner: String(r.owner), since: Number(r.since), txHash: String(r.txHash) }));
+  }
+
+  /**
+   * NFTs of `wallet` (case-insensitive), agentId ascending: every agent it CURRENTLY owns, plus
+   * (Fable ruling) every agent whose burn (Transfer to 0x0) it sent — the burner keeps seeing its
+   * emancipated agent. `since` = when the wallet became owner (for a burned one: its latest
+   * transfer in before the burn, else the burn itself). emancipated ⇔ an Emancipated event exists;
+   * lifetimeClaimed = Σ Claimed amounts of the agent.
+   */
+  walletNfts(wallet: string): WalletNftRow[] {
+    const w = wallet.toLowerCase();
+    const since = new Map<number, number>();
+    for (const r of this.db.prepare(`SELECT agentId, since FROM nft_owners WHERE owner = ?`).all(w) as Array<{ agentId: number; since: number }>) {
+      since.set(Number(r.agentId), Number(r.since));
+    }
+    const burns = this.db
+      .prepare(
+        `SELECT agentId, blockNumber, logIndex, ts FROM events
+         WHERE kind = 'nft_transfer' AND agentId IS NOT NULL
+           AND lower(json_extract(data, '$.from')) = ? AND lower(json_extract(data, '$.to')) = ?`,
+      )
+      .all(w, NFT_ZERO_ADDRESS) as Array<{ agentId: number; blockNumber: number; logIndex: number; ts: number }>;
+    for (const b of burns) {
+      const id = Number(b.agentId);
+      if (since.has(id)) continue;
+      const inbound = this.db
+        .prepare(
+          `SELECT ts FROM events WHERE kind = 'nft_transfer' AND agentId = ? AND lower(json_extract(data, '$.to')) = ?
+             AND (blockNumber < ? OR (blockNumber = ? AND logIndex < ?))
+           ORDER BY blockNumber DESC, logIndex DESC LIMIT 1`,
+        )
+        .get(id, w, b.blockNumber, b.blockNumber, b.logIndex) as { ts: number } | undefined;
+      since.set(id, Number(inbound?.ts ?? b.ts));
+    }
+    return [...since.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([agentId, t]) => {
+        const a = this.agent(agentId);
+        let claimed = 0n;
+        for (const e of this.eventsOfKind(agentId, "royalty_claimed")) {
+          const amt = (JSON.parse(e.data) as { amount?: unknown }).amount;
+          if (typeof amt === "string" && /^\d+$/.test(amt)) claimed += BigInt(amt);
+        }
+        const emanc = this.eventsOfKind(agentId, "emancipated");
+        // M4E follow-up (Fable): sweptToTreasury from the Emancipated event, so the UI needn't dig
+        // through the activity feed for the burn reaction. null when not emancipated / not recorded.
+        let swept: string | null = null;
+        if (emanc.length > 0) {
+          const v = (JSON.parse(emanc[0]!.data) as { sweptToTreasury?: unknown }).sweptToTreasury;
+          if (typeof v === "string" && /^\d+$/.test(v)) swept = v;
+        }
+        return {
+          agentId,
+          name: a?.name ?? null,
+          symbol: a?.symbol ?? null,
+          since: t,
+          emancipated: emanc.length > 0,
+          sweptToTreasury: swept,
+          lifetimeClaimed: claimed.toString(10),
+        };
+      });
   }
 
   // ---- pools / swaps / curve trades / fees ----

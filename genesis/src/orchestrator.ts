@@ -7,7 +7,9 @@ import { join } from "node:path";
 import type { Address } from "viem";
 import { CHAIN_KEYS, ViemChainClient, ViemLaunchpad, type ChainClient, type ChainKey, type Launchpad } from "./chain.js";
 import type { GenesisConfig } from "./config.js";
-import { ArweaveConfigSource, ChainedConfigSource, DirConfigSource, type ConfigSource } from "./configSource.js";
+import { createArweaveReader } from "./arweavePublish.js";
+import { ArweaveConfigSource, ArweaveTagConfigSource, ChainedConfigSource, DirConfigSource, type ArweaveReader, type ConfigSource } from "./configSource.js";
+import { DEFAULT_ARWEAVE_GATEWAY_URL } from "./runtimeArweave.js";
 import { GenesisDb } from "./db.js";
 import { nodeExec, type Exec } from "./exec.js";
 import { fetchHttp, type HttpClient } from "./http.js";
@@ -23,6 +25,8 @@ export interface OrchestratorOpts {
   exec?: Exec;
   http?: HttpClient;
   turbo?: TurboFunder;
+  /** SPEC-M4E §1c: gateway reader for tag discovery (DEFAULT the runtime Turbo client's download). */
+  arweaveReader?: ArweaveReader;
   /** viem polling interval (ms) for receipt waits. */
   pollingMs?: number;
 }
@@ -37,6 +41,37 @@ export interface Orchestrator {
   watcher: Watcher;
   walletAddress: Address;
   close(): void;
+}
+
+/**
+ * The orchestrator's frozen-config sources, in order: inbox dir (operator override / drills), SPEC-M4E
+ * §1c Arweave tag discovery (arweaveDiscovery.enabled), then the ar://<txid> ref fetch (arweaveGateway
+ * set). First non-null wins; the machine runs verifyFrozen on whatever comes back.
+ */
+export function buildConfigSource(cfg: GenesisConfig, o: { http: HttpClient; log: Logger; arweaveReader?: ArweaveReader }): ChainedConfigSource {
+  const http = o.http;
+  const sources: ConfigSource[] = [new DirConfigSource(cfg.configInboxDir)];
+  // SPEC-M4E §1c / R4: inbox first (operator override / drills), then tag discovery of the
+  // launch-helper-published config; the recorded ref becomes ar://<txid> (revival, 04 §6).
+  const gateway = (cfg.arweaveGateway ?? DEFAULT_ARWEAVE_GATEWAY_URL).replace(/\/+$/, "");
+  const timeoutMs = cfg.oyster.httpTimeoutSec * 1000;
+  const reader = o.arweaveReader ?? createArweaveReader({ gatewayUrl: gateway, timeoutMs });
+  if (cfg.arweaveDiscovery.enabled) {
+    sources.push(
+      new ArweaveTagConfigSource({
+        graphqlUrl: cfg.arweaveGraphqlUrl ?? `${gateway}/graphql`,
+        http,
+        reader,
+        timeoutMs,
+        log: o.log,
+        maxCandidates: cfg.arweaveDiscovery.maxCandidates,
+      }),
+    );
+  }
+  // ar://<ref> loads (revival) share the SAME one-redirect reader (M4E fix — raw GET refused the
+  // arweave.net 302 to its data door, so every live ref fetch failed).
+  sources.push(new ArweaveConfigSource(reader));
+  return new ChainedConfigSource(sources);
 }
 
 export function createOrchestrator(cfg: GenesisConfig, opts: OrchestratorOpts): Orchestrator {
@@ -72,9 +107,7 @@ export function createOrchestrator(cfg: GenesisConfig, opts: OrchestratorOpts): 
   const launchpad = new ViemLaunchpad(rh.publicClient, cfg.contracts.factory, cfg.contracts.registry, cfg.contracts.usdg);
 
   const http = opts.http ?? fetchHttp;
-  const sources: ConfigSource[] = [new DirConfigSource(cfg.configInboxDir)];
-  if (cfg.arweaveGateway !== undefined) sources.push(new ArweaveConfigSource(cfg.arweaveGateway, http, cfg.oyster.httpTimeoutSec * 1000));
-  const configSource = new ChainedConfigSource(sources);
+  const configSource = buildConfigSource(cfg, { http, log: opts.log, ...(opts.arweaveReader === undefined ? {} : { arweaveReader: opts.arweaveReader }) });
 
   const oyster = new OysterCli(
     {

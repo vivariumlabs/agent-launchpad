@@ -60,12 +60,44 @@ describe("genesis/src hygiene", () => {
     expect(hits).toEqual([]);
   });
 
-  it("the runtime package is imported ONLY by canonical.ts (canonical primitives only)", () => {
-    const hits = files.filter((f) => /from\s+["']agent-runtime\//.test(f.code) && f.rel !== "canonical.ts").map((f) => f.rel);
+  it("the runtime package is imported ONLY by canonical.ts (canonical primitives only) and runtimeArweave.ts (ANS-104 + Turbo HTTP only)", () => {
+    // SPEC-M4E R2 — DELIBERATE extension: runtimeArweave.ts is the second narrow re-export seam, so the
+    // launch-helper's Arweave publication reuses the runtime's ANS-104 signer/encoder and Turbo HTTP
+    // client instead of duplicating crypto. Its export list is pinned exactly like canonical.ts's.
+    const SEAMS = ["canonical.ts", "runtimeArweave.ts"];
+    const hits = files.filter((f) => /from\s+["']agent-runtime\//.test(f.code) && !SEAMS.includes(f.rel)).map((f) => f.rel);
     expect(hits).toEqual([]);
-    const canon = files.find((f) => f.rel === "canonical.ts")!.code;
-    const names = [...canon.matchAll(/export\s*\{([^}]*)\}/g)].flatMap((m) => m[1]!.split(",").map((s) => s.trim())).filter(Boolean).sort();
-    expect(names).toEqual(["FrozenConfigFileSchema", "canonicalEncode", "frozenConfigHash"]);
+    const exported = (rel: string): string[] =>
+      [...files.find((f) => f.rel === rel)!.code.matchAll(/export\s*(?:type\s*)?\{([^}]*)\}/g)].flatMap((m) => m[1]!.split(",").map((s) => s.trim())).filter(Boolean).sort();
+    expect(exported("canonical.ts")).toEqual(["FrozenConfigFileSchema", "canonicalEncode", "frozenConfigHash"]);
+    expect(exported("runtimeArweave.ts")).toEqual([
+      "DEFAULT_ARWEAVE_GATEWAY_URL",
+      "DEFAULT_TURBO_UPLOAD_URL",
+      "TURBO_APP_TAG",
+      "TurboHttpOptions",
+      "TurboHttpUploader",
+      "TurboSigner",
+      "TurboTag",
+      "TurboUploader",
+      "createSignedDataItem",
+      "parseDataItem",
+      "verifyDataItem",
+    ]);
+    // Only the attestation modules (and the keyring TYPE) are reachable through it.
+    const arw = files.find((f) => f.rel === "runtimeArweave.ts")!.code;
+    const mods = [...arw.matchAll(/from\s+["'](agent-runtime\/[^"']+)["']/g)].map((m) => m[1]!);
+    expect([...new Set(mods)].sort()).toEqual([
+      "agent-runtime/src/attestation/ans104.js",
+      "agent-runtime/src/attestation/turbo.js",
+      "agent-runtime/src/attestation/turboHttp.js",
+      "agent-runtime/src/keyring/keyring.js",
+    ]);
+    expect(arw).toMatch(/export\s+type\s*\{\s*TurboSigner\s*\}\s*from\s+["']agent-runtime\/src\/keyring\/keyring\.js["']/);
+  });
+
+  it("SPEC-M4E R2: key generation (generatePrivateKey) only in arweavePublish.ts — the ephemeral Arweave signer seam", () => {
+    const hits = files.filter((f) => /generatePrivateKey/.test(f.code) && f.rel !== "arweavePublish.ts").map((f) => f.rel);
+    expect(hits).toEqual([]);
   });
 
   it("main.ts is argv-only; no raw private-key argv flag anywhere", () => {

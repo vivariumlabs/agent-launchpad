@@ -8,7 +8,13 @@
  * Attestation states (SPEC-M4B §3a): 3 all-pass, 7 one failing
  * (configHashMatch — drives the site-wide banner in fixtures mode too),
  * 4 drill/skip cascade, 9 pending (Arweave unreachable), 5 no instance.
- * Launch helper mocks (SPEC-M4B §3b): template + prepare.
+ * Launch helper mocks (SPEC-M4B §3b): template + prepare (+ SPEC-M4E publish,
+ * assembled in web/app/api/launch/publish/route.ts).
+ *
+ * NFT dashboard (SPEC-M4E §3): /api/contracts + a 2-NFT wallet (Cato #3 with
+ * accrued royalties, Marcus #9 emancipated) for the demo wallet; any other
+ * wallet (or the "empty" scenario) is empty. nft-chain.json stands in for the
+ * live wagmi view reads (accrued / ownerOf).
  */
 import type {
   ActivityItem,
@@ -49,6 +55,10 @@ import attestationSummaryJson from "../fixtures/attestation-summary.json";
 import launchTemplateJson from "../fixtures/launch-template.json";
 import launchPrepareJson from "../fixtures/launch-prepare.json";
 
+import contractsJson from "../fixtures/contracts.json";
+import walletNftsJson from "../fixtures/wallet-nfts.json";
+import nftChainJson from "../fixtures/nft-chain.json";
+
 export const fixtureAgents: AgentView[] = (agentsListJson as AgentsResponse).agents;
 
 export const fixtureProfiles: Record<string, AgentView> = {
@@ -87,5 +97,17 @@ export const fixtureAttestationSummaryRaw: unknown = attestationSummaryJson;
 
 export const fixtureLaunchTemplate = launchTemplateJson as LaunchTemplate;
 
+/** RAW wire JSON — normalized by web/lib/nfts.ts exactly like a live response. */
+export const fixtureContractsRaw: unknown = contractsJson;
+
+/** RAW wire JSON for the demo wallet's /api/wallets/:address/nfts. */
+export const fixtureWalletNftsRaw: unknown = walletNftsJson;
+
+/** Simulated chain view reads for fixtures mode (no RPC). */
+export const fixtureNftChain = nftChainJson as {
+  accrued: Record<string, string>;
+  ownerOf: Record<string, string>;
+};
+
 /** Prepare response minus agentJson — the mock route assembles agentJson from template + input. */
-export const fixtureLaunchPrepare = launchPrepareJson as Omit<LaunchPrepared, "agentJson">;
+export const fixtureLaunchPrepare = launchPrepareJson as Omit<LaunchPrepared, "agentJson" | "agentJsonText">;

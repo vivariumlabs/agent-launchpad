@@ -16,6 +16,12 @@ export function Header() {
           >
             Launch
           </Link>
+          <Link
+            href="/nfts"
+            className="text-sm font-medium text-slate-300 transition hover:text-white"
+          >
+            Your NFTs
+          </Link>
           <ConnectButton />
         </div>
       </div>
