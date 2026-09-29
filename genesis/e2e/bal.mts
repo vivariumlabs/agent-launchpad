@@ -1,0 +1,15 @@
+import { createPublicClient, http, defineChain, parseAbi, formatEther, formatUnits } from "viem";
+import { loadWallet } from "/sessions/kind-sharp-maxwell/mnt/agent-launchpad/genesis/src/keyfile.js";
+const { account } = loadWallet("/sessions/kind-sharp-maxwell/mnt/agent-launchpad/.secrets/m0-drill-wallet.json");
+const erc = parseAbi(["function balanceOf(address) view returns (uint256)"]);
+const mk = (id: number, url: string) => createPublicClient({ chain: defineChain({ id, name: String(id), nativeCurrency: {name:"ETH",symbol:"ETH",decimals:18}, rpcUrls: {default:{http:[url]}} }), transport: http(url) });
+const rh = mk(46630, "https://rpc.testnet.chain.robinhood.com");
+const arb = mk(42161, "https://arb1.arbitrum.io/rpc");
+const base = mk(8453, "https://mainnet.base.org");
+console.log("wallet:", account.address);
+console.log("rh ETH:", formatEther(await rh.getBalance({address: account.address})));
+console.log("rh MockUSDG:", formatUnits(await rh.readContract({address:"0xe6f7E5832991f5af335C2A21d4F35cea3d47ccAb",abi:erc,functionName:"balanceOf",args:[account.address]}), 6));
+console.log("arb ETH:", formatEther(await arb.getBalance({address: account.address})));
+console.log("arb USDC:", formatUnits(await arb.readContract({address:"0xaf88d065e77c8cC2239327C5EDb3A432268e5831",abi:erc,functionName:"balanceOf",args:[account.address]}), 6));
+console.log("base ETH:", formatEther(await base.getBalance({address: account.address})));
+console.log("base USDC:", formatUnits(await base.readContract({address:"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",abi:erc,functionName:"balanceOf",args:[account.address]}), 6));
