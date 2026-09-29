@@ -1,6 +1,24 @@
-# BUILD STATE — updated 2026-09-29 (session 12)
+# BUILD STATE — updated 2026-09-29 (session 13)
 
-## Milestone: **M4 IN PROGRESS — CHAT LIVE-PROVEN end-to-end over trusted TLS (SPEC-M4C shipped, v0.1.7); D9 gate pass+deny live (2026-09-29)**
+## Milestone: **M4 IN PROGRESS — NSM QUOTE RE-VERIFICATION SHIPPED (SPEC-M4D): the attestation tab now proves measurements, not just consistency (2026-09-29)**
+
+## Session 13 (2026-09-29, same day) — SPEC-M4D: quote re-verification + launch-tooling hardening
+
+**SPEC-M4D shipped (`docs/specs/SPEC-M4D.md`, Fable; Opus impl, Fable-reviewed; commits `70e5c69` + `fc7da9a`).** Closes M4B R1's caveat, motivated by the agent-10 finding.
+
+- **Semantics recovered from source, oracle-validated first:** the image-id formula was undocumented in-repo — recovered from Marlin oyster-monorepo `sdks/rs/src/attestation.rs` (what `oyster-cvm verify` runs) + the reference TS port: **image-id = SHA256(be32(0x00010007) ‖ PCR0 ‖ PCR1 ‖ PCR2 ‖ PCR16), all four PCRs from the quote itself — no preset needed.** Before implementation, both live quotes (from the Arweave-anchored reports) were run through `oyster-cvm verify --attestation-hex-file` offline: agent-8 → `f489dc60…` ✓, agent-10 → `0558ac28…` ✓, root key = `fc0254eba608…53ff4` in both. Those runs are the pinned goldens (fixtures committed).
+- **In-house verifier** (ans104/protobuf precedent, zero new deps): `indexer/src/nsm/cbor.ts` (defensive decoder — depth cap, dup-key/trailing/indefinite rejection EXCEPT indefinite MAPS, which real NSM docs use — spec R1 rev'd against ground truth; tiny Sig_structure encoder) + `indexer/src/nsm/quote.ts` (COSE_Sign1 ES384 via Node WebCrypto, x509 chain via node:crypto X509Certificate at DOC timestamp — historical quotes verify, R4 no age policy; root pinned as AWS_ROOT_KEY with 3-source provenance; strict 120-byte P-384 SPKI prefix assertion).
+- **Two new checks** (schema v4): `quoteValid` (full §0 verification; data faults ⇒ fail, never pending) and `measurementMatch` (quote-derived TRUE image-id vs registry codeHash; skip unless quoteValid). Banner rules unchanged.
+- **LIVE: agent 8 = 9/9 pass. Agent 10 = quoteValid pass + measurementMatch FAIL** — reason names the quote id `0558ac28…`, the registry codeHash `f489dc60…`, AND that the report self-reports the same wrong value. The session-12 misreport is now machine-caught from public data (Arweave + chain). alert=false (agent 10 stale — reported, not alarming). Web caveat row replaced honestly (quote IS re-verified server-side; verify-yourself panel stays).
+- **Launch-tooling hardening (agent-9/10 lessons):** platform-template gains `agentDnsRoot` and the launch-helper refuses templates without it (enforced at template load — buildPlatform placement would have broken 11 goldens tied to agent-8's on-chain config; same rule, earlier); `genesis/e2e/stamp-runtime.mts` stamps runtime.json's `imageId` from compute-image-id (dry-run cross-check on agent 10 agreed with the in-house verifier: `0558ac28…`).
+- **Test-baseline note:** the "was 88 green" indexer baseline was stale — the v0.1.7 release record had silently broken one attestation test (release list). Fixed with the CHECK_NAMES-growth edits; future-proofed (Array(CHECK_NAMES.length), MIGRATIONS.length). Suites: **indexer 110/110, genesis 152/152, web build+tsc green.**
+- Replay note (recorded): quote user_data/public_key aren't tied to report EOAs, but image-id binds (image, agentId, configHash) ⇒ cross-agent quote replay fails measurementMatch; same-agent replay is identity-neutral. Fine as-is.
+
+**Wallet: unchanged from session 12** (no spends — the whole session ran on public data + the already-committed fixtures). arb ETH still thin (0.000725, top up ~0.001 before next deploy-heavy session).
+
+**NEXT (M4E candidates):** holders table slice; launch-flow inbox delivery / orchestrator-as-a-service question; LLM moderation; proof-card image; live-endpoint freshness polling (needs endpoint discovery design — chatDomain/agentDnsRoot are frozen-config, consider publishing in the report); then M4 exit-gate review vs 07. Fee re-pricing at the end (ruling stands).
+
+## Previous: **CHAT LIVE-PROVEN end-to-end over trusted TLS (SPEC-M4C shipped, v0.1.7); D9 gate pass+deny live (2026-09-29, session 12)**
 
 ## Session 12 (2026-09-29, same day) — SPEC-M4C: chat tab + CORS (v0.1.7) + agent-10 chat drill
 
