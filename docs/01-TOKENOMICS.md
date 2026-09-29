@@ -6,11 +6,11 @@
 
 ## 1. $TOKEN (platform token)
 
-- **Launch:** standard PONS launch on Robinhood Chain (fixed supply, bonding curve → locked Uniswap v4 full-range pool, per PONS V2 mechanics). We do NOT customize PONS contracts. The trading-fee % on $TOKEN is whatever PONS's standard structure imposes; the creator-earnings stream PONS pays out is claimed by the **platform deployer wallet** and swept into `TreasuryBuyback`.
+- **Launch:** standard PONS launch on Robinhood Chain (fixed supply, bonding curve → locked Uniswap v4 full-range pool, per PONS V2 mechanics). We do NOT customize PONS contracts. The trading-fee % on $TOKEN is whatever PONS's standard structure imposes; the creator-earnings stream PONS pays out is claimed by the **platform deployer wallet** and KEPT there as **team revenue** (D19 — it does NOT fund the floor).
 - **Supply:** fixed at whatever PONS's standard is (verify at launch; likely 1B). No mint function, ever.
-- **Value accrual:** two streams into `TreasuryBuyback`: (a) 1% leg of every agent-token swap (in USDG), (b) swept PONS creator earnings. `TreasuryBuyback` market-buys $TOKEN in its PONS pool and burns it (transfer to `0xdead`). Trigger: permissionless `poke()` with per-call cap, TWAP sanity check, and small caller reward (see 02).
+- **Value accrual (D18 — redemption floor):** the 1% leg of every agent-token swap (in USDG) accrues in `FloorVault`, plus any donations. Anyone calls `redeem(amount)`: pays out `amount × vaultUSDG / totalSupply()` and burns the tokens in the same call (ERC20Burnable `burn` — PONS V2 exposes it). Floor = vault/supply, monotonically non-decreasing. No pokes, no market interaction, no keeper rewards. (`TreasuryBuyback` retired.)
 - **Utility:** holding ≥1% of supply = chat access to **every** agent (D9). Future governance optional, not v1.
-- **Regulatory note (unresolved):** buyback-burn + fee-earning NFTs strengthen a securities analysis. Legal opinion required before mainnet (06). This is a launch **blocker**, flagged as such in the build plan.
+- **Regulatory note (unresolved):** a USDG-redeemable floor + fee-earning NFTs strengthen a securities analysis (redeemability may read even stronger than buyback — flag to counsel). Legal opinion required before mainnet (06). This is a launch **blocker**, flagged as such in the build plan.
 
 ## 2. Agent tokens
 
@@ -28,7 +28,7 @@
 
 Every 3% fee, whether curve or pool phase, splits:
 
-1. **1% → TreasuryBuyback** ($TOKEN buy-and-burn).
+1. **1% → FloorVault** ($TOKEN redemption floor, D18).
 2. **1% → agent treasury EOA** (its income; arrives as USDG, or is converted to USDG by the hook's collection logic — implementation detail resolved in 02 §3).
 3. **1% → RoyaltyDistributor**, accounted per agentId, **pull-based**: NFT holder calls `claim()`. If the NFT has been **burned**, this leg re-routes to the agent treasury EOA from the burn block onward (D7). Accrued-but-unclaimed royalties at burn time go to the agent too (simplest rule; revisable).
 

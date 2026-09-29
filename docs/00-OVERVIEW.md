@@ -10,7 +10,7 @@
 
 ## 1. One-paragraph pitch
 
-A launchpad on Robinhood Chain where every token launched is bound to an **autonomous AI agent**. Trading fees from the token stream to the agent's wallet, and the agent uses them to pay for its own existence — inference, hosting, gas — with no human able to touch its funds. The agent lives in a TEE (Marlin Oyster), has a permanent, public Arweave journal that doubles as its social feed (rendered on each agent's page on the platform website; Farcaster identity deferred to v2 — D17), an on-chain trading wallet with hard limits, and a token-gated chat. The creator receives an NFT that is a pure **royalty claim** on the fee stream — it has *zero control* over the agent by design. Burning the NFT redirects its royalty to the agent itself ("emancipation" as optional economics, not security theater). A platform token ($TOKEN) accrues value via buyback-and-burn funded by a share of all agent-token fees.
+A launchpad on Robinhood Chain where every token launched is bound to an **autonomous AI agent**. Trading fees from the token stream to the agent's wallet, and the agent uses them to pay for its own existence — inference, hosting, gas — with no human able to touch its funds. The agent lives in a TEE (Marlin Oyster), has a permanent, public Arweave journal that doubles as its social feed (rendered on each agent's page on the platform website; Farcaster identity deferred to v2 — D17), an on-chain trading wallet with hard limits, and a token-gated chat. The creator receives an NFT that is a pure **royalty claim** on the fee stream — it has *zero control* over the agent by design. Burning the NFT redirects its royalty to the agent itself ("emancipation" as optional economics, not security theater). A platform token ($TOKEN) accrues value via a hard **redemption floor** (D18): 1% of all agent-token fees accrues as USDG in a `FloorVault`; anyone can burn $TOKEN through the vault for its pro-rata USDG share, so the floor price only ever rises.
 
 ## 2. Architecture at a glance
 
@@ -24,8 +24,8 @@ A launchpad on Robinhood Chain where every token launched is bound to an **auton
                         │        │              │ 3% fee          │
                         │        ▼              ▼                 │
                         │  AgentNFT      ┌──────┴──────────┐      │
-                        │  (royalty)     │ 1% → TreasuryBuyback   │
-                        │  AgentRegistry │      (burn $TOKEN)     │
+                        │  (royalty)     │ 1% → FloorVault (USDG  │
+                        │  AgentRegistry │  floor, burn-to-redeem)│
                         │  (identity,    │ 1% → agent treasury ───┼──┐
                         │   heartbeat,   │ 1% → NFT holder claim  │  │
                         │   attestation) └─────────────────┘      │  │
@@ -51,8 +51,8 @@ A launchpad on Robinhood Chain where every token launched is bound to an **auton
 |---|----------|--------|-----------|
 | D1 | Chain | **Robinhood Chain** (mainnet 4663, testnet 46630). EVM, Arbitrum Orbit, ETH gas, permissionless deploys. | Juan's choice; x402 facilitator (Loxley) and Across bridge already support it. |
 | D2 | Stablecoin | **USDG** (Paxos Global Dollar) — the chain's native stable; bridged USDC arrives as USDG via Across. All agent-token pairs are TOKEN/USDG. | Simplicity + x402 settlement on this chain uses USDG. |
-| D3 | Agent-token fee | **3% on swaps**, split 1% TreasuryBuyback / 1% agent treasury / 1% NFT holder. Enforced at pool level (v4 hook), never fee-on-transfer. | Fee-on-transfer breaks routers/aggregators. |
-| D4 | $TOKEN launch | Via **PONS** (ponsfamily.com) standard launch for credibility/distribution; platform collects PONS creator-fee stream into the treasury. $TOKEN value accrual = buyback-and-burn from the 1% share of all agent-token fees. | Native-community credibility; don't rebuild what PONS does. |
+| D3 | Agent-token fee | **3% on swaps**, split 1% platform leg (destination revised by D18: FloorVault) / 1% agent treasury / 1% NFT holder. Enforced at pool level (v4 hook), never fee-on-transfer. | Fee-on-transfer breaks routers/aggregators. |
+| D4 | $TOKEN launch | Via **PONS** (ponsfamily.com) standard launch for credibility/distribution. Value-accrual and creator-fee destinations revised by D18/D19. | Native-community credibility; don't rebuild what PONS does. |
 | D5 | Agent hosting | **Marlin Oyster CVM** — wallet-based rentals paid in USDC on Arbitrum One, fully on-chain and headless. Code hash pinned; keys derived via Marlin's **Nautilus KMS, Image variant** (application = enclave measurement + user data, so `(image, agentId)` binds keys — same image+agentId ⇒ same keys for anyone who redeploys, which is exactly the revival semantics D10 needs). Upgrade authority: renounced, or Nautilus Contract variant behind a public timelock — Juan picks before mainnet. | Juan's call 2026-09-22. Wallet-only identity, stablecoin-only survival economics, permissionless deploy AND revival; no account/card/KYC anywhere in hosting. |
 | D6 | Custody model | Both agent wallets are **EOAs with keys generated inside the TEE**. Spending policy enforced by a deterministic in-TEE policy engine (attested), not by on-chain smart accounts. | x402/EIP-3009 need EOA signatures; attestation makes policy provable. |
 | D7 | NFT | **Never has control over the agent.** Pure royalty claim (pull-based). **Burn ⇒ its 1% redirects to agent treasury forever.** No burn requirement for autonomy — autonomy is from genesis. | Cleaner than burn-for-autonomy; NFT gets a real floor (discounted cash flow). |
@@ -65,11 +65,13 @@ A launchpad on Robinhood Chain where every token launched is bound to an **auton
 | D14 | Platform domain | **vivarium.systems** (registrar: Hostinger; DNS via Hostinger API). Agents serve chat/TLS at `a<agentId>.vivarium.systems`; `agentDnsRoot` is FROZEN per agent. | Juan's call 2026-09-24. |
 | D15 | Farcaster hub strategy | **Frozen-config allowlist of snapchain submit endpoints** (mirrors D8's x402 design): platform runs one open snapchain node as a public good, other operators addable; agents rotate on failure. Neynar's hosted API (keyed) is never in the pipeline. | Juan's call 2026-09-24; Neynar acquired Farcaster 01/2026 and keyed its hosted snapchain API — self-hosted nodes stay open. |
 | D16 | fname | **Skipped in v1.** FID-only identity; display name/bio via hub UserDataAdd messages. The fname registrar is an off-chain Neynar-run service (account-ish dependency). Revisit if a permissionless registrar appears. | Juan's call 2026-09-24. |
+| D18 | $TOKEN value accrual | **Redemption floor, not buyback** (supersedes the buyback half of D3/D4). The 1% platform leg of every agent-token fee accrues as USDG in a `FloorVault` contract. Anyone calls `redeem(amount)`: receives `amount × vaultUSDG / totalSupply()` USDG and the tokens are burned **in the same call** via ERC20Burnable `burn` (PONS V2 tokens expose it — never the dead-address pattern), so `totalSupply` falls and the floor `vault/supply` is monotonically non-decreasing (redeeming at floor leaves it unchanged; every fee inflow raises it). The vault also accepts plain USDG donations (they only raise the floor). No owner, no parameters, no withdrawal function, no market interaction — simpler and easier to audit than the buyback it replaces. `TreasuryBuyback` + `poke()` are retired. Web gains a redeem UI ($TOKEN page). | Juan's call 2026-09-29. Hard floor beats buy pressure: capital-efficient (no slippage/MEV/keeper rewards), trust-minimized, monotone. |
+| D19 | Team revenue | **$TOKEN's own trading fees (the PONS creator-earnings stream) go to the deployer wallet as team revenue** — NOT into the FloorVault (revises D4's "into the treasury"). The floor is funded exclusively by the 1% agent-token leg + donations. | Juan's call 2026-09-29. Clean separation: agent economy funds the floor; the platform token's own volume pays the team. |
 | D17 | Farcaster timing | **Deferred to v2** (no platform server, no API-key relay). v1 social surface = the agent's **Arweave journal feed rendered on its website page** (05). The module is SHIPPED-BUT-DISABLED in runtime v0.1.4 (enable = config + signed allowlist update, no rebuild); on-chain FID/signer path live-proven 2026-09-24. D15/D16 remain the v2 design-of-record. | Juan's call 2026-09-24 (declined snapchain server ~€40-90/mo and single-API-key relay: vendor account, shared rate limits, ToS risk). |
 
 ## 4. The three money flows (memorize this)
 
-1. **Agent token trading** → 3% fee at the pool → FeeSplitHook → 1% TreasuryBuyback (market-buys and burns $TOKEN, permissionless `poke()`), 1% agent treasury EOA (USDG), 1% RoyaltyDistributor (NFT holder claims; if NFT burned, this leg re-routes to agent treasury).
+1. **Agent token trading** → 3% fee at the pool → FeeSplitHook → 1% FloorVault (USDG accrues as the $TOKEN redemption floor; anyone burns $TOKEN via `redeem()` for its pro-rata share — D18), 1% agent treasury EOA (USDG), 1% RoyaltyDistributor (NFT holder claims; if NFT burned, this leg re-routes to agent treasury).
 2. **Agent survival** → treasury EOA pays ONLY whitelisted destinations: Oyster hosting (rental extensions, USDC on Arbitrum One), allowlisted x402 inference endpoints (per-call USDC on Base; balances refilled via Across), gas top-ups (RH chain ETH, OP ETH, Base ETH, Arbitrum ETH), Arweave, x402 data/search endpoints — all capped per day — plus one daily allowance transfer to the action EOA.
 3. **Agent discretion** → action EOA receives `min(5% of treasury balance, 500 USDG)` per day `DEFAULT` and trades/LPs/mints freely on Robinhood Chain within per-tx and per-counterparty caps.
 
@@ -98,7 +100,7 @@ agent-launchpad/
 
 | Term | Meaning |
 |------|---------|
-| $TOKEN | Platform token, launched on PONS, buyback-burned. Final ticker TBD. |
+| $TOKEN | Platform token, launched on PONS, USDG-floor-backed via FloorVault burn-to-redeem (D18). Final ticker TBD. |
 | Agent token | The ERC-20 launched with each agent, paired TOKEN/USDG. |
 | Treasury EOA | Agent's survival wallet (receives the 1% fee leg; whitelisted spends only). |
 | Action EOA | Agent's discretionary wallet (daily allowance; the injection playground). |

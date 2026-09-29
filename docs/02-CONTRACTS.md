@@ -1,8 +1,8 @@
 # 02 — SMART CONTRACTS
 
-> **AS-BUILT NOTE (M1 closed 2026-09-22):** this design doc predates implementation. The binding as-built spec is `contracts/SPEC-M1.md` (+ `contracts/src/interfaces/ILaunchpad.sol`); where they differ from this doc, they win. Main deltas, each with rationale recorded in SPEC-M1/BUILD-STATE: hook fee-take is `afterSwap` on the unspecified currency (not §3's beforeSwap sketch); graduation liquidity is minted directly on the PoolManager by `LiquidityLocker` (no PositionManager/LP-NFT); `createAgent`/`openGenesis` carry a KMS-predicted `expectedTreasuryEOA` (genesis front-run fix); buyback price protection is a deploy-time impact bound + caps (no v4 TWAP exists, cf. §7); leftover curve tokens are burned at graduation. Testnet deployment + lifecycle transcript: `contracts/deployments/`.
+> **AS-BUILT NOTE (M1 closed 2026-09-22):** this design doc predates implementation. The binding as-built spec is `contracts/SPEC-M1.md` (+ `contracts/src/interfaces/ILaunchpad.sol`); where they differ from this doc, they win. Main deltas, each with rationale recorded in SPEC-M1/BUILD-STATE: hook fee-take is `afterSwap` on the unspecified currency (not §3's beforeSwap sketch); graduation liquidity is minted directly on the PoolManager by `LiquidityLocker` (no PositionManager/LP-NFT); `createAgent`/`openGenesis` carry a KMS-predicted `expectedTreasuryEOA` (genesis front-run fix); buyback price protection was a deploy-time impact bound + caps (no v4 TWAP exists) — MOOT since D18 retired the buyback (§7 is now FloorVault; the as-built TreasuryBuyback is replaced at the next testnet redeploy); leftover curve tokens are burned at graduation. Testnet deployment + lifecycle transcript: `contracts/deployments/`.
 
-> Foundry project in `contracts/`. Solidity ^0.8.24. Target: Robinhood Chain testnet (46630) first, mainnet (4663) after audit. Guiding rule: **fork audited patterns, minimize original code.** The custom surface is: FeeSplitHook, RoyaltyDistributor, AgentNFT, AgentRegistry, TreasuryBuyback, AgentFactory. Everything else (ERC-20, ERC-721 base, curve math) comes from OpenZeppelin + the PONS V2 pattern (github.com/ponsdotdev/pons-labs — study it in the first contracts session; adapt, credit, respect license).
+> Foundry project in `contracts/`. Solidity ^0.8.24. Target: Robinhood Chain testnet (46630) first, mainnet (4663) after audit. Guiding rule: **fork audited patterns, minimize original code.** The custom surface is: FeeSplitHook, RoyaltyDistributor, AgentNFT, AgentRegistry, FloorVault (D18; formerly TreasuryBuyback), AgentFactory. Everything else (ERC-20, ERC-721 base, curve math) comes from OpenZeppelin + the PONS V2 pattern (github.com/ponsdotdev/pons-labs — study it in the first contracts session; adapt, credit, respect license).
 
 Pre-build verification checklist (first contracts session):
 - [ ] Confirm Uniswap v4 PoolManager address on RH testnet + mainnet (PONS graduates into v4, so it exists; find the canonical deployment).
@@ -23,9 +23,9 @@ Pre-build verification checklist (first contracts session):
 | `RoyaltyDistributor` | Singleton | None. Pure accounting. |
 | `AgentNFT` | Singleton ERC-721 | Minting only by factory. |
 | `AgentRegistry` | Singleton | None after deploy. Rules are immutable. |
-| `TreasuryBuyback` | Singleton | Owner = platform multisig for parameter tuning ONLY (poke cap, reward). Cannot withdraw. |
+| `FloorVault` (D18; replaces `TreasuryBuyback`) | Singleton | None after deploy — no owner, no parameters, no withdrawal. |
 
-Platform multisig: 2-of-3 Safe `DEFAULT` (Juan × 2 devices + 1 backup signer Juan controls). Its powers are deliberately tiny: pause *new* launches, tune buyback params. Document every power publicly.
+Platform multisig: 2-of-3 Safe `DEFAULT` (Juan × 2 devices + 1 backup signer Juan controls). Its powers are deliberately tiny: pause *new* launches (FloorVault has no tunable params — D18). Document every power publicly.
 
 ## 2. AgentFactory
 
@@ -42,7 +42,7 @@ function createAgent(
 Flow (two-phase, because the agent's wallets don't exist until the TEE boots):
 1. `createAgent` — collects creation fee (75 USDG `DEFAULT` via ERC-20 pull, plus small ETH for deploy gas), stores a `PendingAgent`, emits `AgentRequested(agentId, configHash, creator)`. **Nothing tradable exists yet.**
 2. Genesis orchestrator (04) boots the CVM; the enclave calls `AgentRegistry.registerInstance(agentId, treasuryEOA, actionEOA, codeHash, attestationRef)`.
-3. Anyone (in practice the orchestrator) then calls `factory.finalize(agentId)`, which requires a registered instance and: deploys `AgentToken` (full supply → curve), deploys curve clone with `feeRecipients = (treasuryBuyback, agentTreasuryEOA, royaltyDistributor)`, mints `AgentNFT#agentId` to creator, emits `AgentLive`.
+3. Anyone (in practice the orchestrator) then calls `factory.finalize(agentId)`, which requires a registered instance and: deploys `AgentToken` (full supply → curve), deploys curve clone with `feeRecipients = (floorVault, agentTreasuryEOA, royaltyDistributor)` (D18), mints `AgentNFT#agentId` to creator, emits `AgentLive`.
 4. Timeout path: if no instance registers within 24 h `DEFAULT`, creator can `cancel(agentId)` and reclaim the fee minus gas costs already spent.
 
 ## 3. Fee mechanics
@@ -53,7 +53,7 @@ Flow (two-phase, because the agent's wallets don't exist until the TEE boots):
 ### Pool phase — `FeeSplitHook` (the hard contract; test it to death)
 - Registered on every agent pool at graduation. Pools are AGENT/USDG, full-range LP owned by a locker contract, LP NFT non-withdrawable (liquidity locked forever; fees on the LP position itself also route through the split — decide during build whether LP-fee tier is set to 0 and ALL fee-taking happens in the hook, which is cleaner: **recommended: pool fee = 0, hook takes 3%**).
 - Implementation approach: `beforeSwap` returns a hook delta taking 3% of the *specified* amount; collected amounts accrue inside the hook per-pool, in both tokens.
-- `distribute(poolId)` (permissionless, called by keepers/agents/anyone): converts accrued AGENT-side fees to USDG via the same pool (with slippage bound), then pushes thirds: TreasuryBuyback, the agent's treasury EOA (looked up live from `AgentRegistry` — NOT stored, so revival/re-registration keeps fees flowing to the right wallet), RoyaltyDistributor credit.
+- `distribute(poolId)` (permissionless, called by keepers/agents/anyone): converts accrued AGENT-side fees to USDG via the same pool (with slippage bound), then pushes thirds: FloorVault (D18), the agent's treasury EOA (looked up live from `AgentRegistry` — NOT stored, so revival/re-registration keeps fees flowing to the right wallet), RoyaltyDistributor credit.
 - Must handle: reentrancy (v4 lock model helps), tiny-amount rounding (accumulate, don't revert), the AGENT→USDG conversion moving the price (cap conversion size per call).
 - Fork-test against the real PoolManager on testnet before writing anything else.
 
@@ -85,11 +85,13 @@ struct AgentInstance {
 - `codeHash` verification: v1 pragmatic model — the registry stores the claimed measurement and the Arweave attestation reference; **verification is done off-chain** by the website's attestation page and by anyone independently (TDX quotes are publicly verifiable). On-chain attestation verification is v2 (Automata-style verifier contracts exist if wanted later). Document this trust boundary honestly.
 - Registry is the source of truth for "where do this agent's fees go" (hook reads it) — which is what makes revival seamless: same code hash ⇒ same KMS-derived EOAs ⇒ re-registration restores the same addresses.
 
-## 7. TreasuryBuyback
+## 7. FloorVault (D18; replaces TreasuryBuyback)
 
-- Receives USDG (hook leg + swept PONS creator earnings).
-- `poke()` — permissionless: swaps up to `maxPerPoke` (2,000 USDG `DEFAULT`) for $TOKEN in the PONS pool, reverts if execution price deviates > 5% `DEFAULT` from a short TWAP, burns the $TOKEN, pays caller reward (0.3% of swap, capped `DEFAULT`), cooldown 1 h `DEFAULT`.
-- Multisig can tune caps/reward/cooldown within hardcoded bounds; **no withdrawal function exists**.
+- Receives USDG: the hook's 1% platform leg + plain-transfer donations (both simply raise the floor). Funded exclusively by the agent economy — the PONS creator stream is team revenue (D19) and never enters.
+- `redeem(uint256 amount)` — permissionless: pays the caller `amount × usdg.balanceOf(vault) / token.totalSupply()` USDG, then burns the tokens **in the same transaction** via the $TOKEN's ERC20Burnable (`transferFrom` → `burn`; PONS V2 tokens expose it — never the dead-address pattern). Reverts on zero payout. Payout math reads balance and supply BEFORE any state change (order documented; invariant: redeeming at floor never lowers the floor).
+- Views: `floorPrice()` (USDG per token, 1e18-scaled), cumulative `totalRedeemedUsdg` / `totalBurned`.
+- **No owner, no parameters, no withdrawal, no market interaction.** The multisig has no powers here.
+- Until $TOKEN exists (M6), the vault simply accrues USDG; `redeem` needs the token address, supplied at deploy (testnet: a mock ERC20Burnable stands in).
 
 ## 8. Testing requirements (gate for milestone completion)
 

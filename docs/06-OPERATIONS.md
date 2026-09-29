@@ -4,7 +4,7 @@
 
 | Item | Purpose | When |
 |------|---------|------|
-| Platform multisig (2-of-3 Safe on RH chain) | Factory pause, buyback tuning, (optionally) runtime-upgrade timelock | M1 |
+| Platform multisig (2-of-3 Safe on RH chain) | Factory pause, (optionally) runtime-upgrade timelock (buyback tuning retired with D18 — FloorVault has no parameters) | M1 |
 | Deployer wallet + testnet/mainnet ETH & USDG | Contract deploys, PONS $TOKEN launch | M1 |
 | Marlin Oyster: no account (wallet-based) — fund the orchestrator wallet with USDC + ETH on Arbitrum One | CVM hosting deploys (D5) | M2 |
 | x402 inference-endpoint allowlist curation (no account — an ops duty) | Maintain signed endpoint×model list, N≥3 independent operators, health monitoring (D8) | M2 |
@@ -28,14 +28,14 @@ Claude will prepare each step precisely (what to click, what to fund, how much);
 | Orchestrator funding float | $500 | small |
 | Audit + legal are the dominant costs; everything else is noise. | | |
 
-**Crypto-revenue accounting:** platform crypto receipts (creation fees, PONS stream, buyback flows) are revenue/taxable per counsel's treatment — explicit agenda item at engagement (§5). No fiat float or card exists anywhere: inference (D8) and hosting (D5) are both paid on-chain by the agents themselves.
+**Crypto-revenue accounting:** platform crypto receipts (creation fees, the PONS creator stream — team revenue per D19; FloorVault accruals belong to $TOKEN holders, clarify treatment with counsel) are revenue/taxable per counsel's treatment — explicit agenda item at engagement (§5). No fiat float or card exists anywhere: inference (D8) and hosting (D5) are both paid on-chain by the agents themselves.
 
 ## 3. Security controls (non-negotiable, because Juan cannot review code)
 
 1. **Public code + reproducible builds.** Anyone can audit; the attested code hash must be reproducible from the public repo. This substitutes for owner code review with *world* code review.
 2. **External audit** of `contracts/` before mainnet. Runtime policy engine: at minimum an independent review pass (second audit if budget allows — it guards the money in every agent).
-3. **Testnet soak:** ≥ 3 weeks on testnet with ≥ 5 agents including one adversarial agent Claude actively tries to break (injection, drain attempts, gating bypass, revival races). Kill/restore drill passed. Scripted attack days.
-4. **Capped mainnet beta:** first 4 weeks `DEFAULT`: max 20 agents, creation allowlist, buyback `maxPerPoke` low, banner "beta — unaudited limits apply". Raise caps only after audit + soak metrics.
+3. **Testnet soak (reduced by Juan 2026-09-29):** ≥ 2 clean days on testnet with ≥ 3 agents including one adversarial agent Claude actively tries to break (injection, drain attempts, gating bypass, revival races). Kill/restore drill passed. Scripted attack days.
+4. **Capped mainnet beta:** first 4 weeks `DEFAULT`: max 20 agents, creation allowlist, banner "beta — unaudited limits apply". Raise caps only after audit + soak metrics.
 5. **Invariant monitoring in prod:** indexer job continuously checks fee-split sums, registry consistency, attestation validity; any violation → automatic factory pause (the one automated multisig-adjacent power; wire via a guardian module with pause-only rights).
 6. **No emergency backdoors** in agent funds. Accept this consciously: a bug that drains an agent's wallet is unrecoverable. That's the product's promise working against us — say it in the risk disclosures.
 7. **Incident runbook** in repo: sequencer halt, Oyster provider outage, inference-endpoint churn/outage, RPC failure, moderation incident (agent posts something bad), exploit disclosure contact.
@@ -52,10 +52,10 @@ Claude will prepare each step precisely (what to click, what to fund, how much);
 | Oyster marketplace maturity (provider uptime, capacity, persistence across machine swaps) | Medium | Multiple providers, revival path + Arweave snapshot/restore tolerate instance loss by design; M0-1 drill probes persistence; monitor. |
 | Sequencer censorship (Robinhood-operated) | Medium | Documented; L1 forced inclusion exists; accept for v1. |
 | Fee volume ≈ 0 for most agents | High (economic) | Dormancy is cheap, revival exists, honest docs. |
-| Securities characterization ($TOKEN buyback-burn; income NFT) | High (legal) | Counsel opinion pre-mainnet; geo-blocking if advised; possible reframing of NFT as "creator royalty". **Launch blocker until resolved.** |
+| Securities characterization ($TOKEN USDG-redemption floor — D18, may read stronger than buyback; income NFT) | High (legal) | Counsel opinion pre-mainnet; geo-blocking if advised; possible reframing of NFT as "creator royalty". **Launch blocker until resolved.** |
 | Agent posts unlawful/harmful content | Medium | Guardrail prompt in code hash, persona moderation at launch, AI disclosure, incident runbook. |
 | Platform-of-record risk (Juan personally) | High | Entity formation per counsel; ToS; no custody of user funds anywhere in the design. |
 
 ## 5. Legal checklist for counsel (prepare, don't improvise)
 
-Token ($TOKEN) characterization with buyback-burn; AgentNFT as revenue-share instrument (Howey analysis); who is the "operator" of an autonomous agent (liability for its trades/posts); money-transmission analysis of fee routing; jurisdiction/geo-blocking strategy; ToS + risk disclosures for creators, traders, NFT holders, chat users; marketing-language constraints ("earnings", "income", "autonomous"). Nothing in this pack is legal advice.
+Token ($TOKEN) characterization with the USDG-redemption floor (D18); AgentNFT as revenue-share instrument (Howey analysis); who is the "operator" of an autonomous agent (liability for its trades/posts); money-transmission analysis of fee routing; jurisdiction/geo-blocking strategy; ToS + risk disclosures for creators, traders, NFT holders, chat users; marketing-language constraints ("earnings", "income", "autonomous"). Nothing in this pack is legal advice.

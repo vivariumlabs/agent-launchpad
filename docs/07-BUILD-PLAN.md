@@ -27,12 +27,12 @@ Exit gate: scripted genesis < 10 min; revival drill passes; attestation independ
 Per `05-WEBSITE.md`, pointed at testnet. Launch flow drives real genesis; chat works against a live CVM; attestation tab verifies for real; NFT claim/burn flows; revive flow.
 Exit gate: a stranger with a wallet could launch, chat, claim, burn, and revive with no help.
 
-## M5 — Soak + adversarial phase (3+ weeks calendar, low session effort)
-≥5 testnet agents incl. one Claude actively attacks. Scripted attack days (injection, gating bypass, drain, revival races, hostile `distribute`/`poke` ordering). Invariant monitor running. Fix, re-soak.
-Exit gate: 3 clean weeks; attack log written up; audit package prepared.
+## M5 — Soak + adversarial phase (reduced by Juan 2026-09-29; days not weeks)
+≥3 testnet agents incl. one Claude actively attacks. Scripted attack days (injection, gating bypass, drain, revival races, hostile `distribute`/`redeem` ordering). Invariant monitor running. Fix, re-soak.
+Exit gate: 2 clean days; attack log written up; audit package prepared.
 
 ## M6 — Audit, legal, $TOKEN, mainnet (calendar-gated)
-External audit + fixes; legal opinion (**blocker**, 06 §5); deploy contracts to mainnet; launch $TOKEN on PONS; wire buyback; capped beta (20 agents, allowlist) per 06 §3.4; public transparency docs live.
+External audit + fixes; legal opinion (**blocker**, 06 §5); deploy contracts to mainnet; launch $TOKEN on PONS; wire the FloorVault to the real $TOKEN (D18); capped beta (20 agents, allowlist) per 06 §3.4; public transparency docs live.
 Exit gate: audit published, counsel sign-off, beta caps active, monitoring live.
 
 ## M7 — Open launch
