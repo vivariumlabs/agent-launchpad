@@ -111,10 +111,34 @@ is sent, so a landed leg is never re-sent. It refuses pre-registration failures 
 It only writes the db, and the running loop picks the launch up on its next pass. It covers genesis
 launches only.
 
-Revival (04 §6, `genesis revive …`) is allowed only when the on-chain heartbeat is older than the
-on-chain `REVIVAL_WINDOW`. It reuses the same deploy path and the same frozen config (inbox or
-Arweave ref, with the launch db as fallback, always re-hashed). It does **not** do full seeding: the
-only seed is the RH gas leg (`revivalGasSeedUsdMicro`, DEFAULT $2). There is no finalize step.
+Revival (04 §6, `genesis revive …` or the launch-helper's `POST /api/revive`) runs `checkRevivable`
+first (SPEC-M4F R2, read-only, the same dry-run the quote endpoint uses): the on-chain heartbeat must
+be older than the on-chain `REVIVAL_WINDOW`; no other revival of the agent may be active; a verified
+pre-image of the configHash must exist (R4 order: launches.frozenJson → inbox → Arweave tag discovery
+→ ar:// ref); and a compose must match the REGISTERED codeHash (R3: `launches.composePath` when its
+recorded imageId equals the codeHash — a path recorded under another checkout resolves to the same
+file name in `dirname(release.composePath)` — else the `runtime/releases/*.json` record whose
+`imageIds` contain it). Any miss ⇒ refused (`never_registered` / `heartbeat_fresh` /
+`revival_in_progress` / `config_unavailable`); the current release is NEVER a fallback. The revival
+runtime.json stamps `imageId` = the registered codeHash verbatim. It does **not** do full seeding:
+the only seed is the RH gas leg (`revivalGasSeedUsdMicro`, DEFAULT $2). There is no finalize step.
+
+**EXTERNAL, `abandon`, lock sweep** (SPEC-M4F R5). A genesis launch still REQUESTED whose agent is
+already registered on-chain (`instanceOf.lastHeartbeat > 0`) goes to the terminal state `EXTERNAL`
+("completed outside this orchestrator") and is never driven — checked before the timeout, so a
+days-late adoption is EXTERNAL too. `npm start -- abandon --config genesis.json --agent-id N --reason
+"<text>"` moves any non-terminal launch to FAILED(abandoned) with the reason (replaces db surgery;
+nothing on-chain or at Oyster is touched). `run` first releases a `deploy.lock` whose holder is
+terminal or missing.
+
+**Revive endpoints** (launch-helper, SPEC-M4F §1; `src/reviveApi.ts`): `GET /api/revive/quote/:agentId`,
+`POST /api/revive` `{agentId, payer, paymentTx}`, `GET /api/revive/status/:agentId`. On when the
+config has `launchHelper.genesisDb` (the orchestrator's sqlite, opened read-write) +
+`launchHelper.revivalPayTo` (the funding wallet ADDRESS) + `chains.arbitrum`; otherwise 503 "manual
+mode" with the orchestrator-less instructions. The reviver pays `revivalDurationMin/60 × rate +
+revivalGasSeedUsdMicro` in USDC on Arbitrum One (`tokens.arbUsdc`) to `revivalPayTo`; the helper
+verifies the receipt (success, USDC Transfer payer → payTo ≥ quote, tx never used — `revival_payments`
+table) before queueing.
 
 **Orchestrator-less revival** is the decentralization backstop. The runtime image, the release
 compose and these init params are public, so anyone with a funded Arbitrum wallet can run
@@ -125,7 +149,7 @@ compose and these init params are public, so anyone with a funded Arbitrum walle
 | leg | chain | testnet profile (DEFAULT) | mainnet |
 |---|---|---|---|
 | `preGas` | RH | required $1 (`preRegistrationGasWei`), before registration, only if needed | required |
-| `hosting` | — (virtual) | required: the deploy's Oyster rental, 180 min ⇒ **0.1536** | required: 30 d ⇒ **36.864** |
+| `hosting` | — (virtual) | required: the deploy's Oyster rental, 180 min ⇒ **0.72** | required: 30 d ⇒ **172.8** (exceeds the 75 fee: see below) |
 | `rh.usdg` | RH | required: creation fee − Σ **executed** legs (see below) | required |
 | `rh.eth` | RH | required $2 | required |
 | `optimism.eth` | OP | disabled (Farcaster deferred) | required $5 |
@@ -154,10 +178,12 @@ shrinks the USDG remainder by exactly the rental. Revivals do not plan it, becau
 hosting (04 §6).
 
 Example, testnet DEFAULT with RH and Arbitrum only:
-75 − (preGas 1 + hosting 0.1536 + rh.eth 2 + arb 1) = **70.8464 USDG**. That is 0.1536 less than
-before the hosting leg existed. The skipped Base and Arweave budgets ($20) go to the agent. Mainnet
-with every leg executed: 75 − (28 + preGas 1 + hosting 36.864) = **9.136 USDG**, 36.864 less than
-without it. A mainnet creation fee of 65.864 USDG or less fails the plan-time check.
+75 − (preGas 1 + hosting 0.72 + rh.eth 2 + arb 1) = **70.28 USDG**. That is 0.72 less than
+before the hosting leg existed. The skipped Base and Arweave budgets ($20) go to the agent.
+**Mainnet at the SPEC-M4F R6 DEFAULT rate does not fit:** 28 + preGas 1 + hosting 172.8 = 201.8 > 75,
+so every mainnet genesis fails the plan-time check (FAILED(seed_plan_invalid) at SEEDING, after the
+deploy) until mainnet re-pins `oyster.bandwidthKbps` / `rateUsdcMicroPerHour` / `durationMin`. At the
+old M0 rate (0.0512 USDC/h) it was 75 − (28 + 1 + 36.864) = 9.136 USDG.
 
 ETH legs convert USD to ETH at `seeding.ethUsdMicro` (DEFAULT $3000, static). The orchestrator
 never bridges; it sends natively on each chain.
@@ -165,9 +191,11 @@ never bridges; it sends natively on each chain.
 **Oyster rental.** `oyster.durationMin` DEFAULT depends on the profile: **testnet 180 min**, and
 mainnet 43 200 min (30 days, the first month per 04 §2). Each deploy pays `durationMin × rate` up
 front. The orchestrator logs that projected cost at startup and on every deploy attempt
-(`oyster.rateUsdcMicroPerHour`, DEFAULT 51 200 = 0.0512 USDC/h per M0 RESULTS). Testnet works out
-to 0.1536 USDC per deploy and mainnet to 36.864 USDC. The same figure is booked as the `hosting` seed
-leg, so the agent's USDG remainder drops by exactly that amount (see the seed table).
+(`oyster.rateUsdcMicroPerHour`, SPEC-M4F R6 DEFAULT 240 000 = 0.24 USDC/h, the OBSERVED all-in rate at
+512 KBps in sessions 9-15; the old M0 figure 0.0512 under-projected 4.7×). Testnet works out to 0.72
+USDC per deploy and mainnet to 172.8 USDC. The same figure is booked as the `hosting` seed leg, so
+the agent's USDG remainder drops by exactly that amount (see the seed table). Revival deploys rent
+for `oyster.revivalDurationMin` (DEFAULT per profile: 180 min / 30 d) — what the revival quote charges.
 
 ## Run
 
@@ -179,6 +207,7 @@ npm start -- run    --config genesis.json
 npm start -- revive --config genesis.json --agent-id 7 --payer 0x… [--payer-ref <tx>]
 npm start -- status --config genesis.json
 npm start -- redrive --config genesis.json --agent-id 7
+npm start -- abandon --config genesis.json --agent-id 7 --reason "launched outside the orchestrator"
 ```
 
 The only input is argv; the orchestrator reads no environment variables. Minimal `genesis.json`

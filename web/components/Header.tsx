@@ -17,6 +17,12 @@ export function Header() {
             Launch
           </Link>
           <Link
+            href="/mausoleum"
+            className="text-sm font-medium text-slate-300 transition hover:text-white"
+          >
+            Mausoleum
+          </Link>
+          <Link
             href="/nfts"
             className="text-sm font-medium text-slate-300 transition hover:text-white"
           >

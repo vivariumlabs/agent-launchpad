@@ -7,13 +7,15 @@
 
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { pathToFileURL } from "node:url";
-import { createPublicClient, http as viemHttp, type Address } from "viem";
+import { createPublicClient, http as viemHttp, TransactionReceiptNotFoundError, type Address, type Hex } from "viem";
 import { agentFactoryAbi } from "../src/abi.js";
 import { systemClock } from "../src/clock.js";
 import { loadConfig } from "../src/config.js";
 import { errMsg } from "../src/errors.js";
-import { createLaunchHelper, MAX_BODY_BYTES, MAX_PUBLISH_BODY_BYTES, PUBLISH_PATH, type FactoryReader, type LaunchHelper } from "../src/launchHelper.js";
+import { createLaunchHelper, MAX_BODY_BYTES, MAX_PUBLISH_BODY_BYTES, PUBLISH_PATH, reviveConfigured, type FactoryReader, type LaunchHelper } from "../src/launchHelper.js";
+import { ViemLaunchpad } from "../src/launchpadReader.js";
 import type { Logger } from "../src/log.js";
+import type { ReceiptReader, TxReceipt } from "../src/reviveApi.js";
 
 const stamp = (): string => new Date(Number(systemClock.now()) * 1000).toISOString();
 const consoleLogger: Logger = {
@@ -36,6 +38,43 @@ export class ViemFactoryReader implements FactoryReader {
 
   async agentCount(): Promise<bigint> {
     return this.pub.readContract({ address: this.factory, abi: agentFactoryAbi, functionName: "agentCount" });
+  }
+}
+
+/**
+ * SPEC-M4F R1: Arbitrum One receipts over a key-less PublicClient (the helper verifies revival
+ * payments; it never signs). Refuses an RPC that serves a different chainId.
+ */
+export class ViemReceiptReader implements ReceiptReader {
+  private readonly pub: ReturnType<typeof createPublicClient>;
+  private chainChecked = false;
+
+  constructor(
+    rpc: string,
+    private readonly chainId: number,
+    timeoutMs: number,
+  ) {
+    this.pub = createPublicClient({ transport: viemHttp(rpc, { timeout: timeoutMs, retryCount: 1 }) });
+  }
+
+  async receipt(hash: Hex): Promise<TxReceipt | null> {
+    if (!this.chainChecked) {
+      const id = await this.pub.getChainId();
+      if (id !== this.chainId) throw new Error(`payment RPC serves chainId ${id}, expected ${this.chainId} — refusing`);
+      this.chainChecked = true;
+    }
+    try {
+      const rc = await this.pub.getTransactionReceipt({ hash });
+      return { status: rc.status, blockNumber: rc.blockNumber, logs: rc.logs.map((l) => ({ address: l.address, topics: l.topics, data: l.data })) };
+    } catch (e) {
+      if (e instanceof TransactionReceiptNotFoundError) return null;
+      throw e;
+    }
+  }
+
+  async blockTimestamp(blockNumber: bigint): Promise<bigint> {
+    const b = await this.pub.getBlock({ blockNumber });
+    return b.timestamp;
   }
 }
 
@@ -98,10 +137,21 @@ async function main(): Promise<void> {
   const cfg = loadConfig(path);
   const lhCfg = cfg.launchHelper;
   if (lhCfg === undefined) throw new Error(`${path}: no launchHelper section`);
-  const factory = new ViemFactoryReader(cfg.chains.rh.rpc, cfg.contracts.factory, lhCfg.httpTimeoutSec * 1000);
-  const { helper, lh } = createLaunchHelper(cfg, consoleLogger, { factory });
+  const timeoutMs = lhCfg.httpTimeoutSec * 1000;
+  const factory = new ViemFactoryReader(cfg.chains.rh.rpc, cfg.contracts.factory, timeoutMs);
+  // SPEC-M4F §1: revive endpoints — key-less RH launchpad reads + Arbitrum One receipts.
+  const arb = cfg.chains.arbitrum;
+  const revive =
+    reviveConfigured(cfg) && arb !== undefined
+      ? {
+          launchpad: new ViemLaunchpad(createPublicClient({ transport: viemHttp(cfg.chains.rh.rpc, { timeout: timeoutMs, retryCount: 1 }) }), cfg.contracts.factory, cfg.contracts.registry, cfg.contracts.usdg),
+          receipts: new ViemReceiptReader(arb.rpc, arb.chainId, timeoutMs),
+        }
+      : undefined;
+  const { helper, lh } = createLaunchHelper(cfg, consoleLogger, { factory, ...(revive === undefined ? {} : { revive }) });
   const server = await startLaunchHelperServer(helper, lh.port, lh.host, consoleLogger);
   consoleLogger.info(`launch-helper up: http://${lh.host}:${lh.port} (compose ${lh.composePath}, kms ${lh.kmsEndpoint}, factory ${cfg.contracts.factory}) — secret-free, no wallet (Arweave publish signs with a per-process ephemeral key)`);
+  consoleLogger.info(revive === undefined ? "launch-helper: revive endpoints in MANUAL MODE (503)" : `launch-helper: revive endpoints ON — genesis db ${lh.genesisDb}, fees (USDC, Arbitrum One) to ${lh.revivalPayTo}`);
   const stop = (sig: string): void => {
     consoleLogger.info(`${sig}: closing`);
     server.close(() => process.exit(0));

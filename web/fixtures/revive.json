@@ -1,0 +1,64 @@
+{
+  "_comment": "SPEC-M4F \u00a72 fixtures: raw launch-helper revive-quote wire bodies (parsed by web/lib/revive.ts exactly like live ones). Agent 2's gate is re-based on request time by web/lib/reviveServer.ts (fixtureRelativeHeartbeatAgoSec) so the dying countdown is always meaningful.",
+  "simulatedPayer": "0x00000000000000000000000000000000000fa1e5",
+  "simulatedRevivalId": "41",
+  "quotes": {
+    "9": {
+      "agentId": 9,
+      "revivable": true,
+      "quote": {
+        "rateUsdcMicroPerHour": "240000",
+        "durationMin": 180,
+        "hostingUsdcMicro": "720000",
+        "gasSeedUsdMicro": "500000",
+        "totalUsdcMicro": "1220000",
+        "payTo": "0x0f0e0d0c0b0a09080706050403020100f0e0d0c0",
+        "usdc": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+        "chainId": 42161
+      },
+      "gate": {
+        "lastHeartbeat": 1748908800,
+        "revivalWindow": 604800,
+        "evictableAt": 1749513600
+      },
+      "history": [
+        {
+          "generation": 1,
+          "payer": "0x3f5ce5fbfe3e9af3971dd833d26ba9b5c936f0be",
+          "startedAt": 1746835200,
+          "state": "LIVE"
+        },
+        {
+          "generation": 2,
+          "payer": "0xab5801a7d398351b8be11c439e05c5b3259aec9b",
+          "startedAt": 1747699200,
+          "state": "LIVE"
+        }
+      ]
+    },
+    "1": {
+      "agentId": 1,
+      "revivable": false,
+      "reason": "config_unavailable",
+      "detail": "no frozen config in launches, inbox or Arweave for configHash 0x0d1e\u2026e5f6 (agent predates config publication)",
+      "gate": {
+        "lastHeartbeat": 1757030400,
+        "revivalWindow": 604800,
+        "evictableAt": 1757635200
+      },
+      "history": []
+    },
+    "2": {
+      "agentId": 2,
+      "revivable": false,
+      "reason": "heartbeat_fresh",
+      "gate": {
+        "lastHeartbeat": 1758727800,
+        "revivalWindow": 604800,
+        "evictableAt": 1759332600
+      },
+      "fixtureRelativeHeartbeatAgoSec": 475200,
+      "history": []
+    }
+  }
+}

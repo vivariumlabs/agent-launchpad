@@ -429,3 +429,108 @@ export interface WalletNftsResponse {
   address: string;
   nfts: WalletNft[];
 }
+
+// ---------------------------------------------------------------------------
+// SPEC-M4F §1/§2 — launch-helper revive endpoints (genesis/src/launchHelper.ts,
+// being built in parallel). Called ONLY server-side (M4B R4), proxied by
+// web/app/api/revive/*. Pinned contract DUPLICATED here by design; the wire
+// shape is parsed TOLERANTLY by web/lib/revive.ts (unknown fields ignored,
+// bad values -> null — never NaN, never a guessed default).
+//
+//   GET  /api/revive/quote/:agentId  -> ReviveQuoteWire
+//   POST /api/revive {agentId, payer, paymentTx}
+//        -> 200 {revivalId} | 402 {error} | 409 {error, reason} | 503 manual mode
+//   GET  /api/revive/status/:agentId -> {revivals: [{revivalId?, state, startedAt, payer, ...}]}
+// ---------------------------------------------------------------------------
+
+/**
+ * Revival price (R6), as the web consumes it. Every amount is a base-10
+ * integer string in USDC micro-units (6 dec). `usdc`/`chainId` are null when
+ * the helper omitted them — the pay flow is then DISABLED (never guessed).
+ */
+export interface ReviveQuoteAmounts {
+  rateUsdcMicroPerHour: string | null;
+  durationMin: number | null;
+  hostingUsdcMicro: string | null;
+  gasSeedUsdMicro: string | null;
+  totalUsdcMicro: string | null;
+  /** The orchestrator funding wallet (R1). null when absent/malformed. */
+  payTo: string | null;
+  /** ERC-20 token to pay with — from the quote ONLY. */
+  usdc: string | null;
+  /** Chain the payment goes on — from the quote ONLY. */
+  chainId: number | null;
+  /** Token decimals the helper declares (optional wire field `decimals`), null when absent/malformed. */
+  decimals: number | null;
+  /** True when the wire carried a `decimals` field at all (a declared non-6 value disables payment). */
+  decimalsDeclared: boolean;
+}
+
+/** On-chain revival gate (unix seconds / seconds). */
+export interface ReviveGate {
+  lastHeartbeat: number | null;
+  revivalWindow: number | null;
+  evictableAt: number | null;
+}
+
+/** One revivals-table row (R7 reviver credit). */
+export interface RevivalHistoryItem {
+  generation: number | null;
+  payer: string | null;
+  startedAt: number | null;
+  state: string | null;
+}
+
+export interface ReviveQuote {
+  agentId: number;
+  /** True ONLY on a literal `true` from the helper (R2). */
+  revivable: boolean;
+  /** Refusal code (config_unavailable, heartbeat_fresh, ...), null when revivable. */
+  reason: string | null;
+  /** Free-text refusal detail, when the helper provides one. */
+  detail: string | null;
+  quote: ReviveQuoteAmounts | null;
+  gate: ReviveGate;
+  history: RevivalHistoryItem[];
+}
+
+/** Server-side quote read outcome (web/lib/reviveServer.ts). */
+export type ReviveQuoteResult =
+  | { kind: "ok"; quote: ReviveQuote }
+  /** Helper unset, or it answered 503 (no genesisDb / payTo configured). */
+  | { kind: "manual"; message: string | null }
+  | { kind: "unavailable"; message: string };
+
+/** One revival row from GET /api/revive/status (tolerant). */
+export interface RevivalRow {
+  revivalId: string | null;
+  /** Orchestrator flow state (REQUESTED, DEPLOYING, AWAITING_REGISTER, SEEDING, RECONCILING, FINALIZING, LIVE, FAILED, …). */
+  state: string | null;
+  startedAt: number | null;
+  payer: string | null;
+  /** Generation at the time the revival was queued (the new one is > this). */
+  startGeneration: number | null;
+  failReason: string | null;
+  lastError: string | null;
+  updatedAt: number | null;
+}
+
+/**
+ * Web-internal (NOT a helper mirror): the revival tracker's polling payload,
+ * served by web/app/api/revive/status/[id]/route.ts — the helper's revival
+ * rows joined with the indexer's instance row (the generation bump is the
+ * visible proof).
+ */
+export interface ReviveStatus {
+  agentId: number;
+  helper: "ok" | "manual" | "unreachable";
+  helperError: string | null;
+  revivals: RevivalRow[];
+  indexer: "ok" | "unreachable";
+  /** Registered instance generation per the indexer, null when unknown. */
+  generation: number | null;
+  lastHeartbeat: number | null;
+  status: AgentStatus | null;
+  /** Unix seconds this status was assembled. */
+  observedAt: number;
+}

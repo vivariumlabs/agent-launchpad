@@ -5,12 +5,13 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { CONFIG_KIND } from "./arweavePublish.js";
+import { CONFIG_KIND, createArweaveReader } from "./arweavePublish.js";
 import { FrozenConfigFileSchema, frozenConfigHash } from "./canonical.js";
+import type { GenesisConfig } from "./config.js";
 import { errMsg, Fatal } from "./errors.js";
 import type { HttpClient } from "./http.js";
 import type { Logger } from "./log.js";
-import { TURBO_APP_TAG } from "./runtimeArweave.js";
+import { DEFAULT_ARWEAVE_GATEWAY_URL, TURBO_APP_TAG } from "./runtimeArweave.js";
 
 export interface FrozenConfigDoc {
   /** Exact file text (deployed byte-for-byte as agent.json). */
@@ -184,4 +185,37 @@ export function verifyFrozen(text: string, configHash: string, agentId: number):
   const a = env.data.agent;
   const id = a !== null && typeof a === "object" && "agentId" in a ? (a as { agentId: unknown }).agentId : undefined;
   if (id !== agentId) throw new Fatal("config_agent_id_mismatch", `config agent.agentId ${String(id)} ≠ on-chain agentId ${agentId}`);
+}
+
+/**
+ * (Moved here from orchestrator.ts for SPEC-M4F: the secret-free launch-helper composes the same R4
+ * chain for its revival dry-run without importing the orchestrator's wallet-loading module.)
+ * The orchestrator's frozen-config sources, in order: inbox dir (operator override / drills), SPEC-M4E
+ * §1c Arweave tag discovery (arweaveDiscovery.enabled), then the ar://<txid> ref fetch (arweaveGateway
+ * set). First non-null wins; the machine runs verifyFrozen on whatever comes back.
+ */
+export function buildConfigSource(cfg: GenesisConfig, o: { http: HttpClient; log: Logger; arweaveReader?: ArweaveReader }): ChainedConfigSource {
+  const http = o.http;
+  const sources: ConfigSource[] = [new DirConfigSource(cfg.configInboxDir)];
+  // SPEC-M4E §1c / R4: inbox first (operator override / drills), then tag discovery of the
+  // launch-helper-published config; the recorded ref becomes ar://<txid> (revival, 04 §6).
+  const gateway = (cfg.arweaveGateway ?? DEFAULT_ARWEAVE_GATEWAY_URL).replace(/\/+$/, "");
+  const timeoutMs = cfg.oyster.httpTimeoutSec * 1000;
+  const reader = o.arweaveReader ?? createArweaveReader({ gatewayUrl: gateway, timeoutMs });
+  if (cfg.arweaveDiscovery.enabled) {
+    sources.push(
+      new ArweaveTagConfigSource({
+        graphqlUrl: cfg.arweaveGraphqlUrl ?? `${gateway}/graphql`,
+        http,
+        reader,
+        timeoutMs,
+        log: o.log,
+        maxCandidates: cfg.arweaveDiscovery.maxCandidates,
+      }),
+    );
+  }
+  // ar://<ref> loads (revival) share the SAME one-redirect reader (M4E fix — raw GET refused the
+  // arweave.net 302 to its data door, so every live ref fetch failed).
+  sources.push(new ArweaveConfigSource(reader));
+  return new ChainedConfigSource(sources);
 }

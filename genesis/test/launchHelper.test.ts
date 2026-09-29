@@ -439,22 +439,25 @@ describe("M4B §2: server + config", () => {
   it("M4B §2: config launchHelper section — DEFAULTs + path resolution; the committed testnet config wires a helper whose template is agent 8's platform (no key read, no network)", async () => {
     const cfg = loadConfig(join(REPO, "genesis", "e2e", "genesis.testnet.json"));
     const lh = cfg.launchHelper!;
+    // The committed e2e config moved to v0.1.7 in 9b2e137 (stranger-launch rehearsal); SPEC-M4F adds genesisDb + revivalPayTo.
     expect(lh).toMatchObject({
       port: 8426,
       host: "127.0.0.1",
       corsOrigin: "*",
-      composePath: COMPOSE,
+      composePath: join(REPO, "runtime", "releases", "v0.1.7.yml"),
       kmsEndpoint: "http://image-v4.kms.box:1101",
       kmsVerificationKey: KMS_VERIFICATION_KEY_DEFAULT,
       oysterBin: "/tmp/bin/oyster-cvm",
-      releasesTemplate: join(REPO, "runtime", "releases", "v0.1.6.json"),
+      releasesTemplate: join(REPO, "runtime", "releases", "v0.1.7.json"),
+      genesisDb: join(REPO, "genesis", "e2e", "data", "genesis.sqlite"),
+      revivalPayTo: "0x6930FD5C95a2D9d80F3d165597d55843e8A00154",
       platformTemplate: join(REPO, "genesis", "e2e", "platform-template.testnet.json"),
       deploymentManifestPath: MANIFEST,
       httpTimeoutSec: 20,
     });
     const { helper } = createLaunchHelper(cfg, memoryLogger(), { factory: { agentCount: async () => 7n } });
     const tpl = helper.template() as { platform: unknown; composeVersion: string };
-    expect(tpl.composeVersion).toBe("v0.1.6");
+    expect(tpl.composeVersion).toBe("v0.1.7");
     // SPEC-M4D §3: the template = agent 8's platform + agentDnsRoot (golden still anchored on agent 8).
     expect(tpl.platform).toEqual({ ...AGENT8.platform, agentDnsRoot: "vivarium.systems" });
     const { agentDnsRoot: _dnsRoot, ...platform8Only } = tpl.platform as Record<string, unknown>;

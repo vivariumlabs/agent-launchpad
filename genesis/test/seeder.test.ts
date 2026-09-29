@@ -6,9 +6,15 @@ import { makeHarness } from "./helpers/harness.js";
 import { BASE_USDC, USDG } from "./helpers/mockWorld.js";
 
 const T = "0x7EA5000000000000000000000000000000000001" as const;
-/** Virtual hosting leg, DEFAULT rate 0.0512 USDC/h: testnet 180 min ⇒ 0.1536; mainnet 43 200 min (30 d) ⇒ 36.864. */
-const HOSTING_TESTNET = 153_600n;
-const HOSTING_MAINNET = 36_864_000n;
+/**
+ * Virtual hosting leg at the SPEC-M4F R6 DEFAULT rate 0.24 USDC/h (was 0.0512): testnet 180 min ⇒ 0.72;
+ * mainnet 43 200 min (30 d) ⇒ 172.8 (> the 75 creation fee — see the mainnet-profile test).
+ */
+const HOSTING_TESTNET = 720_000n;
+const HOSTING_MAINNET = 172_800_000n;
+/** The pre-R6 (M0) rate 0.0512 USDC/h, pinned explicitly where a test is about the mainnet LEG math. */
+const M0_RATE = 51_200n;
+const HOSTING_MAINNET_M0 = 36_864_000n;
 
 /** Seed rows as the db would hold them for a plan, with the given terminal statuses. */
 function rowsOf(plan: ReturnType<typeof planGenesisLegs>, status: Record<string, SeedStatus>, preGas?: { usdMicro: bigint; status: SeedStatus }): SeedRow[] {
@@ -45,7 +51,7 @@ describe("seed plan (04 §2 amounts, DEFAULT)", () => {
     expect(planHostingLeg({ oyster: { ...h.cfg.oyster, durationMin: 1, rateUsdcMicroPerHour: 61n } }).usdMicro).toBe(2n); // 61/60 ⇒ ceil 2
   });
 
-  it("remainder = fee − EXECUTED legs only: skipped / satisfied legs fold into USDG (testnet, preGas + hosting executed ⇒ 75 − 1 − 0.1536 − 2 − 1 = 70.8464)", () => {
+  it("remainder = fee − EXECUTED legs only: skipped / satisfied legs fold into USDG (testnet, preGas + hosting executed ⇒ 75 − 1 − 0.72 − 2 − 1 = 70.28)", () => {
     const h = makeHarness({ chains: ["rh", "arbitrum", "base"] });
     const plan = planGenesisLegs(h.cfg, 75_000_000n, T);
     const pre = { usdMicro: planPreGasLeg(h.cfg, T).usdMicro, status: "confirmed" as const };
@@ -56,7 +62,7 @@ describe("seed plan (04 §2 amounts, DEFAULT)", () => {
     // the ruling's delta: the remainder shrinks by EXACTLY the rental vs. a plan without the hosting leg
     const noHosting = rows.filter((r) => r.leg !== HOSTING_LEG);
     expect(resolveRemainder(usdg, noHosting).amount - resolveRemainder(usdg, rows).amount).toBe(HOSTING_TESTNET);
-    // every conditional leg sent ⇒ 75 − (1 + 0.1536 + 2 + 2 + 15 + 1 + 3) = 50.8464
+    // every conditional leg sent ⇒ 75 − (1 + 0.72 + 2 + 2 + 15 + 1 + 3) = 50.28
     expect(resolveRemainder(usdg, rowsOf(plan, {}, pre)).amount).toBe(51_000_000n - HOSTING_TESTNET);
     // preGas satisfied (treasury already had ≥ half) and Arb satisfied by balance: nothing spent on them ⇒ folds in
     expect(resolveRemainder(usdg, rowsOf(plan, { ...skipped, "arbitrum.eth": "satisfied" }, { ...pre, status: "satisfied" })).amount).toBe(73_000_000n - HOSTING_TESTNET);
@@ -66,22 +72,27 @@ describe("seed plan (04 §2 amounts, DEFAULT)", () => {
 
   it("mainnet profile: OP included, every leg required; all executed + preGas + 30-day hosting ⇒ remainder 75 − 28 − 1 − 36.864 = 9.136 USDG", () => {
     const h = makeHarness({ profile: "mainnet", chains: ["rh", "arbitrum", "base", "optimism"], turboEnabled: true });
-    const plan = planGenesisLegs(h.cfg, 75_000_000n, T);
+    // SPEC-M4F R6: at the new DEFAULT rate (0.24 USDC/h, observed at the TESTNET 512 KBps bandwidth) a 30-day
+    // mainnet rental is 172.8 USDC — more than the 75 creation fee, so the mainnet plan is Fatal until mainnet
+    // re-pins bandwidth/rate (config). The leg math below is pinned at the M0 rate explicitly.
+    expect(() => planGenesisLegs(h.cfg, 75_000_000n, T)).toThrow(Fatal);
+    const cfg = { ...h.cfg, oyster: { ...h.cfg.oyster, rateUsdcMicroPerHour: M0_RATE } };
+    const plan = planGenesisLegs(cfg, 75_000_000n, T);
     expect(plan.find((p) => p.leg === "optimism.eth")!.amount).toBe(usdToWei(5_000_000n, 3_000_000_000n));
     expect(plan.every((p) => p.mode === "required")).toBe(true);
     const rows = rowsOf(plan, {}, { usdMicro: 1_000_000n, status: "confirmed" });
-    expect(plan[0]).toMatchObject({ leg: HOSTING_LEG, asset: "virtual", usdMicro: HOSTING_MAINNET });
-    expect(resolveRemainder(rows.find((r) => r.leg === "rh.usdg")!, rows).amount).toBe(46_000_000n - HOSTING_MAINNET);
+    expect(plan[0]).toMatchObject({ leg: HOSTING_LEG, asset: "virtual", usdMicro: HOSTING_MAINNET_M0 });
+    expect(resolveRemainder(rows.find((r) => r.leg === "rh.usdg")!, rows).amount).toBe(46_000_000n - HOSTING_MAINNET_M0);
   });
 
   it("per-leg usd overrides; a fee that cannot cover the legs + hosting + preGas (worst case) is Fatal", () => {
     const h = makeHarness({ legs: { "base.usdc": { usdMicro: "70000000" } } });
     expect(() => planGenesisLegs(h.cfg, 75_000_000n, T)).toThrow(Fatal);
-    // 2 + 2 + 15 + 1 + 3 = 23 enabled + 1 preGas + 0.1536 hosting = 24.1536 ⇒ that fee leaves nothing for USDG
+    // 2 + 2 + 15 + 1 + 3 = 23 enabled + 1 preGas + 0.72 hosting = 24.72 ⇒ that fee leaves nothing for USDG
     const t = makeHarness();
     expect(() => planGenesisLegs(t.cfg, 24_000_000n + HOSTING_TESTNET, T)).toThrow(/hosting \+ pre-registration gas/);
     expect(planGenesisLegs(t.cfg, 24_000_001n + HOSTING_TESTNET, T).at(-1)!.leg).toBe("rh.usdg");
-    // mainnet: the 36.864 rental is part of the coverage check (75 covers 28 + 1 + 36.864; 65.864 does not)
+    // mainnet: the 172.8 rental is part of the coverage check (28 + 1 + 172.8 = 201.8 exactly does not cover; +1 µ does)
     const m = makeHarness({ profile: "mainnet", chains: ["rh", "arbitrum", "base", "optimism"], turboEnabled: true });
     expect(() => planGenesisLegs(m.cfg, 29_000_000n + HOSTING_MAINNET, T)).toThrow(Fatal);
     expect(planGenesisLegs(m.cfg, 29_000_001n + HOSTING_MAINNET, T).at(-1)!.leg).toBe("rh.usdg");
@@ -154,7 +165,7 @@ describe("seeding execution", () => {
     expect(h.flow(agentId).state).toBe("LIVE");
     const rows = h.db.seeds(`genesis:${agentId}`);
     expect(rows.map((s) => [s.leg, s.leg === "rh.usdg" ? "deferred" : s.amount, s.usdMicro])).toEqual(plan1);
-    // resolved from the FROZEN 75 fee: 75 − hosting 0.1536 − rh.eth 2 − arb 1 (the skipped conditional legs fold in)
+    // resolved from the FROZEN 75 fee: 75 − hosting 0.72 − rh.eth 2 − arb 1 (the skipped conditional legs fold in)
     expect(rows.find((s) => s.leg === "rh.usdg")!.amount).toBe((72_000_000n - HOSTING_TESTNET).toString());
   });
 

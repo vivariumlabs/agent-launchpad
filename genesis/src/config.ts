@@ -112,6 +112,13 @@ export const PRE_REGISTRATION_GAS_USD_MICRO = 1_000_000n;
 
 /** Base mainnet native USDC (Circle). */
 const BASE_USDC_DEFAULT = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+/** Arbitrum One native USDC (Circle) — SPEC-M4F R1 revival payment token. */
+const ARB_USDC_DEFAULT = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
+/**
+ * SPEC-M4F R6: Oyster rental rate DEFAULT, µUSDC per hour — the OBSERVED all-in rate at 512 KBps
+ * bandwidth (sessions 9-15, ≈0.24 USDC/h); the old 51_200 (M0 RESULTS) under-projected 4.7×.
+ */
+export const RATE_USDC_MICRO_PER_HOUR_DEFAULT = 240_000n;
 /** oyster-cvm deploy --operator default on Arbitrum (cli/oyster-cvm/README.md). */
 const OYSTER_OPERATOR_DEFAULT = "0xe10fa12f580e660ecd593ea4119cebc90509d642";
 
@@ -131,7 +138,14 @@ export const GenesisConfigFileSchema = z
     chains: z
       .object({ rh: ChainCfgSchema, base: ChainCfgSchema.optional(), arbitrum: ChainCfgSchema.optional(), optimism: ChainCfgSchema.optional() })
       .strict(),
-    tokens: z.object({ baseUsdc: addressLike.default(BASE_USDC_DEFAULT) }).strict().default({}),
+    tokens: z
+      .object({
+        baseUsdc: addressLike.default(BASE_USDC_DEFAULT),
+        /** SPEC-M4F R1: USDC on Arbitrum One (chains.arbitrum) — the revival payment token. */
+        arbUsdc: addressLike.default(ARB_USDC_DEFAULT),
+      })
+      .strict()
+      .default({}),
     /** releases/<version>.yml written by runtime/scripts/release.sh (digest-substituted). */
     release: z.object({ composePath: z.string().min(1) }).strict(),
     /** Frozen configs delivered off-chain by the website (02 §1): <dir>/<configHash>.json. */
@@ -193,8 +207,13 @@ export const GenesisConfigFileSchema = z
         bandwidthKbps: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).default(512),
         /** Rental per deploy, minutes. DEFAULT per profile: testnet 180, mainnet 43_200 (30 d, 04 §2). */
         durationMin: z.number().int().positive().optional(),
-        /** Rental rate for the projected-cost log, µUSDC per hour (DEFAULT 51_200 = 0.0512 USDC/h, M0 RESULTS). */
-        rateUsdcMicroPerHour: bigintLike.default(51_200n),
+        /**
+         * SPEC-M4F R6: rental per REVIVAL deploy, minutes — what the revival quote charges the reviver and
+         * what the machine deploys a revival for. DEFAULT per profile (PROFILE_DURATION_MIN: testnet 180, mainnet 43_200).
+         */
+        revivalDurationMin: z.number().int().positive().optional(),
+        /** Rental rate, µUSDC per hour (SPEC-M4F R6 DEFAULT 240_000 = 0.24 USDC/h observed at 512 KBps; was 51_200). */
+        rateUsdcMicroPerHour: bigintLike.default(RATE_USDC_MICRO_PER_HOUR_DEFAULT),
         indexerUrl: z.string().url().default("https://indexer.oyster.marlin.org/graphql"),
         cpUrl: z.string().url().optional(),
         deployTimeoutSec: z.number().int().positive().default(900),
@@ -238,6 +257,16 @@ export const GenesisConfigFileSchema = z
         httpTimeoutSec: z.number().int().positive().default(20),
         /** SPEC-M4E §1b: Turbo upload endpoint for /api/launch/publish DEFAULT https://upload.ardrive.io/v1/tx (runtime turboHttp). */
         turboUploadUrl: z.string().url().optional(),
+        /**
+         * SPEC-M4F §1: the orchestrator's genesis sqlite (opened READ-WRITE, WAL — the helper queues
+         * revivals into it). Absent ⇒ the revive endpoints answer 503 "manual mode".
+         */
+        genesisDb: z.string().min(1).optional(),
+        /**
+         * SPEC-M4F R1: the orchestrator FUNDING wallet ADDRESS revival fees are paid to (USDC on Arbitrum
+         * One). A plain address — the helper holds no key. Absent ⇒ revive endpoints 503 "manual mode".
+         */
+        revivalPayTo: addressLike.optional(),
       })
       .strict()
       .optional(),
@@ -294,7 +323,7 @@ export type LaunchHelperCfg = Omit<LaunchHelperFileCfg, "composePath" | "oysterB
 
 export type GenesisConfig = Omit<GenesisConfigFile, "contracts" | "deploymentManifest" | "oyster" | "seeding" | "launchHelper"> & {
   contracts: ContractsCfg;
-  oyster: Omit<GenesisConfigFile["oyster"], "walletKeyFile" | "durationMin"> & { walletKeyFile: string; durationMin: number };
+  oyster: Omit<GenesisConfigFile["oyster"], "walletKeyFile" | "durationMin" | "revivalDurationMin"> & { walletKeyFile: string; durationMin: number; revivalDurationMin: number };
   seeding: Omit<GenesisConfigFile["seeding"], "preRegistrationGasWei"> & { preRegistrationGasWei: bigint };
   /** Effective mode per leg (profile + overrides). */
   legModes: Record<LegId, LegMode>;
@@ -399,6 +428,7 @@ export function buildConfig(rawJson: unknown, baseDir: string): GenesisConfig {
       platformTemplate: abs(baseDir, lh.platformTemplate),
       ...(lh.releasesTemplate === undefined ? {} : { releasesTemplate: abs(baseDir, lh.releasesTemplate) }),
       ...(lh.allowlistPath === undefined ? {} : { allowlistPath: abs(baseDir, lh.allowlistPath) }),
+      ...(lh.genesisDb === undefined ? {} : { genesisDb: abs(baseDir, lh.genesisDb) }),
       deploymentManifestPath: f.deploymentManifest === undefined ? null : abs(baseDir, f.deploymentManifest),
     };
   }
@@ -415,6 +445,7 @@ export function buildConfig(rawJson: unknown, baseDir: string): GenesisConfig {
       ...f.oyster,
       walletKeyFile: f.oyster.walletKeyFile === undefined ? walletKeyPath : abs(baseDir, f.oyster.walletKeyFile),
       durationMin: f.oyster.durationMin ?? PROFILE_DURATION_MIN[f.seeding.profile],
+      revivalDurationMin: f.oyster.revivalDurationMin ?? PROFILE_DURATION_MIN[f.seeding.profile],
     },
     seeding: {
       ...f.seeding,
@@ -429,7 +460,7 @@ export function projectedRentalMicroUsdc(oyster: Pick<GenesisConfig["oyster"], "
   return (BigInt(oyster.durationMin) * oyster.rateUsdcMicroPerHour + 59n) / 60n;
 }
 
-/** "durationMin 180 × 0.0512 USDC/h ⇒ projected rental 0.1536 USDC" */
+/** "durationMin 180 × 0.24 USDC/h ⇒ projected rental 0.72 USDC" */
 export function describeRental(oyster: Pick<GenesisConfig["oyster"], "durationMin" | "rateUsdcMicroPerHour">): string {
   const usd = (micro: bigint): string => {
     const frac = (micro % 1_000_000n).toString().padStart(6, "0").replace(/0+$/, "");

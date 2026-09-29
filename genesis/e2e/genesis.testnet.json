@@ -73,6 +73,8 @@
     "composePath": "../../runtime/releases/v0.1.7.yml",
     "releasesTemplate": "../../runtime/releases/v0.1.7.json",
     "platformTemplate": "platform-template.testnet.json",
-    "oysterBin": "/tmp/bin/oyster-cvm"
+    "oysterBin": "/tmp/bin/oyster-cvm",
+    "genesisDb": "data/genesis.sqlite",
+    "revivalPayTo": "0x6930FD5C95a2D9d80F3d165597d55843e8A00154"
   }
 }

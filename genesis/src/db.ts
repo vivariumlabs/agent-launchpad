@@ -5,14 +5,21 @@
 //   seeds(flow, leg, agentId, txHash, status, usdMicro, …) — per-leg seeding plan + tx record
 //                                             (incl. the pre-registration gas leg "preGas")
 //   kv(k PK, v)                               — watcher cursor, deploy lock
+//   revival_payments(txHash PK, …)            — SPEC-M4F R1: every revival payment tx the launch-helper
+//                                             accepted (single use: the PK is the reuse guard)
 //   events(…)                                 — append-only audit trail of every side effect
 // Every transition is persisted BEFORE the side effect it guards where possible (deploy attempt +
 // pre-deploy job snapshot before the CLI runs; signed raw tx + hash before broadcast).
 
 import Database from "better-sqlite3";
 
-export type State = "REQUESTED" | "DEPLOYING" | "AWAITING_REGISTER" | "SEEDING" | "RECONCILING" | "FINALIZING" | "LIVE" | "FAILED";
-export const TERMINAL: readonly State[] = ["LIVE", "FAILED"];
+/**
+ * SPEC-M4F R5: EXTERNAL = terminal "completed outside this orchestrator" — a REQUESTED genesis launch
+ * whose agent was already registered on-chain when the machine adopted it (never driven).
+ */
+export type State = "REQUESTED" | "DEPLOYING" | "AWAITING_REGISTER" | "SEEDING" | "RECONCILING" | "FINALIZING" | "LIVE" | "FAILED" | "EXTERNAL";
+export const TERMINAL: readonly State[] = ["LIVE", "FAILED", "EXTERNAL"];
+const TERMINAL_SQL = TERMINAL.map((s) => `'${s}'`).join(",");
 export type FlowKind = "genesis" | "revival";
 
 export interface FlowRef {
@@ -92,6 +99,27 @@ export interface SeedRow {
 
 export type SeedPatch = Partial<Pick<SeedRow, "txHash" | "raw" | "status" | "note" | "attempts" | "amount">>;
 
+/**
+ * SPEC-M4F R1 revival payment record. status: `claimed` (verified, revive() running), `queued`
+ * (revivalId set), `refund_due` (verified payment but revive() refused — the operator returns the fee
+ * manually on testnet). A row is never deleted except when revive() failed transiently (so the payer
+ * can resubmit the same tx).
+ */
+export type PaymentStatus = "claimed" | "queued" | "refund_due";
+
+export interface PaymentRow {
+  txHash: string;
+  agentId: number;
+  payer: string;
+  /** Verified USDC base units (6 decimals) paid to payTo, decimal string. */
+  amount: string;
+  status: PaymentStatus;
+  revivalId: number | null;
+  note: string | null;
+  at: number;
+  updatedAt: number;
+}
+
 export interface EventRow {
   id: number;
   flow: string;
@@ -164,6 +192,17 @@ CREATE TABLE IF NOT EXISTS seeds (
   PRIMARY KEY (flow, leg)
 );
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS revival_payments (
+  txHash TEXT PRIMARY KEY,
+  agentId INTEGER NOT NULL,
+  payer TEXT NOT NULL,
+  amount TEXT NOT NULL,
+  status TEXT NOT NULL,
+  revivalId INTEGER,
+  note TEXT,
+  at INTEGER NOT NULL,
+  updatedAt INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   flow TEXT NOT NULL,
@@ -221,6 +260,20 @@ function toFlow(kind: FlowKind, r: Raw): FlowRow {
     payer: s("payer"),
     payerRef: s("payerRef"),
     startGeneration: n("startGeneration"),
+  };
+}
+
+function toPayment(r: Raw): PaymentRow {
+  return {
+    txHash: String(r.txHash),
+    agentId: Number(r.agentId),
+    payer: String(r.payer),
+    amount: String(r.amount),
+    status: String(r.status) as PaymentStatus,
+    revivalId: r.revivalId === null || r.revivalId === undefined ? null : Number(r.revivalId),
+    note: r.note === null || r.note === undefined ? null : String(r.note),
+    at: Number(r.at),
+    updatedAt: Number(r.updatedAt),
   };
 }
 
@@ -306,15 +359,20 @@ export class GenesisDb {
 
   /** Non-terminal revivals of an agent (at most one may be active). */
   activeRevivals(agentId: number): FlowRow[] {
-    const rows = this.db.prepare(`SELECT * FROM revivals WHERE agentId = ? AND state NOT IN ('LIVE','FAILED') ORDER BY id`).all(agentId) as Raw[];
+    const rows = this.db.prepare(`SELECT * FROM revivals WHERE agentId = ? AND state NOT IN (${TERMINAL_SQL}) ORDER BY id`).all(agentId) as Raw[];
     return rows.map((r) => toFlow("revival", r));
   }
 
   /** Every non-terminal flow, genesis first (by agentId), then revivals (by id). */
   nonTerminal(): FlowRef[] {
-    const g = this.db.prepare(`SELECT agentId FROM launches WHERE state NOT IN ('LIVE','FAILED') ORDER BY agentId`).all() as Array<{ agentId: number }>;
-    const r = this.db.prepare(`SELECT id FROM revivals WHERE state NOT IN ('LIVE','FAILED') ORDER BY id`).all() as Array<{ id: number }>;
+    const g = this.db.prepare(`SELECT agentId FROM launches WHERE state NOT IN (${TERMINAL_SQL}) ORDER BY agentId`).all() as Array<{ agentId: number }>;
+    const r = this.db.prepare(`SELECT id FROM revivals WHERE state NOT IN (${TERMINAL_SQL}) ORDER BY id`).all() as Array<{ id: number }>;
     return [...g.map((x) => ({ kind: "genesis" as const, id: Number(x.agentId) })), ...r.map((x) => ({ kind: "revival" as const, id: Number(x.id) }))];
+  }
+
+  /** Every revival of an agent (any state), oldest first. */
+  revivalsOf(agentId: number): FlowRow[] {
+    return (this.db.prepare(`SELECT * FROM revivals WHERE agentId = ? ORDER BY id`).all(agentId) as Raw[]).map((r) => toFlow("revival", r));
   }
 
   allFlows(kind: FlowKind): FlowRow[] {
@@ -387,6 +445,36 @@ export class GenesisDb {
 
   kvDel(k: string): void {
     this.db.prepare(`DELETE FROM kv WHERE k = ?`).run(k);
+  }
+
+  // ---- revival payments (SPEC-M4F R1) ----
+
+  /** Claims a payment tx: INSERT OR IGNORE on the txHash PK. false ⇒ already used (reuse guard). */
+  claimPayment(p: { txHash: string; agentId: number; payer: string; amount: string; at: number }): boolean {
+    const res = this.db
+      .prepare(`INSERT OR IGNORE INTO revival_payments (txHash, agentId, payer, amount, status, at, updatedAt) VALUES (?, ?, ?, ?, 'claimed', ?, ?)`)
+      .run(p.txHash.toLowerCase(), p.agentId, p.payer, p.amount, p.at, p.at);
+    return res.changes === 1;
+  }
+
+  getPayment(txHash: string): PaymentRow | undefined {
+    const r = this.db.prepare(`SELECT * FROM revival_payments WHERE txHash = ?`).get(txHash.toLowerCase()) as Raw | undefined;
+    return r === undefined ? undefined : toPayment(r);
+  }
+
+  paymentsOf(agentId: number): PaymentRow[] {
+    return (this.db.prepare(`SELECT * FROM revival_payments WHERE agentId = ? ORDER BY at, txHash`).all(agentId) as Raw[]).map(toPayment);
+  }
+
+  patchPayment(txHash: string, patch: { status: PaymentStatus; revivalId?: number | null; note?: string | null }, now: bigint): void {
+    this.db
+      .prepare(`UPDATE revival_payments SET status = ?, revivalId = COALESCE(?, revivalId), note = COALESCE(?, note), updatedAt = ? WHERE txHash = ?`)
+      .run(patch.status, patch.revivalId ?? null, patch.note ?? null, Number(now), txHash.toLowerCase());
+  }
+
+  /** Releases a claim (ONLY when revive() failed transiently — nothing was queued or refused). */
+  releasePayment(txHash: string): void {
+    this.db.prepare(`DELETE FROM revival_payments WHERE txHash = ? AND status = 'claimed'`).run(txHash.toLowerCase());
   }
 
   // ---- audit trail ----

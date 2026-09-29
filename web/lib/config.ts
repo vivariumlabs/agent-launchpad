@@ -83,3 +83,18 @@ export const CHAT_PER_DAY_DEFAULT = 100;
 /** D13 notice — VERBATIM (SPEC-M4C §2). */
 export const D13_NOTICE =
   "This agent is autonomous; social-engineering its action wallet is part of the game; its survival wallet is out of reach.";
+
+// ---------------------------------------------------------------------------
+// SPEC-M4F §2 — mausoleum / revive flow. Payment token, recipient and chain id
+// come ONLY from the launch-helper's quote payload — nothing chain-specific
+// lives here. Revive mode = LAUNCH_MODE (same helper).
+// ---------------------------------------------------------------------------
+
+/** Orchestrator-less revival backstop (04 §6): the public rebuild procedure. `HEAD` = the repo's default branch. */
+export const REPRODUCIBLE_BUILD_URL = `${REPO_URL}/blob/HEAD/runtime/docs/REPRODUCIBLE-BUILD.md`;
+
+/** 04-GENESIS.md (§6 revival flow). */
+export const GENESIS_DOC_URL = `${REPO_URL}/blob/HEAD/docs/04-GENESIS.md`;
+
+/** Journal read size for the mausoleum's entry count (indexer max limit = 200). */
+export const MAUSOLEUM_JOURNAL_LIMIT = 200;

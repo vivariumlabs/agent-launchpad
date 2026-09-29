@@ -15,6 +15,12 @@
  * accrued royalties, Marcus #9 emancipated) for the demo wallet; any other
  * wallet (or the "empty" scenario) is empty. nft-chain.json stands in for the
  * live wagmi view reads (accrued / ownerOf).
+ *
+ * Mausoleum (SPEC-M4F §2): 9 (evicted, revivable — full simulated pay flow),
+ * 1 (evicted, agent-1-style M1 artifact: config_unavailable), 2 (stale —
+ * "dying" with an evictableAt countdown). Agents 1/2 have no dedicated
+ * profile JSON: their profile is their directory row. revive.json holds the
+ * RAW helper quote bodies.
  */
 import type {
   ActivityItem,
@@ -55,13 +61,25 @@ import attestationSummaryJson from "../fixtures/attestation-summary.json";
 import launchTemplateJson from "../fixtures/launch-template.json";
 import launchPrepareJson from "../fixtures/launch-prepare.json";
 
+import agent2JournalJson from "../fixtures/agent-2-journal.json";
+import reviveJson from "../fixtures/revive.json";
+
 import contractsJson from "../fixtures/contracts.json";
 import walletNftsJson from "../fixtures/wallet-nfts.json";
 import nftChainJson from "../fixtures/nft-chain.json";
 
 export const fixtureAgents: AgentView[] = (agentsListJson as AgentsResponse).agents;
 
+function listRow(id: number): AgentView | undefined {
+  return fixtureAgents.find((a) => a.agentId === id);
+}
+
+const agent1Row = listRow(1);
+const agent2Row = listRow(2);
+
 export const fixtureProfiles: Record<string, AgentView> = {
+  ...(agent1Row ? { "1": agent1Row } : {}),
+  ...(agent2Row ? { "2": agent2Row } : {}),
   "3": agent3Json as AgentView,
   "4": agent4Json as AgentView,
   "5": agent5Json as AgentView,
@@ -76,6 +94,7 @@ export const fixtureActivity: Record<string, ActivityItem[]> = {
 };
 
 export const fixtureJournal: Record<string, JournalEntry[]> = {
+  "2": (agent2JournalJson as JournalResponse).entries,
   "3": (agent3JournalJson as JournalResponse).entries,
   "5": (agent5JournalJson as JournalResponse).entries,
   "9": (agent9JournalJson as JournalResponse).entries,
@@ -111,3 +130,13 @@ export const fixtureNftChain = nftChainJson as {
 
 /** Prepare response minus agentJson — the mock route assembles agentJson from template + input. */
 export const fixtureLaunchPrepare = launchPrepareJson as Omit<LaunchPrepared, "agentJson" | "agentJsonText">;
+
+/**
+ * SPEC-M4F §2 revive fixtures: RAW helper quote wire bodies by agent id (plus
+ * the simulated payer / revival id the mock POST uses). Server-side only.
+ */
+export const fixtureRevive = reviveJson as {
+  simulatedPayer: string;
+  simulatedRevivalId: string;
+  quotes: Record<string, Record<string, unknown>>;
+};

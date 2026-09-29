@@ -51,7 +51,7 @@ describe("buildConfig", () => {
     expect(c.retries).toEqual({ deploy: 3, verify: 3, seeding: 5, reconcile: 5, finalize: 5 });
     expect(c.seeding.profile).toBe("testnet");
     expect(c.seeding.revivalGasSeedUsdMicro).toBe(2_000_000n);
-    expect(c.oyster).toMatchObject({ bin: "oyster-cvm", deployment: "arb", arch: "arm64", preset: "blue", durationMin: 180, rateUsdcMicroPerHour: 51_200n });
+    expect(c.oyster).toMatchObject({ bin: "oyster-cvm", deployment: "arb", arch: "arm64", preset: "blue", durationMin: 180, rateUsdcMicroPerHour: 240_000n }); // SPEC-M4F R6 DEFAULT (was 51_200)
     expect(c.seeding.preRegistrationGasWei).toBe(333_333_333_333_333n); // $1 at $3000/ETH
     expect(c.legModes).toEqual({ "rh.usdg": "required", "rh.eth": "required", "optimism.eth": "disabled", "base.eth": "conditional", "base.usdc": "conditional", "arbitrum.eth": "required", "arweave": "conditional" });
     expect(c.chains.rh.gasReserveWei).toBe(10n ** 14n);
@@ -96,11 +96,11 @@ describe("buildConfig", () => {
     const d = fixtureDir();
     const t = buildConfig(base(), d);
     expect(t.oyster.durationMin).toBe(180);
-    expect(projectedRentalMicroUsdc(t.oyster)).toBe(153_600n);
-    expect(describeRental(t.oyster)).toBe("durationMin 180 × 0.0512 USDC/h ⇒ projected rental 0.1536 USDC");
+    expect(projectedRentalMicroUsdc(t.oyster)).toBe(720_000n); // SPEC-M4F R6: 180 min × 0.24 USDC/h (was 153_600 at 0.0512)
+    expect(describeRental(t.oyster)).toBe("durationMin 180 × 0.24 USDC/h ⇒ projected rental 0.72 USDC");
     const m = buildConfig(base({ seeding: { profile: "mainnet", legs: Object.fromEntries(["optimism.eth", "base.eth", "base.usdc", "arweave"].map((k) => [k, { mode: "disabled" }])) } }), d);
     expect(m.oyster.durationMin).toBe(43_200);
-    expect(describeRental(m.oyster)).toBe("durationMin 43200 × 0.0512 USDC/h ⇒ projected rental 36.864 USDC");
+    expect(describeRental(m.oyster)).toBe("durationMin 43200 × 0.24 USDC/h ⇒ projected rental 172.8 USDC");
     expect(buildConfig(base({ oyster: { durationMin: 60 } }), d).oyster.durationMin).toBe(60);
     expect(buildConfig(base({ seeding: { preRegistrationGasWei: "1000" } }), d).seeding.preRegistrationGasWei).toBe(1000n);
     expect(buildConfig(base({ seeding: { ethUsdMicro: "2000000000" } }), d).seeding.preRegistrationGasWei).toBe(500_000_000_000_000n);

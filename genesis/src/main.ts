@@ -11,12 +11,17 @@
 //       operator recovery (review ruling 2): reset a launch that FAILED at SEEDING / RECONCILING /
 //       FINALIZING (or is stuck there) back into SEEDING re-evaluation with its attempt counters
 //       zeroed; the running loop drives it. Post-registration steps never time out on their own.
+//   genesis abandon --config <genesis.json> --agent-id <N> --reason <text>
+//       SPEC-M4F R5: move a NON-terminal launch to FAILED(abandoned) with the operator's reason
+//       (replaces db surgery). Nothing on-chain / at Oyster is touched.
+//   `run` first sweeps a deploy.lock held by a terminal (or missing) flow (SPEC-M4F R5).
 
+import { pathToFileURL } from "node:url";
 import { systemClock, sleep } from "./clock.js";
 import { describeRental, loadConfig } from "./config.js";
 import { errMsg } from "./errors.js";
 import type { Logger } from "./log.js";
-import { redrive } from "./machine.js";
+import { abandon, redrive, sweepDeployLock } from "./machine.js";
 import { createOrchestrator, type Orchestrator } from "./orchestrator.js";
 import { revive } from "./revival.js";
 
@@ -26,7 +31,7 @@ const consoleLogger: Logger = {
   error: (m) => console.error(`${new Date(Number(systemClock.now()) * 1000).toISOString()} ERROR ${m}`),
 };
 
-function parseArgs(argv: readonly string[]): { cmd: string; flags: Map<string, string> } {
+export function parseArgs(argv: readonly string[]): { cmd: string; flags: Map<string, string> } {
   const [cmd = "run", ...rest] = argv;
   const flags = new Map<string, string>();
   for (let i = 0; i < rest.length; i++) {
@@ -49,6 +54,7 @@ async function runLoop(o: Orchestrator, log: Logger): Promise<void> {
   process.on("SIGINT", () => stop("SIGINT"));
   process.on("SIGTERM", () => stop("SIGTERM"));
 
+  sweepDeployLock(o.db, systemClock.now(), log);
   let nextPoll = 0n;
   let nextResume = 0n;
   log.info(`genesis orchestrator up: wallet ${o.walletAddress}, factory ${o.cfg.contracts.factory}, profile ${o.cfg.seeding.profile}`);
@@ -87,13 +93,19 @@ async function main(): Promise<void> {
       const agentId = Number(flags.get("agent-id"));
       const payer = flags.get("payer");
       if (!Number.isSafeInteger(agentId) || agentId <= 0 || payer === undefined) throw new Error("revive needs --agent-id <N> --payer <0x…>");
-      const id = await revive({ db: o.db, launchpad: o.launchpad, cfg, log: consoleLogger }, agentId, { address: payer, ref: flags.get("payer-ref") }, systemClock.now());
+      const id = await revive({ db: o.db, launchpad: o.launchpad, cfg, log: consoleLogger, configSource: o.configSource }, agentId, { address: payer, ref: flags.get("payer-ref") }, systemClock.now());
       console.log(`revival ${id} queued for agent ${agentId}`);
     } else if (cmd === "redrive") {
       const agentId = Number(flags.get("agent-id"));
       if (!Number.isSafeInteger(agentId) || agentId <= 0) throw new Error("redrive needs --agent-id <N>");
       const f = redrive(o.db, agentId, systemClock.now(), consoleLogger);
       console.log(`agent ${agentId} reset to ${f.state}; the running loop re-drives it`);
+    } else if (cmd === "abandon") {
+      const agentId = Number(flags.get("agent-id"));
+      const reason = flags.get("reason");
+      if (!Number.isSafeInteger(agentId) || agentId <= 0 || reason === undefined) throw new Error("abandon needs --agent-id <N> --reason <text>");
+      const f = abandon(o.db, agentId, reason, systemClock.now(), consoleLogger);
+      console.log(`agent ${agentId} → ${f.state} (${f.failReason} @ ${f.failStep}): ${reason}`);
     } else if (cmd === "status") {
       for (const kind of ["genesis", "revival"] as const) {
         for (const f of o.db.allFlows(kind)) {
@@ -101,14 +113,18 @@ async function main(): Promise<void> {
         }
       }
     } else {
-      throw new Error(`unknown command ${cmd} (run | revive | status | redrive)`);
+      throw new Error(`unknown command ${cmd} (run | revive | status | redrive | abandon)`);
     }
   } finally {
     o.close();
   }
 }
 
-main().catch((e) => {
-  console.error(`genesis: ${errMsg(e)}`);
-  process.exitCode = 1;
-});
+// Entry guard (SPEC-M4F): importable by tests (parseArgs) without running the CLI.
+const entry = process.argv[1];
+if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
+  main().catch((e) => {
+    console.error(`genesis: ${errMsg(e)}`);
+    process.exitCode = 1;
+  });
+}

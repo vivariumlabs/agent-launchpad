@@ -265,7 +265,7 @@ describe.skipIf(bins === undefined)("SPEC-M3B §1 genesis orchestrator — anvil
     // remainder = fee − EXECUTED legs = 75 − (preGas 1 + hosting [virtual: durationMin × rate] + rh.eth 2);
     // skipped base.eth / base.usdc / arweave fold into USDG; arb disabled.
     const hosting = projectedRentalMicroUsdc(orch.cfg.oyster);
-    expect(hosting).toBe(153_600n); // testnet DEFAULT 180 min × 0.0512 USDC/h
+    expect(hosting).toBe(720_000n); // testnet DEFAULT 180 min × 0.24 USDC/h (SPEC-M4F R6; was 153_600 at 0.0512)
     expect(plan[0]).toMatchObject({ leg: "hosting", asset: "virtual", usdMicro: hosting });
     const usdgAmount = 72n * E6 - hosting;
     expect(orch.db.seeds(`genesis:${AGENT_ID}`).find((s) => s.leg === "rh.usdg")!.amount).toBe(usdgAmount.toString());

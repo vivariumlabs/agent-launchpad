@@ -21,6 +21,9 @@
 //        config_hash_mismatch | moderation } · 502 { error, stage: "arweave-upload", reason } ·
 //        503 publishing not configured · 200 { txId, ref: "ar://<txId>", configHash }
 //        One JSONL line per upload attempt → <dataDir>/launch-helper/publishes.jsonl.
+//   GET  /api/revive/quote/:agentId · POST /api/revive · GET /api/revive/status/:agentId   (SPEC-M4F §1)
+//        see src/reviveApi.ts. Enabled when the config has launchHelper.genesisDb + launchHelper.revivalPayTo
+//        + chains.arbitrum; otherwise 503 "manual mode" with the orchestrator-less revival instructions.
 //
 // Race honesty: agentId = factory agentCount() + 1 at prepare time. A concurrent createAgent can take
 // that id; configHash, imageId and both EOAs all bind to agentId, so the UI MUST compare the
@@ -33,7 +36,7 @@
 // hygiene test); everything testable is here, behind injected seams (Exec via Oyster, HttpClient via
 // KmsDeriver, FactoryReader, RejectionSink, Clock).
 
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { getAddress, type Address } from "viem";
 import { z } from "zod";
@@ -41,14 +44,27 @@ import { ConfigInvalid, createEphemeralUploader, frozenTextHash, MAX_CONFIG_TEXT
 import { frozenConfigHash } from "./canonical.js";
 import { systemClock, type Clock } from "./clock.js";
 import type { GenesisConfig, LaunchHelperCfg } from "./config.js";
+import { buildConfigSource, type ArweaveReader } from "./configSource.js";
+import { GenesisDb } from "./db.js";
 import { errMsg } from "./errors.js";
 import { nodeExec } from "./exec.js";
-import { fetchHttp } from "./http.js";
+import { fetchHttp, type HttpClient } from "./http.js";
 import { PublicKmsDeriver, type KmsDeriver } from "./kmsDerive.js";
 import type { Logger } from "./log.js";
 import { moderateAgent, MODERATION_RUBRIC_VERSION, type Violation } from "./moderation.js";
 import { OysterCli, type Oyster } from "./oyster.js";
 import type { TurboUploader } from "./runtimeArweave.js";
+import {
+  MANUAL_REVIVAL,
+  parseAgentId,
+  REVIVE_PATH,
+  REVIVE_QUOTE_PREFIX,
+  REVIVE_STATUS_PREFIX,
+  revivalQuote,
+  ReviveService,
+  type Launchpad,
+  type ReceiptReader,
+} from "./reviveApi.js";
 
 /** contracts/src/AgentFactory.sol:74 CREATION_FEE = 75e6 (USDG base units). */
 export const CREATION_FEE_USDG = "75000000";
@@ -277,6 +293,8 @@ export interface LaunchHelperDeps {
    * key per process + publishes.jsonl). Absent ⇒ /api/launch/publish answers 503.
    */
   publisher?: { uploader: Pick<TurboUploader, "upload">; log: RejectionSink };
+  /** SPEC-M4F §1 revive endpoints. Absent ⇒ they answer 503 "manual mode" (MANUAL_REVIVAL). */
+  revive?: ReviveService;
 }
 
 export interface HelperRequest {
@@ -502,6 +520,29 @@ export class LaunchHelper {
     };
   }
 
+  /** SPEC-M4F §1: /api/revive* (405 → 503 manual mode → 400 → the service). */
+  private async reviveRoute(req: HelperRequest, path: string, json: (status: number, body: unknown) => HelperResponse): Promise<HelperResponse> {
+    const isPay = path === REVIVE_PATH;
+    if (req.method !== (isPay ? "POST" : "GET")) return json(405, { error: "method not allowed" });
+    const svc = this.d.revive;
+    if (svc === undefined) return json(503, { error: "manual mode", manual: MANUAL_REVIVAL });
+    if (isPay) {
+      let body: unknown;
+      try {
+        body = JSON.parse(req.body ?? "");
+      } catch {
+        return json(400, { error: "body is not JSON" });
+      }
+      const r = await svc.pay(body);
+      return json(r.status, r.body);
+    }
+    const quote = path.startsWith(REVIVE_QUOTE_PREFIX);
+    const agentId = parseAgentId(path.slice((quote ? REVIVE_QUOTE_PREFIX : REVIVE_STATUS_PREFIX).length));
+    if (agentId === null) return json(400, { error: "agentId must be a positive integer" });
+    const r = quote ? await svc.quote(agentId) : svc.status(agentId);
+    return json(r.status, r.body);
+  }
+
   /** Transport-agnostic router (bin/launch-helper.ts feeds it from node:http). Never throws. */
   async handle(req: HelperRequest): Promise<HelperResponse> {
     const json = (status: number, body: unknown): HelperResponse => ({
@@ -527,6 +568,9 @@ export class LaunchHelper {
         const r = await this.prepare(body);
         return json(r.status, r.body);
       }
+      if (path === REVIVE_PATH || path.startsWith(REVIVE_QUOTE_PREFIX) || path.startsWith(REVIVE_STATUS_PREFIX)) {
+        return await this.reviveRoute(req, path, json);
+      }
       if (path === PUBLISH_PATH) {
         if (req.method !== "POST") return json(405, { error: "method not allowed" });
         let body: unknown;
@@ -550,7 +594,28 @@ export class LaunchHelper {
 // Production wiring (config → seams). Reads NO key: walletKeyPath is never touched.
 // ---------------------------------------------------------------------------
 
-export function createLaunchHelper(cfg: GenesisConfig, log: Logger, o: { factory: FactoryReader; clock?: Clock; uploader?: Pick<TurboUploader, "upload"> }): { helper: LaunchHelper; lh: LaunchHelperCfg } {
+/** SPEC-M4F §1 chain seams of the revive endpoints (bin/launch-helper.ts: key-less viem readers). */
+export interface ReviveSeams {
+  /** RH launchpad reads (registry.instanceOf / REVIVAL_WINDOW, AgentRequested logs). */
+  launchpad: Launchpad;
+  /** Arbitrum One receipts (the USDC payment chain). */
+  receipts: ReceiptReader;
+  /** R4 Arweave tag discovery transport (DEFAULT fetchHttp) + gateway reader (DEFAULT the runtime one-redirect download). */
+  http?: HttpClient;
+  arweaveReader?: ArweaveReader;
+}
+
+/** True when the config enables the revive endpoints (genesisDb + revivalPayTo + chains.arbitrum). */
+export function reviveConfigured(cfg: GenesisConfig): boolean {
+  const lh = cfg.launchHelper;
+  return lh?.genesisDb !== undefined && lh.revivalPayTo !== undefined && cfg.chains.arbitrum !== undefined;
+}
+
+export function createLaunchHelper(
+  cfg: GenesisConfig,
+  log: Logger,
+  o: { factory: FactoryReader; clock?: Clock; uploader?: Pick<TurboUploader, "upload">; revive?: ReviveSeams },
+): { helper: LaunchHelper; lh: LaunchHelperCfg } {
   const lh = cfg.launchHelper;
   if (lh === undefined) throw new Error("genesis config has no launchHelper section");
   const manifest = lh.deploymentManifestPath === null ? null : readManifestAddrs(lh.deploymentManifestPath);
@@ -565,6 +630,24 @@ export function createLaunchHelper(cfg: GenesisConfig, log: Logger, o: { factory
   const release = lh.releasesTemplate === undefined ? undefined : (JSON.parse(readFileSync(lh.releasesTemplate, "utf8")) as unknown);
   const composeVersion = composeVersionOf(lh.composePath, release, cfg.oyster);
   const timeoutMs = lh.httpTimeoutSec * 1000;
+  const clock = o.clock ?? systemClock;
+  let revive: ReviveService | undefined;
+  if (reviveConfigured(cfg) && o.revive === undefined) {
+    log.warn("launch-helper: revive endpoints in MANUAL MODE (503) — configured, but no chain seams were wired (launchpad + Arbitrum receipts)");
+  } else if (reviveConfigured(cfg) && o.revive !== undefined) {
+    const dbPath = lh.genesisDb!;
+    if (!existsSync(dbPath)) throw new Error(`launchHelper.genesisDb ${dbPath} does not exist (the orchestrator's genesis.sqlite)`);
+    const configSource = buildConfigSource(cfg, { http: o.revive.http ?? fetchHttp, log, ...(o.revive.arweaveReader === undefined ? {} : { arweaveReader: o.revive.arweaveReader }) });
+    revive = new ReviveService({
+      revival: { db: new GenesisDb(dbPath), launchpad: o.revive.launchpad, cfg, log, configSource, configHashCache: new Map() },
+      receipts: o.revive.receipts,
+      quote: revivalQuote(cfg, lh.revivalPayTo!),
+      clock,
+      log,
+    });
+  } else if (lh.genesisDb !== undefined || lh.revivalPayTo !== undefined) {
+    log.warn("launch-helper: revive endpoints in MANUAL MODE (503) — they need launchHelper.genesisDb + launchHelper.revivalPayTo + chains.arbitrum");
+  }
   const helper = new LaunchHelper({
     platform,
     composePath: lh.composePath,
@@ -575,8 +658,9 @@ export function createLaunchHelper(cfg: GenesisConfig, log: Logger, o: { factory
     factory: o.factory,
     rejections: jsonlSink(join(cfg.dataDir, "launch-helper", REJECTIONS_FILE)),
     corsOrigin: lh.corsOrigin,
-    clock: o.clock ?? systemClock,
+    clock,
     log,
+    ...(revive === undefined ? {} : { revive }),
     // SPEC-M4E R2: ONE fresh ephemeral key for this process (never persisted; free uploads need no funds).
     publisher: {
       uploader: o.uploader ?? createEphemeralUploader({ ...(lh.turboUploadUrl === undefined ? {} : { uploadUrl: lh.turboUploadUrl }), timeoutMs }),

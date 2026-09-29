@@ -18,9 +18,9 @@ const RH_ETH = usdToWei(2_000_000n, ETH_USD);
 const ARB_ETH = usdToWei(1_000_000n, ETH_USD);
 const PRE_GAS = usdToWei(1_000_000n, ETH_USD);
 // testnet DEFAULT profile, enclave registering instantly (no preGas needed): remainder = 75 − EXECUTED
-// legs (hosting 0.1536 [virtual: 180 min × 0.0512 USDC/h] + rh.eth 2 + arb 1); the skipped base.eth /
-// base.usdc / arweave budgets fold into USDG ⇒ 71.8464.
-const HOSTING = 153_600n; // (180 × 51_200 + 59) / 60 µUSD
+// legs (hosting 0.72 [virtual: 180 min × 0.24 USDC/h, SPEC-M4F R6] + rh.eth 2 + arb 1); the skipped base.eth /
+// base.usdc / arweave budgets fold into USDG ⇒ 71.28.
+const HOSTING = 720_000n; // (180 × 240_000 + 59) / 60 µUSD (SPEC-M4F R6 DEFAULT rate; was 153_600 at 51_200)
 const USDG_REMAINDER = 72_000_000n - HOSTING;
 
 function seedTxs(h: Harness): typeof h.world.executed {
@@ -80,8 +80,8 @@ describe("happy path REQUESTED → LIVE", () => {
     // hosting = virtual leg: the deploy's rental, confirmed with the Oyster job id, no tx of ours
     const hosting = h.db.seeds(`genesis:${agentId}`).find((s) => s.leg === "hosting")!;
     expect([hosting.asset, hosting.amount, hosting.usdMicro, hosting.txHash, hosting.raw]).toEqual(["virtual", HOSTING.toString(), HOSTING.toString(), f.deployJobId, null]);
-    expect(hosting.note).toMatch(/durationMin 180 × 0\.0512 USDC\/h ⇒ projected rental 0\.1536 USDC/);
-    expect(h.db.events(`genesis:${agentId}`).find((e) => e.kind === "seed_remainder")!.detail).toMatch(/^rh\.usdg=71846400 \(remainder: fee 75000000 − executed 3153600 µUSD \[hosting,rh\.eth,arbitrum\.eth\]\)$/);
+    expect(hosting.note).toMatch(/durationMin 180 × 0\.24 USDC\/h ⇒ projected rental 0\.72 USDC/); // SPEC-M4F R6 DEFAULT rate
+    expect(h.db.events(`genesis:${agentId}`).find((e) => e.kind === "seed_remainder")!.detail).toMatch(/^rh\.usdg=71280000 \(remainder: fee 75000000 − executed 3720000 µUSD \[hosting,rh\.eth,arbitrum\.eth\]\)$/);
     expect(h.log.lines.some((l) => /ARWEAVE SEED LEG: Turbo is UNFUNDED — SKIPPING/.test(l))).toBe(true);
 
     expect(eventKinds(h, `genesis:${agentId}`)).toEqual([
@@ -374,7 +374,7 @@ describe("partial seed ⇒ finalize blocked, reconcile retries", () => {
 });
 
 describe("pre-registration gas leg (ruling 1)", () => {
-  it("attested, unregistered enclave: $1 RH ETH → expectedTreasuryEOA BEFORE registration, leg preGas; the USDG remainder deducts it (75 − 0.1536 − 1 − 2 − 1 = 70.8464)", async () => {
+  it("attested, unregistered enclave: $1 RH ETH → expectedTreasuryEOA BEFORE registration, leg preGas; the USDG remainder deducts it (75 − 0.72 − 1 − 2 − 1 = 70.28)", async () => {
     const h = makeHarness({ delayRegistration: true });
     const { agentId, treasury } = h.createAgent();
     await h.settle(5);

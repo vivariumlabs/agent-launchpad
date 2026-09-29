@@ -24,6 +24,15 @@
 //     is ADOPTED instead of deploying again. Deploys are single-flight (kv lock).
 //   - SEEDING / FINALIZING: signed raw tx + hash stored BEFORE broadcast; resume = receipt check /
 //     re-broadcast of the same bytes.
+// SPEC-M4F additions:
+//   - R5 adoption guard: a genesis launch still REQUESTED whose agent is ALREADY registered on-chain
+//     (instanceOf.lastHeartbeat > 0) lands in the terminal EXTERNAL state ("completed outside this
+//     orchestrator") and is never driven — checked before the timeout (a days-late adoption is
+//     EXTERNAL, not FAILED(timeout)). `abandon` (operator) moves a non-terminal launch to FAILED;
+//     `sweepDeployLock` (startup) releases a deploy.lock whose holder is terminal / gone.
+//   - R3: a revival deploys ONLY its recorded compose (revive() resolved it against the registered
+//     codeHash) — never the current release; its runtime.json imageId = the registered codeHash verbatim.
+//   - R6: revivals rent for oyster.revivalDurationMin (what the quote charged the reviver).
 // Error classes (src/errors.ts): Fatal ⇒ FAILED now; anything else ⇒ transient (lastError, retry on
 // the next resume — bounded by the timeout before registration, unbounded after it). Capped steps
 // count their definitive failures.
@@ -39,7 +48,7 @@ import { errMsg, Fatal, NonceConsumed } from "./errors.js";
 import type { Logger } from "./log.js";
 import type { Oyster } from "./oyster.js";
 import { checkRevivalGate, RevivalRefused } from "./revival.js";
-import { describeRental } from "./config.js";
+import { describeRental, type GenesisConfig as Cfg } from "./config.js";
 import { HOSTING_LEG, legLanded, planGenesisLegs, planPreGasLeg, planRevivalLegs, PRE_GAS_LEG, processLeg, resolveRemainder, type SeederDeps } from "./seeder.js";
 import type { TurboFunder } from "./turbo.js";
 
@@ -93,6 +102,45 @@ export function redrive(db: GenesisDb, agentId: number, now: bigint, log: Logger
   return db.getFlow(ref)!;
 }
 
+/**
+ * SPEC-M4F R5 operator `abandon`: move a NON-terminal genesis launch to FAILED(abandoned) with the
+ * operator's reason (replaces db surgery). Releases the deploy lock if this launch holds it. Pure db
+ * operation; nothing on-chain or at Oyster is touched (a running CVM job is the operator's to stop).
+ */
+export function abandon(db: GenesisDb, agentId: number, reason: string, now: bigint, log: Logger): FlowRow {
+  const ref: FlowRef = { kind: "genesis", id: agentId };
+  const f = db.getFlow(ref);
+  if (f === undefined) throw new Error(`no launch for agent ${agentId}`);
+  if (TERMINAL.includes(f.state)) throw new Error(`agent ${agentId} is already terminal (${f.state}) — nothing to abandon`);
+  const why = reason.trim();
+  if (why === "") throw new Error("abandon needs a non-empty --reason");
+  const detail = `from ${f.state}: ${why}`;
+  db.tx(() => {
+    db.patchFlow(ref, { state: "FAILED", failReason: "abandoned", failStep: f.state, lastError: `abandoned by operator: ${why}`.slice(0, 500), deployInFlight: 0 }, now);
+    if (db.kvGet(DEPLOY_LOCK) === flowKey(ref)) db.kvDel(DEPLOY_LOCK);
+    db.event(flowKey(ref), f.agentId, now, "abandoned", detail);
+  });
+  log.warn(`[${flowKey(ref)}] abandoned by operator → FAILED: ${detail}`);
+  return db.getFlow(ref)!;
+}
+
+/**
+ * SPEC-M4F R5 startup sweep: a deploy.lock whose holder flow is terminal (or does not exist) can never
+ * be released by its holder — release it. Returns the released holder key, or null.
+ */
+export function sweepDeployLock(db: GenesisDb, now: bigint, log: Logger): string | null {
+  const holder = db.kvGet(DEPLOY_LOCK);
+  if (holder === undefined) return null;
+  const m = /^(genesis|revival):(\d+)$/.exec(holder);
+  const f = m === null ? undefined : db.getFlow({ kind: m[1] as FlowRef["kind"], id: Number(m[2]) });
+  if (f !== undefined && !TERMINAL.includes(f.state)) return null;
+  db.kvDel(DEPLOY_LOCK);
+  const why = f === undefined ? "holder flow does not exist" : `holder is ${f.state}`;
+  if (f !== undefined) db.event(holder, f.agentId, now, "deploy_lock_swept", why);
+  log.warn(`startup: released stale ${DEPLOY_LOCK} held by ${holder} (${why})`);
+  return holder;
+}
+
 export class Machine {
   constructor(private readonly d: MachineDeps) {}
 
@@ -122,6 +170,17 @@ export class Machine {
     for (let i = 0; i < MAX_STEPS_PER_DRIVE; i++) {
       const f = this.d.db.getFlow(ref);
       if (f === undefined || TERMINAL.includes(f.state)) return f?.state;
+      if (f.kind === "genesis" && f.state === "REQUESTED") {
+        // R5 adoption guard — BEFORE the timeout: a launch adopted days late is EXTERNAL, not FAILED.
+        try {
+          if (await this.adoptedExternal(f, now)) return "EXTERNAL";
+        } catch (e) {
+          const msg = errMsg(e).slice(0, 500);
+          this.d.db.patchFlow(ref, { lastError: msg }, now);
+          this.d.log.warn(`[${flowKey(ref)}] REQUESTED: transient (adoption guard): ${msg}`);
+          return f.state;
+        }
+      }
       if (PRE_REGISTRATION_STATES.includes(f.state) && now >= BigInt(f.startedAt) + BigInt(this.d.cfg.timing.timeoutSec)) {
         this.fail(f, "timeout", `not registered within ${this.d.cfg.timing.timeoutSec}s of the request`, now);
         return "FAILED";
@@ -145,6 +204,27 @@ export class Machine {
       }
     }
     return this.d.db.getFlow(ref)?.state;
+  }
+
+  /** R5: agent already registered on-chain ⇒ EXTERNAL (terminal, never driven). */
+  private async adoptedExternal(f: FlowRow, now: bigint): Promise<boolean> {
+    const inst = await this.d.launchpad.instanceOf(BigInt(f.agentId));
+    if (inst.lastHeartbeat === 0n) return false;
+    const detail = `agent ${f.agentId} is already registered on-chain (generation ${inst.generation}, codeHash ${inst.codeHash}, treasury ${inst.treasuryEOA}, lastHeartbeat ${inst.lastHeartbeat}) — completed outside this orchestrator; never driven`;
+    this.toState(f, "EXTERNAL", now, "external", detail);
+    this.d.log.warn(`!!! [${flowKey({ kind: f.kind, id: f.id })}] EXTERNAL: ${detail}`);
+    return true;
+  }
+
+  /** R3: the compose a flow deploys. Revivals: ONLY the recorded one (never the current release). */
+  private composeOf(f: FlowRow): string {
+    if (f.composePath !== null) return f.composePath;
+    if (f.kind === "revival") throw new Fatal("config_unavailable", `revival ${f.id} has no recorded compose — refusing the current release (different compose ⇒ different keys)`);
+    return this.d.cfg.release.composePath;
+  }
+
+  private rentalOf(f: FlowRow): Pick<Cfg["oyster"], "durationMin" | "rateUsdcMicroPerHour"> {
+    return { durationMin: f.kind === "revival" ? this.d.cfg.oyster.revivalDurationMin : this.d.cfg.oyster.durationMin, rateUsdcMicroPerHour: this.d.cfg.oyster.rateUsdcMicroPerHour };
   }
 
   private fail(f: FlowRow, reason: string, detail: string, now: bigint): void {
@@ -190,14 +270,17 @@ export class Machine {
     return f.kind === "genesis" ? base : join(base, `revival-${f.id}`);
   }
 
-  /** Writes agent.json (exact delivered bytes) + runtime.json (ops template + tee + imageId). */
-  private writeInitFiles(f: FlowRow, frozenText: string, imageId: string): { agentJson: string; runtimeJson: string } {
+  /**
+   * Writes agent.json (exact delivered bytes) + runtime.json (ops template + tee + imageId). `imageIdStamp`
+   * (0x-prefixed) overrides the stamped imageId — revivals stamp the REGISTERED codeHash verbatim (R3).
+   */
+  private writeInitFiles(f: FlowRow, frozenText: string, imageId: string, imageIdStamp?: string): { agentJson: string; runtimeJson: string } {
     const dir = this.workDir(f);
     mkdirSync(dir, { recursive: true });
     const agentJson = join(dir, "agent.json");
     const runtimeJson = join(dir, "runtime.json");
     writeFileSync(agentJson, frozenText);
-    writeFileSync(runtimeJson, `${JSON.stringify({ ...this.d.cfg.runtimeOps, tee: true, imageId: `0x${imageId}` }, null, 2)}\n`);
+    writeFileSync(runtimeJson, `${JSON.stringify({ ...this.d.cfg.runtimeOps, tee: true, imageId: imageIdStamp ?? `0x${imageId}` }, null, 2)}\n`);
     return { agentJson, runtimeJson };
   }
 
@@ -239,12 +322,12 @@ export class Machine {
     const doc = await this.prepareConfig(f, true);
     if (doc === null) return wait(`frozen config ${f.configHash} unavailable (ref ${f.configRef ?? "none"})`);
     verifyFrozen(doc.text, f.configHash, f.agentId);
-    const composePath = f.composePath ?? this.d.cfg.release.composePath;
+    const composePath = this.composeOf(f);
     const imageId = await this.d.oyster.computeImageId({ composePath, agentId: f.agentId, configHash: f.configHash });
     if (`0x${imageId}` !== gate.instance.codeHash.toLowerCase()) {
       throw new Fatal("revival_codehash_mismatch", `release ${composePath} + config give image ${imageId}, registry pins ${gate.instance.codeHash} — keys would differ`);
     }
-    this.writeInitFiles(f, doc.text, imageId);
+    this.writeInitFiles(f, doc.text, imageId, gate.instance.codeHash);
     this.toState(f, "DEPLOYING", now, "prepared", `revival config ${doc.ref} verified; imageId ${imageId}`, {
       frozenJson: doc.text,
       configRef: doc.ref,
@@ -304,23 +387,24 @@ export class Machine {
 
     if (f.deployAttempts >= cap) throw new Fatal("deploy_failed", `${f.deployAttempts} deploy attempts, no CVM job`);
     if (f.imageId === null || f.frozenJson === null) throw new Fatal("state_corrupt", "DEPLOYING without imageId/config");
+    const composePath = this.composeOf(f);
     // Pre-snapshot FIRST: an Oyster outage here throws (transient) ⇒ the launch stays queued with no
     // attempt consumed (04 §7 row 5).
     const before = await this.d.oyster.listJobs(this.d.walletAddress);
     const attempt = f.deployAttempts + 1;
     this.d.db.kvSet(DEPLOY_LOCK, key);
     this.d.db.patchFlow(ref, { deployInFlight: 1, deployStartedAt: Number(now), preDeployJobs: JSON.stringify(before), deployAttempts: attempt }, now);
-    const rental = describeRental(this.d.cfg.oyster);
+    const rental = describeRental(this.rentalOf(f));
     this.d.db.event(key, f.agentId, now, "deploy_submitted", `attempt ${attempt}; ${rental}`);
     this.d.log.info(`[${key}] deploy attempt ${attempt}: ${rental}`);
     const dir = this.workDir(f);
     const res = await this.d.oyster.deploy({
-      composePath: f.composePath ?? this.d.cfg.release.composePath,
+      composePath,
       agentId: f.agentId,
       configHash: f.configHash,
       agentJsonPath: join(dir, "agent.json"),
       runtimeJsonPath: join(dir, "runtime.json"),
-      durationMin: this.d.cfg.oyster.durationMin,
+      durationMin: this.rentalOf(f).durationMin,
       walletKeyPath: this.d.cfg.oyster.walletKeyFile,
       jobName: f.kind === "genesis" ? `agent-${f.agentId}` : `agent-${f.agentId}-rev${f.id}`,
     });

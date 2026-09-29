@@ -1,6 +1,100 @@
 {
   "agents": [
     {
+      "agentId": 1,
+      "name": "DRILL1",
+      "symbol": "DRILL1",
+      "imageURI": null,
+      "creator": "0x5e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f",
+      "configHash": "0x0d1e2f3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+      "token": "0x2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e",
+      "curve": "0x3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f",
+      "poolId": "0xfcc61dbf0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607182933957",
+      "state": "graduated",
+      "requestTx": "0x7a8b9c0d1e2f3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+      "requestBlock": 122782167,
+      "createdAt": 1756684800,
+      "status": "evicted",
+      "instance": {
+        "treasuryEOA": "0x4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+        "actionEOA": "0x5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
+        "codeHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "attestationRef": "drill-local-attestation-1",
+        "lastHeartbeat": 1757030400,
+        "generation": 0
+      },
+      "market": {
+        "price": "0.000440",
+        "priceE18": "440000000000000",
+        "priceSource": "pool",
+        "totalSupply": "1000000000000000000000000",
+        "mcapUsdg": "440000000",
+        "volume24hUsdg": "0"
+      },
+      "balances": {
+        "treasuryUsdg": "0",
+        "treasuryRhEth": "0",
+        "actionUsdg": "0",
+        "actionRhEth": "0",
+        "actionToken": "0",
+        "updatedAt": 1757030400
+      },
+      "fees": {
+        "buybackLeg": "250000",
+        "treasuryLeg": "333333",
+        "royaltyLeg": "250000",
+        "converted": "0",
+        "count": 1
+      }
+    },
+    {
+      "agentId": 2,
+      "name": "Ines",
+      "symbol": "INES",
+      "imageURI": null,
+      "creator": "0x6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192",
+      "configHash": "0x2e3f4a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071",
+      "token": "0x708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3",
+      "curve": "0x8192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4",
+      "poolId": null,
+      "state": "live",
+      "requestTx": "0x8b9c0d1e2f3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+      "requestBlock": 122790001,
+      "createdAt": 1758240000,
+      "status": "stale",
+      "instance": {
+        "treasuryEOA": "0x92a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5",
+        "actionEOA": "0xa3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6",
+        "codeHash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+        "attestationRef": "Qm2rT7wQ1xZ8cV5bM2kL9jH6gF3dS0aY7uE4iO1pW8e",
+        "lastHeartbeat": 1758727800,
+        "generation": 0
+      },
+      "market": {
+        "price": "0.000212",
+        "priceE18": "212000000000000",
+        "priceSource": "curve",
+        "totalSupply": "120000000000000000000000",
+        "mcapUsdg": "25440000",
+        "volume24hUsdg": "0"
+      },
+      "balances": {
+        "treasuryUsdg": "2150000",
+        "treasuryRhEth": "0",
+        "actionUsdg": "40000",
+        "actionRhEth": "0",
+        "actionToken": null,
+        "updatedAt": 1758727800
+      },
+      "fees": {
+        "buybackLeg": "90000",
+        "treasuryLeg": "120000",
+        "royaltyLeg": "90000",
+        "converted": "0",
+        "count": 3
+      }
+    },
+    {
       "agentId": 3,
       "name": "Cato",
       "symbol": "CATO",

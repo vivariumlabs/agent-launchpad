@@ -20,6 +20,12 @@ export default async function DirectoryPage() {
         </div>
         <div className="flex items-center gap-2">
           <Link
+            href="/mausoleum"
+            className="rounded-md border border-slate-700 px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-slate-600 hover:text-white"
+          >
+            Mausoleum
+          </Link>
+          <Link
             href="/nfts"
             className="rounded-md border border-slate-700 px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-slate-600 hover:text-white"
           >
