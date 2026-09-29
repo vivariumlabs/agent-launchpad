@@ -137,7 +137,7 @@ describe("M4B §1: release table", () => {
   it("M4B §1: loads every committed v*.json and matches a codeHash 0x-/case-insensitively against ANY release's imageIds", () => {
     const log = memoryLogger();
     const t = loadReleaseTable(RELEASES, log);
-    expect(t.releases.map((r) => r.version)).toEqual(["v0.1.0", "v0.1.1", "v0.1.2", "v0.1.3", "v0.1.4", "v0.1.5", "v0.1.6"]);
+    expect(t.releases.map((r) => r.version)).toEqual(["v0.1.0", "v0.1.1", "v0.1.2", "v0.1.3", "v0.1.4", "v0.1.5", "v0.1.6", "v0.1.7"]);
     expect(log.lines).toEqual([]);
     const hit = { version: "v0.1.6", commit: "3d9455fb69976db448dd1edb6b991843fb604282", agentId: "8" };
     expect(matchRelease(t, CODE8)).toEqual(hit);
@@ -219,7 +219,7 @@ describe("M4B §1: verify pass (mock GraphQL + gateway)", () => {
     seedAgent(s.db, { codeHash: other });
     s.fake.items.set(REF8, { owner: OWNER8, body: mutateReport((r) => (r.imageId = other)) });
     await s.v.runOnce();
-    expect(checks(s.db)).toEqual({ ...allPass, releaseMatch: "fail" });
+    expect(checks(s.db)).toEqual({ ...allPass, releaseMatch: "fail", measurementMatch: "fail" });
     expect(s.db.attestationChecks(8)!.releaseVersion).toBeNull();
   });
 
@@ -235,7 +235,7 @@ describe("M4B §1: verify pass (mock GraphQL + gateway)", () => {
       seedAgent(s.db);
       s.fake.items.set(REF8, { owner: OWNER8, body });
       await s.v.runOnce();
-      expect(checks(s.db)).toEqual({ ...allPass, reportParses: "fail", eoasMatch: "skip", configHashMatch: "skip", imageIdMatch: "skip" });
+      expect(checks(s.db)).toEqual({ ...allPass, reportParses: "fail", eoasMatch: "skip", configHashMatch: "skip", imageIdMatch: "skip", quoteValid: "skip", measurementMatch: "skip" });
     }
   });
 
@@ -244,7 +244,7 @@ describe("M4B §1: verify pass (mock GraphQL + gateway)", () => {
     seedAgent(s.db);
     s.fake.items.set(REF8, { owner: OWNER8, body: "x".repeat(MAX_REPORT_BYTES + 1) });
     await s.v.runOnce();
-    expect(checks(s.db)).toEqual({ ...allPass, itemFound: "fail", reportParses: "skip", eoasMatch: "skip", configHashMatch: "skip", imageIdMatch: "skip" });
+    expect(checks(s.db)).toEqual({ ...allPass, itemFound: "fail", reportParses: "skip", eoasMatch: "skip", configHashMatch: "skip", imageIdMatch: "skip", quoteValid: "skip", measurementMatch: "skip" });
     // exactly 256 KiB is allowed (then fails to parse — a different check)
     const t = setup();
     seedAgent(t.db);
@@ -310,7 +310,7 @@ describe("M4B §1: verify pass (mock GraphQL + gateway)", () => {
     const c = setup({ arweave: false });
     seedAgent(c.db);
     await c.v.runOnce();
-    expect(checks(c.db)).toEqual({ refShape: "pass", itemFound: "skip", reportParses: "skip", eoasMatch: "skip", configHashMatch: "skip", imageIdMatch: "skip", releaseMatch: "pass" });
+    expect(checks(c.db)).toEqual({ refShape: "pass", itemFound: "skip", reportParses: "skip", eoasMatch: "skip", configHashMatch: "skip", imageIdMatch: "skip", releaseMatch: "pass", quoteValid: "skip", measurementMatch: "skip" });
     expect(c.fake.requests).toEqual([]);
   });
 
@@ -402,7 +402,7 @@ describe("M4B §1: attestation API", () => {
     });
 
     const drill = await get("/api/agents/3/attestation");
-    expect(drill.body.checks.map((c: { status: string }) => c.status)).toEqual(Array(7).fill("skip"));
+    expect(drill.body.checks.map((c: { status: string }) => c.status)).toEqual(Array(CHECK_NAMES.length).fill("skip"));
     expect(drill.body.checks[0].detail).toBe("local ref (drill): attestation-1790597593.json");
     expect(drill.body.arweaveUrl).toBeNull();
     expect(drill.body.verifyYourself.commands).toHaveLength(4);

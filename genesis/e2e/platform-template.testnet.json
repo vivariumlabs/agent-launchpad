@@ -1,5 +1,5 @@
 {
-  "_comment": "SPEC-M4B \u00a72 launch-helper platformTemplate (testnet): the platform section of the live agent-8 frozen config (configHash 0x06640d64\u2026, runtime v0.1.6). Manifest addresses overlay registry/feeSplitHook/poolManager/usdg/swapRouter/chainIds .rh at load; agentTokenAddress/agentPoolId are per-agent and stripped. Drill placeholders (0xf1\u2026/0xcc\u2026/0xbb\u2026/0xdd\u2026, chatDomain drill8.vivarium.invalid, registration mock) are carried as-is \u2014 replace before any mainnet use.",
+  "_comment": "SPEC-M4B \u00a72 launch-helper platformTemplate (testnet): the platform section of the live agent-8 frozen config (configHash 0x06640d64\u2026, runtime v0.1.6). Manifest addresses overlay registry/feeSplitHook/poolManager/usdg/swapRouter/chainIds .rh at load; agentTokenAddress/agentPoolId are per-agent and stripped. Drill placeholders (0xf1\u2026/0xcc\u2026/0xbb\u2026/0xdd\u2026, chatDomain drill8.vivarium.invalid, registration mock) are carried as-is \u2014 replace before any mainnet use. SPEC-M4D \u00a73: agentDnsRoot added (NOT in agent 8's frozen config; required by the launch-helper \u2014 TLS-enabled boot throws without it, agent-9 lesson).",
   "platform": {
     "registry": {
       "rh": "0xDBA9680C0F1958Af7Bc34a225863D93df2B92f59",
@@ -119,6 +119,7 @@
       "attestationRef": "mock-attestation"
     },
     "chatDomain": "drill8.vivarium.invalid",
+    "agentDnsRoot": "vivarium.systems",
     "chatRpc": [
       "https://rpc.testnet.chain.robinhood.com",
       "https://rpc.testnet.chain.robinhood.com"

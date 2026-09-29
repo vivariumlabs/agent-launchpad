@@ -6,7 +6,9 @@
     "eoasMatch": "pass",
     "configHashMatch": "pass",
     "imageIdMatch": "pass",
-    "releaseMatch": "pass"
+    "releaseMatch": "pass",
+    "quoteValid": "pass",
+    "measurementMatch": "pass"
   },
   "verifiedAt": "2025-09-28T01:30:00.000Z",
   "releaseVersion": "0.1.6",

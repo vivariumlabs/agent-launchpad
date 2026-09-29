@@ -27,6 +27,10 @@ export const CHECK_NAMES: AttestationCheckName[] = [
   "configHashMatch",
   "imageIdMatch",
   "releaseMatch",
+  // SPEC-M4D R3 — known names, so the indexer's verdicts are shown (an unknown name is ignored and
+  // an absent one stays "pending", e.g. against a pre-M4D indexer).
+  "quoteValid",
+  "measurementMatch",
 ];
 
 const RESULTS: readonly CheckResult[] = ["pass", "fail", "pending", "skip"];

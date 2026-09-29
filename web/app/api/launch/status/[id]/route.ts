@@ -24,6 +24,8 @@ const ALL: AttestationChecks = {
   configHashMatch: "pass",
   imageIdMatch: "pass",
   releaseMatch: "pass",
+  quoteValid: "pass",
+  measurementMatch: "pass",
 };
 
 function fromViews(

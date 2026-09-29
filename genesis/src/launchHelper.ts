@@ -64,6 +64,20 @@ export const REQUIRED_PLATFORM_KEYS = [
   "swapRouter",
   "usdcDomain",
 ] as const;
+/**
+ * SPEC-M4D §3 (agent-9 lesson): keys every PRODUCTION platform section must carry although the
+ * runtime schema leaves them optional — TLS-enabled boot throws without agentDnsRoot. Enforced where
+ * the launch-helper loads its platformTemplate (createLaunchHelper), not in buildPlatform, so the
+ * golden fixtures (agent 8's historical frozen config, which predates the key) keep their meaning.
+ */
+export const LAUNCH_REQUIRED_PLATFORM_KEYS = ["agentDnsRoot"] as const;
+
+/** Throws when a launch-helper platform section lacks a LAUNCH_REQUIRED_PLATFORM_KEYS key (non-empty string). */
+export function assertLaunchPlatform(platform: Record<string, unknown>): void {
+  const missing = LAUNCH_REQUIRED_PLATFORM_KEYS.filter((k) => typeof platform[k] !== "string" || (platform[k] as string).trim() === "");
+  if (missing.length > 0) throw new Error(`platformTemplate lacks launch-required platform keys: ${missing.join(", ")} (TLS-enabled boot throws without agentDnsRoot)`);
+}
+
 /** POST body cap (bin/launch-helper.ts enforces it while reading). */
 export const MAX_BODY_BYTES = 64 * 1024;
 export const REJECTIONS_FILE = "moderation-rejections.jsonl";
@@ -448,6 +462,7 @@ export function createLaunchHelper(cfg: GenesisConfig, log: Logger, o: { factory
     allowlist = parsed.entries;
   }
   const platform = buildPlatform({ template: JSON.parse(readFileSync(lh.platformTemplate, "utf8")), contracts: cfg.contracts, manifest, allowlist });
+  assertLaunchPlatform(platform);
   const release = lh.releasesTemplate === undefined ? undefined : (JSON.parse(readFileSync(lh.releasesTemplate, "utf8")) as unknown);
   const composeVersion = composeVersionOf(lh.composePath, release, cfg.oyster);
   const timeoutMs = lh.httpTimeoutSec * 1000;

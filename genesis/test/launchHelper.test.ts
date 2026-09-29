@@ -453,8 +453,10 @@ describe("M4B §2: server + config", () => {
     const { helper } = createLaunchHelper(cfg, memoryLogger(), { factory: { agentCount: async () => 7n } });
     const tpl = helper.template() as { platform: unknown; composeVersion: string };
     expect(tpl.composeVersion).toBe("v0.1.6");
-    expect(tpl.platform).toEqual(AGENT8.platform);
-    expect(frozenConfigHash({ platform: tpl.platform, agent: AGENT8.agent })).toBe(CFG8);
+    // SPEC-M4D §3: the template = agent 8's platform + agentDnsRoot (golden still anchored on agent 8).
+    expect(tpl.platform).toEqual({ ...AGENT8.platform, agentDnsRoot: "vivarium.systems" });
+    const { agentDnsRoot: _dnsRoot, ...platform8Only } = tpl.platform as Record<string, unknown>;
+    expect(frozenConfigHash({ platform: platform8Only, agent: AGENT8.agent })).toBe(CFG8);
 
     // Section optional; DEFAULTs fill from the rest of the config.
     const d = mkdtempSync(join(tmpdir(), "lh-cfg-"));

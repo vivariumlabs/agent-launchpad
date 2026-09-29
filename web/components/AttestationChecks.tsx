@@ -10,6 +10,10 @@ export const CHECK_ICON: Record<CheckResult, string> = {
   skip: "—",
 };
 
+/** SPEC-M4D R5 — replaces the R1 "not re-verified here" caveat row. */
+export const QUOTE_NOTE =
+  "The indexer re-verifies the TEE quote published in the agent's registration-time attestation report — its signature and certificate chain up to the pinned AWS Nitro root key, and the image-id measured from its PCRs — while “Verify it yourself” below checks the running enclave independently.";
+
 const RESULT_TEXT: Record<CheckResult, string> = {
   pass: "pass",
   fail: "FAIL",
@@ -24,7 +28,7 @@ const RESULT_STYLE: Record<CheckResult, string> = {
   skip: "text-slate-500",
 };
 
-/** Human labels, in the indexer's evaluation order (SPEC-M4B §1b). */
+/** Human labels, in the indexer's evaluation order (SPEC-M4B §1b, SPEC-M4D R3). */
 export const CHECK_LABELS: Record<AttestationCheckName, string> = {
   refShape: "Attestation ref is an Arweave item id",
   itemFound: "Attestation report found on Arweave",
@@ -33,6 +37,8 @@ export const CHECK_LABELS: Record<AttestationCheckName, string> = {
   configHashMatch: "Report config hash = factory-anchored config hash",
   imageIdMatch: "Report image-id = registered code hash",
   releaseMatch: "Code hash is in a published runtime release",
+  quoteValid: "TEE quote verifies (signature + certificate chain to the pinned AWS Nitro root)",
+  measurementMatch: "Quote's measured image-id = registered code hash",
 };
 
 export const CHECK_ORDER: AttestationCheckName[] = [
@@ -43,12 +49,16 @@ export const CHECK_ORDER: AttestationCheckName[] = [
   "configHashMatch",
   "imageIdMatch",
   "releaseMatch",
+  "quoteValid",
+  "measurementMatch",
 ];
 
 /** Why a check is skipped — bounded honesty, never a guess beyond what the verdicts imply. */
 function skipReason(name: AttestationCheckName, checks: AttestationChecks): string {
   if (checks.refShape === "skip") return "local ref (drill)";
   if (name === "releaseMatch") return "no release table";
+  if (name === "measurementMatch" && checks.quoteValid !== "pass") return "quote not verified";
+  if (name === "quoteValid" || name === "measurementMatch") return "report not available";
   return "not applicable";
 }
 
@@ -88,7 +98,7 @@ export function CheckRow({
   );
 }
 
-/** The seven indexer checks plus the R1 quote-signature row (never ✅ this slice). */
+/** The nine indexer checks plus the SPEC-M4D R5 note on what the quote checks cover. */
 export function AttestationCheckList({
   checks,
   reasons,
@@ -117,13 +127,9 @@ export function AttestationCheckList({
           />
         );
       })}
-      <CheckRow
-        icon="—"
-        label="TEE quote signature (AWS Nitro root)"
-        result="not re-verified here"
-        resultStyle="text-slate-500"
-        note="This site does not re-verify the raw attestation quote signature — use “Verify it yourself” below."
-      />
+      <li className="px-4 py-3 text-xs text-slate-500">
+        {QUOTE_NOTE}
+      </li>
     </ul>
   );
 }

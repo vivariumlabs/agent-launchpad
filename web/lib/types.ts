@@ -183,7 +183,7 @@ export interface JournalResponse {
  */
 export type CheckResult = "pass" | "fail" | "pending" | "skip";
 
-/** Check names, in the indexer's evaluation order (SPEC-M4B §1b). */
+/** Check names, in the indexer's evaluation order (SPEC-M4B §1b; SPEC-M4D R3 appends the quote checks). */
 export type AttestationCheckName =
   | "refShape"
   | "itemFound"
@@ -191,7 +191,9 @@ export type AttestationCheckName =
   | "eoasMatch"
   | "configHashMatch"
   | "imageIdMatch"
-  | "releaseMatch";
+  | "releaseMatch"
+  | "quoteValid"
+  | "measurementMatch";
 
 export type AttestationChecks = Record<AttestationCheckName, CheckResult>;
 

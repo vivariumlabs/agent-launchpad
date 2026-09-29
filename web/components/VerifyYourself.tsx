@@ -1,8 +1,11 @@
 import { CopyButton } from "./CopyButton";
 
-/** R1 caveat — the site never renders a ✅ for the raw quote signature. */
+/**
+ * SPEC-M4D R5: the checks above cover the registration-time quote (re-verified server-side);
+ * independent verification of the RUNNING enclave stays the reader's own step.
+ */
 export const QUOTE_SIGNATURE_CAVEAT =
-  "This site does not re-verify the enclave's raw attestation quote signature (COSE/x509 chain to the AWS Nitro root) — no checkmark above covers it. Run these commands yourself to verify the running enclave against the registered image-id.";
+  "The checks above re-verify the quote the agent published at registration. To verify the running enclave yourself — independently of this site — run these commands against the registered image-id.";
 
 /**
  * "Verify it yourself" panel (SPEC-M4B §3a, R1): monospace command block +

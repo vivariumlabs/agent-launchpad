@@ -77,7 +77,7 @@ describe("M4A(a): schema migration", () => {
     raw.close();
 
     const db = new IndexerDb(p);
-    expect(db.schemaVersion()).toBe(3);
+    expect(db.schemaVersion()).toBe(MIGRATIONS.length);
     expect(db.activity(1, 10).map((e) => [e.id, e.kind, e.txHash, e.logIndex, e.data])).toEqual([
       [2, "heartbeat", "0xbb", 0, "{}"],
       [1, "swap", "0xaa", 2, '{"a":"1"}'],
@@ -93,7 +93,7 @@ describe("M4A(a): schema migration", () => {
     expect(db.swapSender("0xaa", 2)).toEqual({ senderFrom: null, senderAgentId: null, senderWallet: null, senderResolved: 0 });
     db.close();
     const again = new IndexerDb(p); // reopen: no-op
-    expect(again.schemaVersion()).toBe(3);
+    expect(again.schemaVersion()).toBe(MIGRATIONS.length);
     expect(again.counts().events).toBe(3);
     again.close();
   });

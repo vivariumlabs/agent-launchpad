@@ -137,8 +137,8 @@ export interface JournalOwnerRow {
 /** SPEC-M4B §1b check outcome. `skip` = not applicable (drill ref / no release table); `pending` = not yet decidable (transport, not indexed). */
 export type CheckStatus = "pass" | "fail" | "pending" | "skip";
 
-/** SPEC-M4B §1b check names, in evaluation order (the attestation_checks columns). */
-export const CHECK_NAMES = ["refShape", "itemFound", "reportParses", "eoasMatch", "configHashMatch", "imageIdMatch", "releaseMatch"] as const;
+/** SPEC-M4B §1b check names, in evaluation order (the attestation_checks columns); SPEC-M4D R3 appends quoteValid, measurementMatch. */
+export const CHECK_NAMES = ["refShape", "itemFound", "reportParses", "eoasMatch", "configHashMatch", "imageIdMatch", "releaseMatch", "quoteValid", "measurementMatch"] as const;
 export type CheckName = (typeof CHECK_NAMES)[number];
 
 export interface AttestationCheckRow {
@@ -151,6 +151,9 @@ export interface AttestationCheckRow {
   configHashMatch: CheckStatus;
   imageIdMatch: CheckStatus;
   releaseMatch: CheckStatus;
+  /** SPEC-M4D R3 (schema v4). */
+  quoteValid: CheckStatus;
+  measurementMatch: CheckStatus;
   releaseVersion: string | null;
   /** JSON-encoded verify.ts VerifyDetail. */
   detail: string;
@@ -243,6 +246,11 @@ export const MIGRATIONS: readonly string[] = [
   DROP TABLE events;
   ALTER TABLE events_v3 RENAME TO events;
   CREATE INDEX events_agent ON events (agentId, blockNumber, logIndex);
+  `,
+  // SPEC-M4D §2 — NSM quote re-verification checks; existing rows read `pending` until the next pass.
+  `
+  ALTER TABLE attestation_checks ADD COLUMN quoteValid TEXT NOT NULL DEFAULT 'pending';
+  ALTER TABLE attestation_checks ADD COLUMN measurementMatch TEXT NOT NULL DEFAULT 'pending';
   `,
 ];
 
@@ -763,12 +771,13 @@ export class IndexerDb {
   upsertAttestationChecks(r: AttestationCheckRow): void {
     this.db
       .prepare(
-        `INSERT INTO attestation_checks (agentId, verifiedAt, refShape, itemFound, reportParses, eoasMatch, configHashMatch, imageIdMatch, releaseMatch, releaseVersion, detail)
-         VALUES (@agentId, @verifiedAt, @refShape, @itemFound, @reportParses, @eoasMatch, @configHashMatch, @imageIdMatch, @releaseMatch, @releaseVersion, @detail)
+        `INSERT INTO attestation_checks (agentId, verifiedAt, refShape, itemFound, reportParses, eoasMatch, configHashMatch, imageIdMatch, releaseMatch, quoteValid, measurementMatch, releaseVersion, detail)
+         VALUES (@agentId, @verifiedAt, @refShape, @itemFound, @reportParses, @eoasMatch, @configHashMatch, @imageIdMatch, @releaseMatch, @quoteValid, @measurementMatch, @releaseVersion, @detail)
          ON CONFLICT(agentId) DO UPDATE SET
            verifiedAt = excluded.verifiedAt, refShape = excluded.refShape, itemFound = excluded.itemFound, reportParses = excluded.reportParses,
            eoasMatch = excluded.eoasMatch, configHashMatch = excluded.configHashMatch, imageIdMatch = excluded.imageIdMatch,
-           releaseMatch = excluded.releaseMatch, releaseVersion = excluded.releaseVersion, detail = excluded.detail`,
+           releaseMatch = excluded.releaseMatch, quoteValid = excluded.quoteValid, measurementMatch = excluded.measurementMatch,
+           releaseVersion = excluded.releaseVersion, detail = excluded.detail`,
       )
       .run(r);
   }
@@ -785,6 +794,8 @@ export class IndexerDb {
       configHashMatch: c("configHashMatch"),
       imageIdMatch: c("imageIdMatch"),
       releaseMatch: c("releaseMatch"),
+      quoteValid: c("quoteValid"),
+      measurementMatch: c("measurementMatch"),
       releaseVersion: s(r.releaseVersion),
       detail: String(r.detail),
     };

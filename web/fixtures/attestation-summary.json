@@ -19,7 +19,8 @@
       "status": "live",
       "worst": "fail",
       "failing": [
-        "configHashMatch"
+        "configHashMatch",
+        "measurementMatch"
       ]
     },
     {

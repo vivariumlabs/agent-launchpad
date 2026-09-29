@@ -1,5 +1,5 @@
 {
-  "_fixture": "Indexer wire shape (checks as [{name,status,detail}], verifiedAt unix seconds, report/registry extras) \u2014 the web normalizes both this and the record shape.",
+  "_fixture": "Indexer wire shape (checks as [{name,status,detail}], verifiedAt unix seconds, report/registry extras) — the web normalizes both this and the record shape.",
   "agentId": 7,
   "checks": [
     {
@@ -25,7 +25,7 @@
     {
       "name": "configHashMatch",
       "status": "fail",
-      "detail": "report configHash 0x9b0c\u202611aa != factory configHash 0xe4d7\u202635ec"
+      "detail": "report configHash 0x9b0c…11aa != factory configHash 0xe4d7…35ec"
     },
     {
       "name": "imageIdMatch",
@@ -36,6 +36,16 @@
       "name": "releaseMatch",
       "status": "pass",
       "detail": null
+    },
+    {
+      "name": "quoteValid",
+      "status": "pass",
+      "detail": null
+    },
+    {
+      "name": "measurementMatch",
+      "status": "fail",
+      "detail": "quote image-id 0558ac28…9cc4a ≠ registry codeHash 0xcd5040ae…ed804; report self-reports imageId cd5040ae…ed804 (also diverges from the quote)"
     }
   ],
   "verifiedAt": 1759023000,

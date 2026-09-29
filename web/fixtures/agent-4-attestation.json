@@ -6,7 +6,9 @@
     "eoasMatch": "skip",
     "configHashMatch": "skip",
     "imageIdMatch": "skip",
-    "releaseMatch": "skip"
+    "releaseMatch": "skip",
+    "quoteValid": "skip",
+    "measurementMatch": "skip"
   },
   "verifiedAt": "2025-09-28T01:30:00.000Z",
   "releaseVersion": null,

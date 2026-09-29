@@ -1,8 +1,9 @@
 // SPEC-M4B §1b verify.ts — attestation verification job (own loop, every verifySec DEFAULT 300).
 //
-// R1 (honest checkmarks): ONLY what public data can prove — Arweave report ↔ chain cross-checks and
-// release-table membership. The raw NSM quote signature (COSE/x509 → AWS Nitro root) is NOT
-// re-verified here; the API's "verify yourself" panel carries the commands instead.
+// R1 (honest checkmarks): ONLY what public data can prove — Arweave report ↔ chain cross-checks,
+// release-table membership and (SPEC-M4D) the report's raw NSM quote, re-verified in-house
+// (COSE_Sign1/ES384 + x509 chain → the pinned AWS Nitro root, nsm/quote.ts). The API's "verify
+// yourself" panel still carries the independent-verification commands.
 // R2: a transport failure (GraphQL / gateway unreachable, HTTP error, not indexed yet) leaves the
 // affected checks `pending` — never `fail` — and is warned LOUDLY. Only a property of the published
 // data (oversize item, unparseable report, mismatched value, unknown image-id) is a `fail`.
@@ -22,19 +23,30 @@
 //   6 imageIdMatch    report.imageId == instances.codeHash (0x-stripped, case-insensitive).
 //   7 releaseMatch    §1a membership of instances.codeHash (+ releaseVersion); `skip` "no release
 //                     table" when releasesDir is unset.
+//   8 quoteValid      SPEC-M4D R3: report.quote (quoteEncoding "base64") verifies per nsm/quote.ts
+//                     (parse + COSE + chain at the doc timestamp + root pin). Missing / oversize /
+//                     undecodable quote or any verification failure ⇒ fail (R2: a data property).
+//   9 measurementMatch the quote's TRUE image-id (from its PCRs) == instances.codeHash (0x-/case-
+//                     insensitive); `skip` unless quoteValid passed. Catches a runtime that
+//                     self-reports a stale imageId (agent 10), which 4–6 cannot see.
 // When the report bytes are unavailable because of a `fail` upstream, 3–6 are `skip` (not
-// evaluable); when unavailable because of transport, they are `pending`.
+// evaluable); when unavailable because of transport, they are `pending`. 8–9 run on bytes already
+// fetched (no transport of their own, R2) so they are never `pending` after a pass: `skip` whenever
+// the report is unavailable (either cause) or unparseable, like every other upstream cascade.
 
 import type { Clock } from "./clock.js";
 import { CHECK_NAMES, type AttestationCheckRow, type CheckName, type CheckStatus, type IndexerDb, type InstanceRow } from "./db.js";
 import { ArweaveTooLargeError, isArweaveId } from "./enrich.js";
 import { errMsg, type Logger } from "./log.js";
+import { verifyQuote } from "./nsm/quote.js";
 import { matchRelease, normHex, type ReleaseTable } from "./releases.js";
 
 export const REPORT_KIND = "agent-launchpad.attestation-report";
 /** §1b itemFound size bound. */
 export const MAX_REPORT_BYTES = 256 * 1024;
 export const VERIFY_LAST_RUN_KEY = "verify.lastRun";
+/** SPEC-M4D R2 quote size bound (decoded bytes). DEFAULT — a real NSM document is ~4.5 KiB. */
+export const MAX_QUOTE_BYTES = 32 * 1024;
 
 /** The Arweave seam (HttpArweaveClient in production). */
 export interface AttestationArweave {
@@ -51,6 +63,21 @@ export interface ReportFields {
   imageId: string | null;
 }
 
+/** SPEC-M4D R3 — recorded once quoteValid passed. */
+export interface QuoteDetail {
+  /** The image-id computed from the quote's own PCRs (lowercase hex, no 0x). */
+  trueImageId: string;
+  timestampMs: number;
+  moduleId: string;
+  rootKeyOk: true;
+  /** instances.codeHash as registered. */
+  registeredCodeHash: string;
+  /** report.imageId as self-reported by the runtime. */
+  reportImageId: string;
+  /** true ⇔ the self-reported imageId ALSO differs from the quote's true image-id. */
+  reportImageIdDiverges: boolean;
+}
+
 /** Stored as attestation_checks.detail (JSON). */
 export interface VerifyDetail {
   /** Human-readable reason per non-pass check. */
@@ -60,6 +87,8 @@ export interface VerifyDetail {
   releaseCommit: string | null;
   /** The report's cross-checked fields (null until a report parsed). */
   report: ReportFields | null;
+  /** SPEC-M4D: the verified quote's facts (null unless quoteValid passed). */
+  quote: QuoteDetail | null;
 }
 
 export type Checks = Record<CheckName, CheckStatus>;
@@ -82,10 +111,32 @@ export function checksOf(r: AttestationCheckRow): Checks {
     configHashMatch: r.configHashMatch,
     imageIdMatch: r.imageIdMatch,
     releaseMatch: r.releaseMatch,
+    quoteValid: r.quoteValid,
+    measurementMatch: r.measurementMatch,
   };
 }
 
-type Parsed = { ok: true; fields: { treasury: string; action: string; configHash: string; imageId: string } } | { ok: false; reason: string; fields: ReportFields | null };
+/** SPEC-M4D: the report's raw NSM quote fields (as published; null when absent / not a string). */
+export interface ReportQuote {
+  quote: string | null;
+  quoteEncoding: string | null;
+}
+
+type Parsed =
+  | { ok: true; fields: { treasury: string; action: string; configHash: string; imageId: string }; quote: ReportQuote }
+  | { ok: false; reason: string; fields: ReportFields | null; quote: ReportQuote | null };
+
+/** SPEC-M4D §2: report.quote → NSM document bytes, or the fail reason. */
+export function decodeReportQuote(q: ReportQuote): { ok: true; bytes: Uint8Array } | { ok: false; reason: string } {
+  if (q.quote === null || q.quote === "") return { ok: false, reason: "no quote in report" };
+  if (q.quoteEncoding !== "base64") return { ok: false, reason: `quoteEncoding ${JSON.stringify(q.quoteEncoding)} ≠ "base64"` };
+  if (q.quote.length > Math.ceil(MAX_QUOTE_BYTES / 3) * 4) return { ok: false, reason: `quote exceeds ${MAX_QUOTE_BYTES} bytes` };
+  if (q.quote.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(q.quote)) return { ok: false, reason: "quote is not valid base64" };
+  const bytes = Buffer.from(q.quote, "base64");
+  if (bytes.toString("base64") !== q.quote) return { ok: false, reason: "quote is not canonical base64" };
+  if (bytes.byteLength > MAX_QUOTE_BYTES) return { ok: false, reason: `quote exceeds ${MAX_QUOTE_BYTES} bytes` };
+  return { ok: true, bytes: new Uint8Array(bytes) };
+}
 
 /** §1b check 3 (pure). */
 export function parseReport(bytes: Uint8Array): Parsed {
@@ -93,9 +144,9 @@ export function parseReport(bytes: Uint8Array): Parsed {
   try {
     v = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   } catch {
-    return { ok: false, reason: "report is not UTF-8 JSON", fields: null };
+    return { ok: false, reason: "report is not UTF-8 JSON", fields: null, quote: null };
   }
-  if (v === null || typeof v !== "object" || Array.isArray(v)) return { ok: false, reason: "report is not a JSON object", fields: null };
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return { ok: false, reason: "report is not a JSON object", fields: null, quote: null };
   const o = v as Record<string, unknown>;
   const eoas = o.eoas !== null && typeof o.eoas === "object" && !Array.isArray(o.eoas) ? (o.eoas as Record<string, unknown>) : null;
   const str = (x: unknown): string | null => (typeof x === "string" ? x : null);
@@ -105,11 +156,12 @@ export function parseReport(bytes: Uint8Array): Parsed {
     configHash: str(o.configHash),
     imageId: str(o.imageId),
   };
-  if (o.kind !== REPORT_KIND) return { ok: false, reason: `kind ${JSON.stringify(o.kind)} ≠ ${JSON.stringify(REPORT_KIND)}`, fields };
-  if (eoas === null) return { ok: false, reason: "report has no eoas object", fields };
+  const quote: ReportQuote = { quote: str(o.quote), quoteEncoding: str(o.quoteEncoding) };
+  if (o.kind !== REPORT_KIND) return { ok: false, reason: `kind ${JSON.stringify(o.kind)} ≠ ${JSON.stringify(REPORT_KIND)}`, fields, quote };
+  if (eoas === null) return { ok: false, reason: "report has no eoas object", fields, quote };
   const missing = (Object.keys(fields) as Array<keyof ReportFields>).filter((k) => fields[k] === null);
-  if (missing.length > 0) return { ok: false, reason: `report lacks ${missing.join(", ")}`, fields };
-  return { ok: true, fields: fields as { treasury: string; action: string; configHash: string; imageId: string } };
+  if (missing.length > 0) return { ok: false, reason: `report lacks ${missing.join(", ")}`, fields, quote };
+  return { ok: true, fields: fields as { treasury: string; action: string; configHash: string; imageId: string }, quote };
 }
 
 export class Verifier {
@@ -155,8 +207,10 @@ export class Verifier {
       configHashMatch: "pending",
       imageIdMatch: "pending",
       releaseMatch: "pending",
+      quoteValid: "pending",
+      measurementMatch: "pending",
     };
-    const detail: VerifyDetail = { reasons: {}, owner: null, itemBytes: null, releaseCommit: null, report: null };
+    const detail: VerifyDetail = { reasons: {}, owner: null, itemBytes: null, releaseCommit: null, report: null, quote: null };
     let releaseVersion: string | null = null;
     const set = (k: CheckName, s: CheckStatus, reason?: string): void => {
       checks[k] = s;
@@ -188,9 +242,10 @@ export class Verifier {
     }
 
     const REPORT_CHECKS = ["reportParses", "eoasMatch", "configHashMatch", "imageIdMatch"] as const;
+    const QUOTE_CHECKS = ["quoteValid", "measurementMatch"] as const;
     if (this.arweave === null) {
       set("itemFound", "skip", "arweave disabled in indexer config");
-      for (const k of REPORT_CHECKS) set(k, "skip", "arweave disabled in indexer config");
+      for (const k of [...REPORT_CHECKS, ...QUOTE_CHECKS]) set(k, "skip", "arweave disabled in indexer config");
       return row();
     }
 
@@ -227,12 +282,14 @@ export class Verifier {
     if (bytes === null) {
       const s: CheckStatus = bytesState === "too-large" ? "skip" : "pending";
       for (const k of REPORT_CHECKS) set(k, s, bytesState === "too-large" ? "report unavailable (itemFound failed)" : "report not fetched (transport)");
+      // R2: the quote checks have no transport of their own — never pending after a pass.
+      for (const k of QUOTE_CHECKS) set(k, "skip", bytesState === "too-large" ? "report unavailable (itemFound failed)" : "report not fetched (transport)");
     } else {
       const p = parseReport(bytes);
       detail.report = p.fields;
       if (!p.ok) {
         set("reportParses", "fail", p.reason);
-        for (const k of REPORT_CHECKS) if (k !== "reportParses") set(k, "skip", "report unparseable");
+        for (const k of [...REPORT_CHECKS, ...QUOTE_CHECKS]) if (k !== "reportParses") set(k, "skip", "report unparseable");
       } else {
         set("reportParses", "pass");
         const r = p.fields;
@@ -249,6 +306,7 @@ export class Verifier {
         else set("configHashMatch", "fail", `report configHash ${r.configHash} ≠ factory ${anchored}`);
         if (normHex(r.imageId) === normHex(inst.codeHash)) set("imageIdMatch", "pass");
         else set("imageIdMatch", "fail", `report imageId ${r.imageId} ≠ registry codeHash ${inst.codeHash}`);
+        await this.quoteChecks(p.quote, r.imageId, inst, set, detail);
       }
     }
 
@@ -257,5 +315,34 @@ export class Verifier {
       this.log.warn(`ATTESTATION CHECK FAILED: agent ${agentId}: ${failing.map((k) => `${k} (${detail.reasons[k] ?? "?"})`).join("; ")}`);
     }
     return row();
+  }
+
+  /** SPEC-M4D R3 — checks 8 (quoteValid) and 9 (measurementMatch). */
+  private async quoteChecks(q: ReportQuote, reportImageId: string, inst: InstanceRow, set: (k: CheckName, s: CheckStatus, reason?: string) => void, detail: VerifyDetail): Promise<void> {
+    const d = decodeReportQuote(q);
+    if (!d.ok) {
+      set("quoteValid", "fail", d.reason);
+      set("measurementMatch", "skip", "quoteValid failed");
+      return;
+    }
+    let v;
+    try {
+      v = await verifyQuote(d.bytes);
+    } catch (e) {
+      set("quoteValid", "fail", errMsg(e));
+      set("measurementMatch", "skip", "quoteValid failed");
+      return;
+    }
+    set("quoteValid", "pass");
+    const reportImageIdDiverges = normHex(reportImageId) !== v.trueImageId;
+    detail.quote = { ...v, registeredCodeHash: inst.codeHash, reportImageId, reportImageIdDiverges };
+    if (v.trueImageId === normHex(inst.codeHash)) set("measurementMatch", "pass");
+    else {
+      set(
+        "measurementMatch",
+        "fail",
+        `quote image-id ${v.trueImageId} ≠ registry codeHash ${inst.codeHash}; report self-reports imageId ${reportImageId} (${reportImageIdDiverges ? "also diverges from the quote" : "matches the quote"})`,
+      );
+    }
   }
 }
