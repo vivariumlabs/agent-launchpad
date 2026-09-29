@@ -34,6 +34,12 @@ export function Header() {
           >
             $TOKEN
           </Link>
+          <Link
+            href="/docs"
+            className="text-sm font-medium text-slate-300 transition hover:text-white"
+          >
+            Docs
+          </Link>
           <ConnectButton />
         </div>
       </div>

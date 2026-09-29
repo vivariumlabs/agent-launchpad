@@ -32,7 +32,7 @@ Exit gate: a stranger with a wallet could launch, chat, claim, burn, and revive 
 Exit gate: 2 clean days; attack log written up; audit package prepared.
 
 ## M6 — Audit, legal, $TOKEN, mainnet (calendar-gated)
-External audit + fixes; legal opinion (**blocker**, 06 §5); deploy contracts to mainnet; launch $TOKEN on PONS; wire the FloorVault to the real $TOKEN (D18); capped beta (20 agents, allowlist) per 06 §3.4; public transparency docs live.
+External audit + fixes; legal opinion (**blocker**, 06 §5); launch $TOKEN on PONS **first**, then deploy contracts to mainnet with the FloorVault pointed at the real $TOKEN (D18; SPEC-M4G R6 ordering: the vault takes the token at deploy and the hook takes the vault — no setters exist); capped beta (20 agents, allowlist) per 06 §3.4; public transparency docs live.
 Exit gate: audit published, counsel sign-off, beta caps active, monitoring live.
 
 ## M7 — Open launch
