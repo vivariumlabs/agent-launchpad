@@ -1,11 +1,19 @@
 /**
  * Fixtures mode data (SPEC-M4A §2): active whenever INDEXER_URL is unset.
- * Three agents: one live with a rich journal, one pending (requested, not
- * yet deployed), one evicted. Shapes match the live indexer API exactly
+ * Agents: 3 live with a rich journal, 5 pending (requested, not yet
+ * deployed), 9 evicted; SPEC-M4B adds 4 (live, drill-style local ref) and 7
+ * (live, one failing check). Shapes match the live indexer API exactly
  * (web/lib/types.ts, mirroring indexer/src/api.ts).
+ *
+ * Attestation states (SPEC-M4B §3a): 3 all-pass, 7 one failing
+ * (configHashMatch — drives the site-wide banner in fixtures mode too),
+ * 4 drill/skip cascade, 9 pending (Arweave unreachable), 5 no instance.
+ * Launch helper mocks (SPEC-M4B §3b): template + prepare.
  */
 import type {
   ActivityItem,
+  LaunchPrepared,
+  LaunchTemplate,
   ActivityResponse,
   AgentView,
   AgentsResponse,
@@ -19,19 +27,35 @@ import agent3Json from "../fixtures/agent-3.json";
 import agent3ActivityJson from "../fixtures/agent-3-activity.json";
 import agent3JournalJson from "../fixtures/agent-3-journal.json";
 
+import agent3AttestationJson from "../fixtures/agent-3-attestation.json";
+
+import agent4Json from "../fixtures/agent-4.json";
+import agent4AttestationJson from "../fixtures/agent-4-attestation.json";
+
 import agent5Json from "../fixtures/agent-5.json";
 import agent5ActivityJson from "../fixtures/agent-5-activity.json";
 import agent5JournalJson from "../fixtures/agent-5-journal.json";
 
+import agent7Json from "../fixtures/agent-7.json";
+import agent7AttestationJson from "../fixtures/agent-7-attestation.json";
+
 import agent9Json from "../fixtures/agent-9.json";
+import agent9AttestationJson from "../fixtures/agent-9-attestation.json";
+
 import agent9ActivityJson from "../fixtures/agent-9-activity.json";
 import agent9JournalJson from "../fixtures/agent-9-journal.json";
+
+import attestationSummaryJson from "../fixtures/attestation-summary.json";
+import launchTemplateJson from "../fixtures/launch-template.json";
+import launchPrepareJson from "../fixtures/launch-prepare.json";
 
 export const fixtureAgents: AgentView[] = (agentsListJson as AgentsResponse).agents;
 
 export const fixtureProfiles: Record<string, AgentView> = {
   "3": agent3Json as AgentView,
+  "4": agent4Json as AgentView,
   "5": agent5Json as AgentView,
+  "7": agent7Json as AgentView,
   "9": agent9Json as AgentView,
 };
 
@@ -46,3 +70,22 @@ export const fixtureJournal: Record<string, JournalEntry[]> = {
   "5": (agent5JournalJson as JournalResponse).entries,
   "9": (agent9JournalJson as JournalResponse).entries,
 };
+
+/**
+ * RAW wire JSON (pinned spec shape: checks as a name->result record,
+ * verifiedAt as an ISO string) — web/lib/api.ts normalizes it exactly like a
+ * live response. Agent 5 has no instance row => no attestation (404).
+ */
+export const fixtureAttestationRaw: Record<string, unknown> = {
+  "3": agent3AttestationJson,
+  "4": agent4AttestationJson,
+  "7": agent7AttestationJson,
+  "9": agent9AttestationJson,
+};
+
+export const fixtureAttestationSummaryRaw: unknown = attestationSummaryJson;
+
+export const fixtureLaunchTemplate = launchTemplateJson as LaunchTemplate;
+
+/** Prepare response minus agentJson — the mock route assembles agentJson from template + input. */
+export const fixtureLaunchPrepare = launchPrepareJson as Omit<LaunchPrepared, "agentJson">;

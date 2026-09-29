@@ -1,0 +1,32 @@
+{
+  "alert": true,
+  "verifiedAt": "2025-09-28T01:30:00.000Z",
+  "agents": [
+    {
+      "agentId": 3,
+      "status": "live",
+      "worst": "pass",
+      "failing": []
+    },
+    {
+      "agentId": 4,
+      "status": "live",
+      "worst": "skip",
+      "failing": []
+    },
+    {
+      "agentId": 7,
+      "status": "live",
+      "worst": "fail",
+      "failing": [
+        "configHashMatch"
+      ]
+    },
+    {
+      "agentId": 9,
+      "status": "evicted",
+      "worst": "pending",
+      "failing": []
+    }
+  ]
+}

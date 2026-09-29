@@ -148,3 +148,203 @@ export interface JournalResponse {
   pinnedOwner: string | null;
   entries: JournalEntry[];
 }
+
+// ---------------------------------------------------------------------------
+// SPEC-M4B §1c — attestation endpoints (indexer/src/api.ts, being built in
+// parallel). Pinned contract from the spec; DUPLICATED here by design
+// (SPEC-M4A §2) — keep in sync by hand.
+//
+//   GET /api/agents/:id/attestation -> AttestationView
+//   GET /api/attestation/summary    -> AttestationSummary
+// ---------------------------------------------------------------------------
+
+/**
+ * One check verdict. `pending` = not yet verifiable (e.g. Arweave/GraphQL
+ * unreachable — transport is never a failure, R2); `skip` = not applicable
+ * (drill-style local ref, or no release table configured). Only `pass` may
+ * ever render a ✅ (R1: honest checkmarks).
+ */
+export type CheckResult = "pass" | "fail" | "pending" | "skip";
+
+/** Check names, in the indexer's evaluation order (SPEC-M4B §1b). */
+export type AttestationCheckName =
+  | "refShape"
+  | "itemFound"
+  | "reportParses"
+  | "eoasMatch"
+  | "configHashMatch"
+  | "imageIdMatch"
+  | "releaseMatch";
+
+export type AttestationChecks = Record<AttestationCheckName, CheckResult>;
+
+/** One InstanceRegistered event (generation 0 = genesis, >0 = revival). */
+export interface GenerationRecord {
+  generation: number;
+  treasuryEOA: string;
+  actionEOA: string;
+  codeHash: string;
+  /** Unix seconds. */
+  ts: number;
+  txHash: string;
+}
+
+export interface VerifyYourself {
+  /** The registered code hash / image-id to verify against, null if unknown. */
+  imageId: string | null;
+  /** Enclave IP is not on-chain — always null in v1 (commands carry a placeholder). Optional: not in every pinned shape. */
+  enclaveIpHint?: string | null;
+  /** Shell commands templated by the indexer from the real values. */
+  commands: string[];
+}
+
+/**
+ * Attestation for one agent, as the web consumes it. web/lib/api.ts
+ * NORMALIZES the indexer's wire shape into this (tolerating `checks` as a
+ * name->result record OR as [{name, status, detail}], and `verifiedAt` as a
+ * string or unix-seconds number) — see normalizeAttestation. A missing or
+ * unrecognized check value becomes "pending", never "pass" (R1).
+ */
+export interface AttestationView {
+  checks: AttestationChecks;
+  /** Per-check reason for a non-pass status, when the indexer provides one. */
+  checkDetails: Partial<Record<AttestationCheckName, string>>;
+  /** Unix seconds of the last verify pass, null if never verified. */
+  verifiedAt: number | null;
+  /** Matched runtime release version (e.g. "0.1.6"), null when no match / no release table. */
+  releaseVersion: string | null;
+  attestationRef: string | null;
+  /** Gateway URL for attestationRef, null when the ref is not an Arweave item id. */
+  arweaveUrl: string | null;
+  generationHistory: GenerationRecord[];
+  verifyYourself: VerifyYourself;
+  /** Values read from the Arweave report, when the indexer exposes them (null until parsed / not exposed). */
+  report: AttestationReportFields | null;
+  /** Git commit of the matched release, when exposed. */
+  releaseCommit: string | null;
+}
+
+export interface AttestationReportFields {
+  treasury: string | null;
+  action: string | null;
+  configHash: string | null;
+  imageId: string | null;
+}
+
+export interface AttestationSummaryAgent {
+  agentId: number;
+  status: AgentStatus;
+  worst: CheckResult;
+  failing: AttestationCheckName[];
+}
+
+export interface AttestationSummary {
+  /** True iff some LIVE agent has a FAILING check (R2). */
+  alert: boolean;
+  agents: AttestationSummaryAgent[];
+  /** ISO string or unix seconds (the pinned shape left it open) — display only. */
+  verifiedAt: string | number | null;
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-M4B §2 — launch-helper endpoints (genesis/src/launchHelper.ts, being
+// built in parallel). Called ONLY server-side (R4). DUPLICATED by design.
+//
+//   GET  /api/launch/template -> LaunchTemplate
+//   POST /api/launch/prepare  {agent: LaunchAgentInput}
+//        -> 200 LaunchPrepared | 422 LaunchViolations | 502 {error}
+// ---------------------------------------------------------------------------
+
+export type Archetype = string;
+
+/**
+ * One x402 inference allowlist entry. agent.models refs are MODEL names
+ * (the launch-helper validates primary/fallbacks against `model`; the
+ * runtime matches a ref against entry id OR model, so one model ref covers
+ * every operator serving it).
+ */
+export interface LaunchModelOption {
+  id: string;
+  operator: string;
+  model: string;
+  tier: string;
+  attested?: boolean;
+}
+
+export interface LaunchTemplate {
+  /** The platform section genesis would freeze — opaque to the web. */
+  platform: Record<string, unknown>;
+  defaults: {
+    archetypes: Archetype[];
+    models: LaunchModelOption[];
+    /** USDG base units (6 dec) integer string, e.g. "75000000". */
+    creationFeeUsdg: string;
+    /** Default chat tier, when the helper provides one. */
+    chatTier?: string;
+  };
+  composeVersion: string;
+  rubricVersion?: string;
+}
+
+export interface LaunchAgentInput {
+  name: string;
+  symbol: string;
+  archetype: Archetype;
+  persona: string;
+  models: {
+    primary: string;
+    fallbacks: string[];
+    chatTier: string;
+  };
+}
+
+export interface LaunchPrepared {
+  /** Predicted id (factory agentCount()+1) — can race a concurrent create; re-check after receipt. */
+  agentId: number;
+  predicted: true;
+  /** The frozen agent.json (object, or exact bytes as a string). */
+  agentJson: Record<string, unknown> | string;
+  /** bytes32 hex. */
+  configHash: string;
+  imageId: string;
+  expectedTreasuryEOA: string;
+  actionEOA: string;
+  createArgs: {
+    factory: string;
+    usdg: string;
+    /** USDG base units integer string. */
+    fee: string;
+  };
+}
+
+/** A server-side moderation violation: a string (pinned shape) or the helper's structured object. */
+export type LaunchViolation =
+  | string
+  | { category?: string; rule?: string; field?: string; match?: string; message: string };
+
+/** 422 body. */
+export interface LaunchViolations {
+  error?: string;
+  rubricVersion?: string;
+  violations: LaunchViolation[];
+}
+
+// ---------------------------------------------------------------------------
+// Web-internal (NOT an indexer mirror): the launch progress tracker's polling
+// payload, served by web/app/api/launch/status/[id]/route.ts.
+// ---------------------------------------------------------------------------
+
+export interface LaunchStatus {
+  agentId: number;
+  /** Factory row observed by the indexer. */
+  exists: boolean;
+  state: AgentState | null;
+  status: AgentStatus | null;
+  name: string | null;
+  /** Registry instance row observed (TEE booted + registered). */
+  hasInstance: boolean;
+  /** Attestation checks, null when not (yet) available. */
+  checks: AttestationChecks | null;
+  /** Unix seconds this status was assembled. */
+  observedAt: number;
+}

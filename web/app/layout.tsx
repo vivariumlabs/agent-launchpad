@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import { AttestationBanner } from "@/components/AttestationBanner";
 import { Footer } from "@/components/Footer";
 import { Header } from "@/components/Header";
 import { Providers } from "@/components/Providers";
@@ -20,6 +21,7 @@ export default function RootLayout({
     <html lang="en">
       <body className="flex min-h-screen flex-col bg-slate-950 text-slate-200">
         <Providers>
+          <AttestationBanner />
           <Header />
           <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8">{children}</main>
           <Footer />

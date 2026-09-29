@@ -3,12 +3,14 @@
 // release compose path, the seed table (04 §2) with profiles, oyster + turbo settings, timing and
 // retry caps. Every `DEFAULT` below is a config parameter. Relative paths resolve against the
 // config file's directory. SPEC-M3C §7: oyster.enclaveMemoryMb / oyster.bandwidthKbps (optional deploy flags).
+// SPEC-M4B §2: optional `launchHelper` section (the secret-free launch-helper service; the orchestrator ignores it).
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { getAddress, type Address } from "viem";
 import { z } from "zod";
 import type { ChainKey } from "./chain.js";
+import { KMS_ENDPOINT_DEFAULT, KMS_VERIFICATION_KEY_DEFAULT } from "./kmsDerive.js";
 
 // ---------------------------------------------------------------------------
 // Seed table (04 §2)
@@ -189,6 +191,40 @@ export const GenesisConfigFileSchema = z
       .strict()
       .default({}),
     turbo: z.object({ enabled: z.boolean().default(false) }).strict().default({}),
+    /**
+     * SPEC-M4B §2 launch-helper (secret-free: no wallet, no spend path; reads walletKeyPath NEVER).
+     * Absent ⇒ `npm run launch-helper` refuses to start; the orchestrator ignores this section.
+     */
+    launchHelper: z
+      .object({
+        /** DEFAULT 8426. */
+        port: z.number().int().min(0).max(65_535).default(8426),
+        /** Bind host DEFAULT 127.0.0.1 (web calls it server-side only, R4). */
+        host: z.string().min(1).default("127.0.0.1"),
+        /** CORS Access-Control-Allow-Origin for GET/POST DEFAULT "*". */
+        corsOrigin: z.string().min(1).default("*"),
+        /** Release compose for compute-image-id DEFAULT release.composePath. */
+        composePath: z.string().min(1).optional(),
+        /** Public image-KMS derive endpoint (origin only) DEFAULT the oyster-cvm 5.0.1 default. */
+        kmsEndpoint: z.string().url().default(KMS_ENDPOINT_DEFAULT),
+        /** KMS root-server response signing key (128 hex, uncompressed secp256k1 without 04) DEFAULT the oyster-cvm 5.0.1 default. */
+        kmsVerificationKey: z.string().regex(/^[0-9a-fA-F]{128}$/).default(KMS_VERIFICATION_KEY_DEFAULT),
+        /** oyster-cvm binary for compute-image-id DEFAULT oyster.bin. */
+        oysterBin: z.string().min(1).optional(),
+        /**
+         * runtime/releases/<version>.json release record matching composePath: supplies composeVersion
+         * and is cross-checked (composeFile, oyster.arch/preset). Unset ⇒ composeVersion = compose file stem.
+         */
+        releasesTemplate: z.string().min(1).optional(),
+        /** agent.json-shaped file whose `platform` is the base of every prepared config (manifest addresses overlay it). */
+        platformTemplate: z.string().min(1),
+        /** Allowlist file ({entries:[…]} or […]) replacing platform.x402Allowlist; `_`-prefixed keys stripped, invalid entries dropped loudly. */
+        allowlistPath: z.string().min(1).optional(),
+        /** KMS / RPC timeout DEFAULT 20 s. */
+        httpTimeoutSec: z.number().int().positive().default(20),
+      })
+      .strict()
+      .optional(),
     timing: z
       .object({
         pollSec: z.number().int().positive().default(15),
@@ -230,12 +266,23 @@ export interface ContractsCfg {
   startBlock: bigint;
 }
 
-export type GenesisConfig = Omit<GenesisConfigFile, "contracts" | "deploymentManifest" | "oyster" | "seeding"> & {
+export type LaunchHelperFileCfg = NonNullable<GenesisConfigFile["launchHelper"]>;
+
+/** Resolved launchHelper section: every path absolute, DEFAULTs filled from the rest of the config. */
+export type LaunchHelperCfg = Omit<LaunchHelperFileCfg, "composePath" | "oysterBin"> & {
+  composePath: string;
+  oysterBin: string;
+  /** Absolute contracts deployment manifest path when the config names one (platform address overlay). */
+  deploymentManifestPath: string | null;
+};
+
+export type GenesisConfig = Omit<GenesisConfigFile, "contracts" | "deploymentManifest" | "oyster" | "seeding" | "launchHelper"> & {
   contracts: ContractsCfg;
   oyster: Omit<GenesisConfigFile["oyster"], "walletKeyFile" | "durationMin"> & { walletKeyFile: string; durationMin: number };
   seeding: Omit<GenesisConfigFile["seeding"], "preRegistrationGasWei"> & { preRegistrationGasWei: bigint };
   /** Effective mode per leg (profile + overrides). */
   legModes: Record<LegId, LegMode>;
+  launchHelper?: LaunchHelperCfg;
 };
 
 // ---------------------------------------------------------------------------
@@ -324,8 +371,25 @@ export function buildConfig(rawJson: unknown, baseDir: string): GenesisConfig {
   const composePath = abs(baseDir, f.release.composePath);
   assertReleaseCompose(composePath);
   const walletKeyPath = abs(baseDir, f.walletKeyPath);
+  let launchHelper: LaunchHelperCfg | undefined;
+  if (f.launchHelper !== undefined) {
+    const lh = f.launchHelper;
+    const lhCompose = lh.composePath === undefined ? composePath : abs(baseDir, lh.composePath);
+    assertReleaseCompose(lhCompose);
+    launchHelper = {
+      ...lh,
+      composePath: lhCompose,
+      oysterBin: lh.oysterBin ?? f.oyster.bin,
+      platformTemplate: abs(baseDir, lh.platformTemplate),
+      ...(lh.releasesTemplate === undefined ? {} : { releasesTemplate: abs(baseDir, lh.releasesTemplate) }),
+      ...(lh.allowlistPath === undefined ? {} : { allowlistPath: abs(baseDir, lh.allowlistPath) }),
+      deploymentManifestPath: f.deploymentManifest === undefined ? null : abs(baseDir, f.deploymentManifest),
+    };
+  }
+  const { launchHelper: _lh, ...rest } = f;
   return {
-    ...f,
+    ...rest,
+    ...(launchHelper === undefined ? {} : { launchHelper }),
     dataDir: abs(baseDir, f.dataDir),
     walletKeyPath,
     configInboxDir: abs(baseDir, f.configInboxDir),

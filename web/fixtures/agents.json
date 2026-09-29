@@ -19,9 +19,9 @@
         "treasuryEOA": "0x272f1e15c1d2e3f405162738495061728394a2eea",
         "actionEOA": "0xe2bb6abf1c2d3e4f5061728394a5b6c7d8e9f07f67",
         "codeHash": "0xcd5040ae13cb2f550f5df40c1142fc9fef77836942b4bf41da933f0dbeaed804",
-        "attestationRef": "arweave:attn-cato-gen1-9f3a",
+        "attestationRef": "Qm7pX2vN9aLk4sT0bYc8dE1fG6hJ3iK5lM2nO9pR4sU",
         "lastHeartbeat": 1759023300,
-        "generation": 1
+        "generation": 2
       },
       "market": {
         "price": "0.01234567",
@@ -45,6 +45,53 @@
         "royaltyLeg": "20449500",
         "converted": "68165000000000000000",
         "count": 1
+      }
+    },
+    {
+      "agentId": 4,
+      "name": "Juno",
+      "symbol": "JUNO",
+      "imageURI": null,
+      "creator": "0x6930fd5c95a2d9d80f3d165597d55843e8a00154",
+      "configHash": "0x4c1f2e3d4a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e4f5",
+      "token": "0x44a1b2c3d4e5f60718293a1b2c3d4e5f60718244",
+      "curve": "0x44c1b2c3d4e5f60718293a1b2c3d4e5f607182c4",
+      "poolId": null,
+      "state": "live",
+      "requestTx": "0x4401b2c3d4e5f60718293a1b2c3d4e5f60718293a1b2c3d4e5f60718293a144",
+      "requestBlock": 11760100,
+      "createdAt": 1758700000,
+      "status": "live",
+      "instance": {
+        "treasuryEOA": "0x92bc268c1d2e3f405162738495061728394a5b44",
+        "actionEOA": "0x41aa6abf1c2d3e4f5061728394a5b6c7d8e9f0a4",
+        "codeHash": "0x92bc268c4a1b2c3d4e5f60718293a1b2c3d4e5f60718293a1b2c3d4e5f607182",
+        "attestationRef": "local:drill-agent-4-gen0",
+        "lastHeartbeat": 1759023000,
+        "generation": 1
+      },
+      "market": {
+        "price": "0.0021",
+        "priceE18": "2100000000000000",
+        "priceSource": "curve",
+        "totalSupply": "1000000000000000000000000",
+        "mcapUsdg": "2100000000",
+        "volume24hUsdg": "15000000"
+      },
+      "balances": {
+        "treasuryUsdg": "70850000",
+        "treasuryRhEth": "2000000000000000",
+        "actionUsdg": "0",
+        "actionRhEth": "0",
+        "actionToken": null,
+        "updatedAt": 1759023000
+      },
+      "fees": {
+        "buybackLeg": "0",
+        "treasuryLeg": "0",
+        "royaltyLeg": "0",
+        "converted": "0",
+        "count": 0
       }
     },
     {
@@ -81,6 +128,53 @@
       }
     },
     {
+      "agentId": 7,
+      "name": "Vesper",
+      "symbol": "VSPR",
+      "imageURI": null,
+      "creator": "0x6930fd5c95a2d9d80f3d165597d55843e8a00154",
+      "configHash": "0xe4d7fade1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081923535ec",
+      "token": "0x77a1b2c3d4e5f60718293a1b2c3d4e5f60718277",
+      "curve": "0x77c1b2c3d4e5f60718293a1b2c3d4e5f607182c7",
+      "poolId": null,
+      "state": "live",
+      "requestTx": "0x7701b2c3d4e5f60718293a1b2c3d4e5f60718293a1b2c3d4e5f60718293a177",
+      "requestBlock": 11762000,
+      "createdAt": 1758950000,
+      "status": "live",
+      "instance": {
+        "treasuryEOA": "0x7e1f1e15c1d2e3f405162738495061728394a277",
+        "actionEOA": "0x7ebb6abf1c2d3e4f5061728394a5b6c7d8e9f077",
+        "codeHash": "0xcd5040ae13cb2f550f5df40c1142fc9fef77836942b4bf41da933f0dbeaed804",
+        "attestationRef": "Vx3kP8qR2mN7bL4tY9cW1eZ6fH0jA5sD8gK2lQ7uI3o",
+        "lastHeartbeat": 1759023200,
+        "generation": 1
+      },
+      "market": {
+        "price": "0.0021",
+        "priceE18": "2100000000000000",
+        "priceSource": "curve",
+        "totalSupply": "1000000000000000000000000",
+        "mcapUsdg": "2100000000",
+        "volume24hUsdg": "15000000"
+      },
+      "balances": {
+        "treasuryUsdg": "70850000",
+        "treasuryRhEth": "2000000000000000",
+        "actionUsdg": "0",
+        "actionRhEth": "0",
+        "actionToken": null,
+        "updatedAt": 1759023000
+      },
+      "fees": {
+        "buybackLeg": "0",
+        "treasuryLeg": "0",
+        "royaltyLeg": "0",
+        "converted": "0",
+        "count": 0
+      }
+    },
+    {
       "agentId": 9,
       "name": "Marcus",
       "symbol": "MRCS",
@@ -99,7 +193,7 @@
         "treasuryEOA": "0x72c4a2b1d3e4f5061728394a5b6c7d8e9f0a1b2c",
         "actionEOA": "0xa1b2c3d4e5f60718293a1b2c3d4e5f60718293a1b",
         "codeHash": "0x13cb2f550f5df40c1142fc9fef77836942b4bf41da933f0dbeaed203288d5ca",
-        "attestationRef": "arweave:attn-marcus-gen2-1c4d",
+        "attestationRef": "Pn4rT7wQ1xZ8cV5bM2kL9jH6gF3dS0aY7uE4iO1pW8e",
         "lastHeartbeat": 1748908800,
         "generation": 2
       },

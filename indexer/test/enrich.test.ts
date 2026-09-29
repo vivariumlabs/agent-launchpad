@@ -405,3 +405,59 @@ describe("enrich: incremental per-agent cursor", () => {
     expect(db.kvGet("enrich.7.height")).toBe("1001");
   });
 });
+
+// ---------------------------------------------------------------------------
+// SPEC-M4A rev 2 (Fable ruling 2026-09-29): Turbo/EVM-signed items — Ethereum-address owners.
+// The live agent-8 drill exposed the original 43-char-only ownerOf as structurally dead: every
+// runtime-uploaded item (TurboJournalSink/TurboArweaveSink, ANS-104 type 3) has a 0x owner.
+// ---------------------------------------------------------------------------
+
+describe("enrich: M4A rev 2 — Ethereum-address owners (agent-8 live shape)", () => {
+  const EVM_OWNER = "0xd7EF592E26936627C2dAD31c08EeD561dB5EeCB8"; // gateway-reported (checksummed)
+  const EVM_OWNER_LC = EVM_OWNER.toLowerCase();
+
+  it("M4A rev 2: pins a 0x owner from the attestationRef item, stored lowercase; journal ingested verified", async () => {
+    const { fake, db, e } = setup();
+    const att = attestation(EVM_OWNER, 105, TREASURY);
+    fake.items.push(att, journal(EVM_OWNER, 120, "evm-signed entry"));
+    setRef(db, att.id);
+    await e.runOnce();
+    expect(db.journalOwner(7)).toMatchObject({ owner: EVM_OWNER_LC, attestationItem: att.id });
+    expect(db.journal(7, 10).map((r) => [r.owner, r.text, r.unverified])).toEqual([[EVM_OWNER_LC, "evm-signed entry", 0]]);
+  });
+
+  it("M4A rev 2: owners filter sends BOTH casings for a 0x owner; node owners normalize so cross-case still matches", async () => {
+    const { fake, db, e } = setup();
+    const att = attestation(EVM_OWNER_LC, 105, TREASURY); // gateway stores/reports lowercase here
+    fake.items.push(att, journal(EVM_OWNER, 120, "checksummed node owner")); // …but reports the journal node checksummed
+    setRef(db, att.id);
+    await e.runOnce();
+    const owned = fake.gqlRequests.filter((r) => r.variables.owners !== undefined);
+    expect(owned.length).toBeGreaterThan(0);
+    for (const r of owned) expect(r.variables.owners).toEqual([EVM_OWNER_LC, EVM_OWNER]);
+    // The checksummed-owner node matched the lowercase pin via normalization.
+    expect(db.journal(7, 10).map((r) => [r.owner, r.unverified])).toEqual([[EVM_OWNER_LC, 0]]);
+  });
+
+  it("M4A rev 2: a 43-char owner keeps the exact single-value filter (no casing games)", async () => {
+    const { fake, db, e } = setup();
+    const att = attestation(OWNER_B, 105, TREASURY);
+    fake.items.push(att, journal(OWNER_B, 120, "native owner"));
+    setRef(db, att.id);
+    await e.runOnce();
+    expect(db.journalOwner(7)).toMatchObject({ owner: OWNER_B });
+    const owned = fake.gqlRequests.filter((r) => r.variables.owners !== undefined);
+    for (const r of owned) expect(r.variables.owners).toEqual([OWNER_B]);
+  });
+
+  it("M4A rev 2: a pinned 0x owner still excludes other owners (43-char spammer dropped)", async () => {
+    const { fake, db, e } = setup();
+    fake.items.push(journal(OWNER_A, 100, "spam before pin"));
+    await e.runOnce();
+    const att = attestation(EVM_OWNER, 105, TREASURY);
+    fake.items.push(att, journal(EVM_OWNER, 120, "real"), journal(OWNER_A, 121, "spam after"));
+    setRef(db, att.id);
+    await e.runOnce();
+    expect(db.journal(7, 10).map((r) => [r.owner, r.text])).toEqual([[EVM_OWNER_LC, "real"]]);
+  });
+});

@@ -1,0 +1,33 @@
+{
+  "checks": {
+    "refShape": "skip",
+    "itemFound": "skip",
+    "reportParses": "skip",
+    "eoasMatch": "skip",
+    "configHashMatch": "skip",
+    "imageIdMatch": "skip",
+    "releaseMatch": "skip"
+  },
+  "verifiedAt": "2025-09-28T01:30:00.000Z",
+  "releaseVersion": null,
+  "attestationRef": "local:drill-agent-4-gen0",
+  "arweaveUrl": null,
+  "generationHistory": [
+    {
+      "generation": 1,
+      "treasuryEOA": "0x92bc268c1d2e3f405162738495061728394a5b44",
+      "actionEOA": "0x41aa6abf1c2d3e4f5061728394a5b6c7d8e9f0a4",
+      "codeHash": "0x92bc268c4a1b2c3d4e5f60718293a1b2c3d4e5f60718293a1b2c3d4e5f607182",
+      "ts": 1758700600,
+      "txHash": "0x4a01c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e804"
+    }
+  ],
+  "verifyYourself": {
+    "imageId": "92bc268c4a1b2c3d4e5f60718293a1b2c3d4e5f60718293a1b2c3d4e5f607182",
+    "enclaveIpHint": null,
+    "commands": [
+      "oyster-cvm verify --enclave-ip <ENCLAVE_IP> --image-id 92bc268c4a1b2c3d4e5f60718293a1b2c3d4e5f60718293a1b2c3d4e5f607182",
+      "curl -s http://<ENCLAVE_IP>:8420/attestation"
+    ]
+  }
+}

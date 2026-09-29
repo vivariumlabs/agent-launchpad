@@ -3,7 +3,8 @@
 //   npm start -- --config <indexer.json>
 //     config → db (migrations) → watcher loop (every pollMs; backfill from startBlock in maxBlockRange
 //     chunks) + balance refresh loop (every balanceRefreshSec) + journal enrich loop (every enrichSec,
-//     only when arweave.enabled) + HTTP API on host:port. SIGINT/SIGTERM ⇒ stop the loops after their
+//     only when arweave.enabled) + attestation verify loop (every verifySec, SPEC-M4B §1b; Arweave checks
+//     skip when arweave.enabled is false; release table re-read from releasesDir each pass) + HTTP API on host:port. SIGINT/SIGTERM ⇒ stop the loops after their
 //     current step, close the server, close the db.
 //
 // The --config path resolves against the directory npm was invoked from (INIT_CWD) first, then the
@@ -20,6 +21,8 @@ import { loadConfig } from "./config.js";
 import { IndexerDb } from "./db.js";
 import { Enricher, HttpArweaveClient } from "./enrich.js";
 import { errMsg, type Logger } from "./log.js";
+import { loadReleaseTable } from "./releases.js";
+import { Verifier } from "./verify.js";
 import { Watcher } from "./watcher.js";
 
 const stamp = (): string => new Date(Number(systemClock.now()) * 1000).toISOString();
@@ -47,9 +50,10 @@ async function main(): Promise<void> {
   const chain = new ViemIndexerChain({ rpc: cfg.chain.rpc, factory: cfg.contracts.factory, registry: cfg.contracts.registry, nft: cfg.contracts.nft });
   const watcher = new Watcher(db, chain, { contracts: cfg.contracts, reorgWindowBlocks: cfg.reorgWindowBlocks, maxBlockRange: cfg.maxBlockRange }, systemClock, log);
   const balances = new BalanceRefresher(db, chain, cfg.contracts.usdg, systemClock, log);
-  const enricher = cfg.arweave.enabled
-    ? new Enricher(db, new HttpArweaveClient({ graphqlUrl: cfg.arweave.graphqlUrl, gatewayUrl: cfg.arweave.gatewayUrl }), systemClock, log)
-    : null;
+  const arweave = cfg.arweave.enabled ? new HttpArweaveClient({ graphqlUrl: cfg.arweave.graphqlUrl, gatewayUrl: cfg.arweave.gatewayUrl }) : null;
+  const enricher = arweave === null ? null : new Enricher(db, arweave, systemClock, log);
+  const releasesDir = cfg.releasesDir;
+  const verifier = new Verifier(db, arweave, () => (releasesDir === undefined ? null : loadReleaseTable(releasesDir, log)), systemClock, log);
   const api = new IndexerApi(db, systemClock, { staleAfterSec: cfg.staleAfterSec, startBlock: cfg.contracts.startBlock, gatewayUrl: cfg.arweave.gatewayUrl }, log);
   const server = api.server();
 
@@ -66,7 +70,8 @@ async function main(): Promise<void> {
     server.listen(cfg.port, cfg.host, () => res());
   });
   log.info(`indexer up: api http://${cfg.host}:${cfg.port}, db ${cfg.dbPath}, factory ${cfg.contracts.factory}, from block ${watcher.cursor()} (startBlock ${cfg.contracts.startBlock})`);
-  if (enricher === null) log.info("arweave.enabled = false: journal enrichment off");
+  if (enricher === null) log.info("arweave.enabled = false: journal enrichment off; attestation Arweave checks skip");
+  if (releasesDir === undefined) log.warn("releasesDir unset: attestation releaseMatch renders \"no release table\"");
 
   /** Sleep in ≤ 250 ms slices so SIGINT is honored promptly. */
   const nap = async (ms: number): Promise<void> => {
@@ -91,6 +96,7 @@ async function main(): Promise<void> {
     watcherLoop(),
     periodic("balances", cfg.balanceRefreshSec, () => balances.refreshAll()),
     enricher === null ? Promise.resolve() : periodic("enrich", cfg.enrichSec, () => enricher.runOnce()),
+    periodic("verify", cfg.verifySec, () => verifier.runOnce()),
   ]);
 
   await new Promise<void>((res) => server.close(() => res()));

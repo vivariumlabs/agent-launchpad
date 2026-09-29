@@ -7,7 +7,8 @@
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc --noEmit",
-    "start": "tsx src/main.ts"
+    "start": "tsx src/main.ts",
+    "launch-helper": "tsx bin/launch-helper.ts"
   },
   "dependencies": {
     "agent-runtime": "file:../runtime",

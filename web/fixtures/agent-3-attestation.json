@@ -1,0 +1,41 @@
+{
+  "checks": {
+    "refShape": "pass",
+    "itemFound": "pass",
+    "reportParses": "pass",
+    "eoasMatch": "pass",
+    "configHashMatch": "pass",
+    "imageIdMatch": "pass",
+    "releaseMatch": "pass"
+  },
+  "verifiedAt": "2025-09-28T01:30:00.000Z",
+  "releaseVersion": "0.1.6",
+  "attestationRef": "Qm7pX2vN9aLk4sT0bYc8dE1fG6hJ3iK5lM2nO9pR4sU",
+  "arweaveUrl": "https://arweave.net/Qm7pX2vN9aLk4sT0bYc8dE1fG6hJ3iK5lM2nO9pR4sU",
+  "generationHistory": [
+    {
+      "generation": 1,
+      "treasuryEOA": "0x272f1e15c1d2e3f405162738495061728394a2eea",
+      "actionEOA": "0xe2bb6abf1c2d3e4f5061728394a5b6c7d8e9f07f67",
+      "codeHash": "0xcd5040ae13cb2f550f5df40c1142fc9fef77836942b4bf41da933f0dbeaed804",
+      "ts": 1758845400,
+      "txHash": "0x3a01c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e801"
+    },
+    {
+      "generation": 2,
+      "treasuryEOA": "0x272f1e15c1d2e3f405162738495061728394a2eea",
+      "actionEOA": "0xe2bb6abf1c2d3e4f5061728394a5b6c7d8e9f07f67",
+      "codeHash": "0xcd5040ae13cb2f550f5df40c1142fc9fef77836942b4bf41da933f0dbeaed804",
+      "ts": 1758931800,
+      "txHash": "0x3a02c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e802"
+    }
+  ],
+  "verifyYourself": {
+    "imageId": "cd5040ae13cb2f550f5df40c1142fc9fef77836942b4bf41da933f0dbeaed804",
+    "enclaveIpHint": null,
+    "commands": [
+      "oyster-cvm verify --enclave-ip <ENCLAVE_IP> --image-id cd5040ae13cb2f550f5df40c1142fc9fef77836942b4bf41da933f0dbeaed804",
+      "curl -s http://<ENCLAVE_IP>:8420/attestation"
+    ]
+  }
+}

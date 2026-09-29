@@ -53,6 +53,13 @@ export const IndexerConfigFileSchema = z
     balanceRefreshSec: z.number().int().positive().default(300),
     enrichSec: z.number().int().positive().default(120),
     staleAfterSec: z.number().int().positive().default(1800),
+    /**
+     * SPEC-M4B §1a: runtime/releases/ (every v*.json release record). DEFAULT unset ⇒ releaseMatch
+     * renders "no release table" (skip). Relative to the config file's directory.
+     */
+    releasesDir: z.string().min(1).optional(),
+    /** SPEC-M4B §1b attestation verify loop cadence DEFAULT 300 s. */
+    verifySec: z.number().int().positive().default(300),
     /** Trailing re-scan window each poll (reorg tolerance) DEFAULT 30 blocks. */
     reorgWindowBlocks: z.number().int().nonnegative().default(30),
     /** getLogs chunk (backfill + catch-up) DEFAULT 10k blocks; halved per retry on RPC range errors (floor 100). */
@@ -153,6 +160,7 @@ export function buildConfig(rawJson: unknown, baseDir: string): IndexerConfig {
     ...rest,
     chain: { rpc: typeof f.chain.rpc === "string" ? [f.chain.rpc] : f.chain.rpc, chainId: f.chain.chainId },
     dbPath: f.dbPath === ":memory:" ? f.dbPath : abs(baseDir, f.dbPath),
+    ...(f.releasesDir === undefined ? {} : { releasesDir: abs(baseDir, f.releasesDir) }),
     contracts,
   };
 }

@@ -1,4 +1,4 @@
-/** Disabled tab stub for later slices (Attestation / Chat / Holders) — honest about what's coming (SPEC-M4A §2). */
+/** Disabled tab stub for later slices (Chat / Holders) — honest about what's coming (SPEC-M4A §2). */
 export function TabStub({ label }: { label: string }) {
   return (
     <span className="flex cursor-not-allowed items-center gap-1.5 rounded-md border border-slate-800 px-3 py-1.5 text-sm text-slate-600">

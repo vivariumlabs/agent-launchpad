@@ -136,3 +136,27 @@ function parseFixed(
     return null;
   }
 }
+
+/**
+ * Timestamp string from the API (ISO-8601, or unix seconds/ms as digits) ->
+ * unix seconds; null when absent or unparseable (never NaN).
+ */
+export function parseTimestamp(raw: string | null | undefined): number | null {
+  if (raw === null || raw === undefined || raw.trim() === "") return null;
+  const s = raw.trim();
+  if (/^\d+$/.test(s)) {
+    const n = Number(s);
+    if (!Number.isFinite(n)) return null;
+    // 13+ digits = milliseconds.
+    return s.length >= 13 ? Math.floor(n / 1000) : n;
+  }
+  const ms = Date.parse(s);
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+}
+
+/** Case- and 0x-insensitive hex equality (addresses, hashes). */
+export function sameHex(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const norm = (v: string) => v.trim().toLowerCase().replace(/^0x/, "");
+  return norm(a) === norm(b);
+}

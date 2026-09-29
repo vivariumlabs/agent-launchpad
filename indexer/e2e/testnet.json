@@ -10,6 +10,8 @@
   "balanceRefreshSec": 300,
   "enrichSec": 120,
   "staleAfterSec": 1800,
+  "releasesDir": "../../runtime/releases",
+  "verifySec": 300,
   "reorgWindowBlocks": 30,
   "maxBlockRange": 10000,
   "arweave": {

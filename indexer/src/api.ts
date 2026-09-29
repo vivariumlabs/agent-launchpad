@@ -5,6 +5,8 @@
 //   GET /api/agents/:id/activity?limit=N     { agentId, events: ActivityItem[] }    (newest first; N DEFAULT 50, max 200)
 //   GET /api/agents/:id/journal?limit=N      { agentId, pinnedOwner, entries: JournalEntry[] } (newest first; same limit rule)
 //   GET /api/status                          StatusView
+//   GET /api/agents/:id/attestation          AttestationView (SPEC-M4B §1c)
+//   GET /api/attestation/summary             AttestationSummary (SPEC-M4B §1c; alert ⇔ a `live` agent has a `fail`)
 //
 // Units (see derive.ts): every bigint is a base-10 STRING — USDG amounts in USDG base units (6 dec),
 // native balances in wei, agent-token amounts in token base units (18 dec); `price` is a decimal
@@ -15,7 +17,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Clock } from "./clock.js";
-import type { AgentRow, IndexerDb } from "./db.js";
+import { CHECK_NAMES, type AgentRow, type CheckName, type CheckStatus, type IndexerDb } from "./db.js";
 import {
   DAY_SEC,
   DEFAULT_REVIVAL_WINDOW,
@@ -30,7 +32,10 @@ import {
   volume24h,
   type Status,
 } from "./derive.js";
+import { isArweaveId } from "./enrich.js";
 import { errMsg, type Logger } from "./log.js";
+import { normHex } from "./releases.js";
+import { VERIFY_LAST_RUN_KEY, worstStatus, type ReportFields, type VerifyDetail } from "./verify.js";
 import { CURSOR_KEY, HEAD_KEY, LAST_POLL_KEY, REVIVAL_WINDOW_KEY } from "./watcher.js";
 
 export const DEFAULT_LIMIT = 50;
@@ -105,6 +110,53 @@ export interface JournalEntry {
   blockHeight: number | null;
   fetchedAt: number;
   url: string;
+}
+
+/** runtime chatPort DEFAULT (runtime/src/config/schema.ts) — serves GET /attestation. */
+export const RUNTIME_CHAT_PORT = 8420;
+export const ENCLAVE_IP_PLACEHOLDER = "<ENCLAVE_IP>";
+
+export interface AttestationCheckView {
+  name: CheckName;
+  status: CheckStatus;
+  /** Reason for a non-pass status (null when passing / never verified). */
+  detail: string | null;
+}
+
+export interface GenerationView {
+  generation: number;
+  treasuryEOA: string;
+  actionEOA: string;
+  codeHash: string;
+  ts: number;
+  txHash: string;
+}
+
+export interface AttestationView {
+  agentId: number;
+  /** Always the 7 §1b checks in order; `pending` everywhere until the first verify pass. */
+  checks: AttestationCheckView[];
+  verifiedAt: number | null;
+  releaseVersion: string | null;
+  releaseCommit: string | null;
+  attestationRef: string | null;
+  /** Gateway link — only for an Arweave-id-shaped ref. */
+  arweaveUrl: string | null;
+  /** Arweave owner of the report item (as GraphQL reports it). */
+  owner: string | null;
+  /** The report's cross-checked values (null until a report parsed) … */
+  report: ReportFields | null;
+  /** … side by side with the chain's (registry instance + factory configHash). */
+  registry: { treasuryEOA: string; actionEOA: string; codeHash: string; configHash: string | null; generation: number; lastHeartbeat: number } | null;
+  status: Status;
+  generationHistory: GenerationView[];
+  verifyYourself: { imageId: string | null; enclaveIpHint: null; commands: string[] };
+}
+
+export interface AttestationSummary {
+  alert: boolean;
+  agents: Array<{ agentId: number; status: Status; worst: CheckStatus; failing: CheckName[] }>;
+  verifiedAt: number | null;
 }
 
 class HttpError extends Error {
@@ -233,6 +285,7 @@ export class IndexerApi {
     const parts = path.split("/").filter((p) => p !== "");
     if (parts[0] !== "api") throw new HttpError(404, "not found");
     if (parts.length === 2 && parts[1] === "status") return this.statusView();
+    if (parts.length === 3 && parts[1] === "attestation" && parts[2] === "summary") return this.attestationSummary(now);
     if (parts[1] !== "agents") throw new HttpError(404, "not found");
     if (parts.length === 2) return { agents: this.db.agents().map((a) => this.agentView(a, now)) };
     const id = parseId(parts[2]!);
@@ -268,7 +321,76 @@ export class IndexerApi {
       }));
       return { agentId: id, pinnedOwner: this.db.journalOwner(id)?.owner ?? null, entries };
     }
+    if (parts.length === 4 && parts[3] === "attestation") return this.attestationView(this.requireAgent(id), now);
     throw new HttpError(404, "not found");
+  }
+
+  private agentStatus(agentId: number, now: bigint): Status {
+    const inst = this.db.instance(agentId);
+    return status(inst === undefined ? null : { lastHeartbeat: inst.lastHeartbeat }, now, this.revivalWindow(), BigInt(this.opts.staleAfterSec));
+  }
+
+  /** SPEC-M4B §1c GET /api/agents/:id/attestation. */
+  attestationView(a: AgentRow, now: bigint): AttestationView {
+    const inst = this.db.instance(a.agentId);
+    const row = this.db.attestationChecks(a.agentId);
+    const detail = row === undefined ? null : (JSON.parse(row.detail) as VerifyDetail);
+    const ref = inst?.attestationRef ?? null;
+    const gw = this.opts.gatewayUrl.replace(/\/+$/, "");
+    const imageId = inst === undefined ? null : normHex(inst.codeHash);
+    const commands: string[] = [];
+    if (imageId !== null) {
+      commands.push(`oyster-cvm verify --enclave-ip ${ENCLAVE_IP_PLACEHOLDER} --image-id ${imageId}`);
+      commands.push(`curl -s http://${ENCLAVE_IP_PLACEHOLDER}:${RUNTIME_CHAT_PORT}/attestation`);
+      commands.push(`oyster-cvm kms-derive --image-id ${imageId} --path treasury --key-type secp256k1/address/ethereum`);
+      commands.push(`oyster-cvm kms-derive --image-id ${imageId} --path action --key-type secp256k1/address/ethereum`);
+      if (isArweaveId(ref)) commands.push(`curl -sL ${gw}/${ref}`);
+    }
+    const generationHistory: GenerationView[] = this.db.eventsOfKind(a.agentId, "registered").map((e) => {
+      const d = JSON.parse(e.data) as { treasuryEOA?: unknown; actionEOA?: unknown; codeHash?: unknown; generation?: unknown };
+      return {
+        generation: Number(d.generation),
+        treasuryEOA: String(d.treasuryEOA),
+        actionEOA: String(d.actionEOA),
+        codeHash: String(d.codeHash),
+        ts: e.ts,
+        txHash: e.txHash,
+      };
+    });
+    return {
+      agentId: a.agentId,
+      checks: CHECK_NAMES.map((name) => ({ name, status: row === undefined ? "pending" : row[name], detail: detail?.reasons[name] ?? null })),
+      verifiedAt: row?.verifiedAt ?? null,
+      releaseVersion: row?.releaseVersion ?? null,
+      releaseCommit: detail?.releaseCommit ?? null,
+      attestationRef: ref,
+      arweaveUrl: isArweaveId(ref) ? `${gw}/${ref}` : null,
+      owner: detail?.owner ?? null,
+      report: detail?.report ?? null,
+      registry:
+        inst === undefined
+          ? null
+          : { treasuryEOA: inst.treasuryEOA, actionEOA: inst.actionEOA, codeHash: inst.codeHash, configHash: a.configHash, generation: inst.generation, lastHeartbeat: inst.lastHeartbeat },
+      status: this.agentStatus(a.agentId, now),
+      generationHistory,
+      verifyYourself: { imageId, enclaveIpHint: null, commands },
+    };
+  }
+
+  /** SPEC-M4B §1c GET /api/attestation/summary — R2: alert ⇔ any `live` agent has a FAILING check. */
+  attestationSummary(now: bigint): AttestationSummary {
+    const agents = this.db.instances().map((inst) => {
+      const row = this.db.attestationChecks(inst.agentId);
+      const statuses = row === undefined ? CHECK_NAMES.map((): CheckStatus => "pending") : CHECK_NAMES.map((k) => row[k]);
+      return {
+        agentId: inst.agentId,
+        status: this.agentStatus(inst.agentId, now),
+        worst: worstStatus(statuses),
+        failing: row === undefined ? [] : CHECK_NAMES.filter((k) => row[k] === "fail"),
+      };
+    });
+    const last = this.db.kvGet(VERIFY_LAST_RUN_KEY);
+    return { alert: agents.some((x) => x.status === "live" && x.failing.length > 0), agents, verifiedAt: last === undefined ? null : Number(last) };
   }
 
   statusView(): unknown {

@@ -1,0 +1,80 @@
+{
+  "_fixture": "Indexer wire shape (checks as [{name,status,detail}], verifiedAt unix seconds, report/registry extras) \u2014 the web normalizes both this and the record shape.",
+  "agentId": 7,
+  "checks": [
+    {
+      "name": "refShape",
+      "status": "pass",
+      "detail": null
+    },
+    {
+      "name": "itemFound",
+      "status": "pass",
+      "detail": null
+    },
+    {
+      "name": "reportParses",
+      "status": "pass",
+      "detail": null
+    },
+    {
+      "name": "eoasMatch",
+      "status": "pass",
+      "detail": null
+    },
+    {
+      "name": "configHashMatch",
+      "status": "fail",
+      "detail": "report configHash 0x9b0c\u202611aa != factory configHash 0xe4d7\u202635ec"
+    },
+    {
+      "name": "imageIdMatch",
+      "status": "pass",
+      "detail": null
+    },
+    {
+      "name": "releaseMatch",
+      "status": "pass",
+      "detail": null
+    }
+  ],
+  "verifiedAt": 1759023000,
+  "releaseVersion": "0.1.5",
+  "releaseCommit": "3d9455f",
+  "attestationRef": "Vx3kP8qR2mN7bL4tY9cW1eZ6fH0jA5sD8gK2lQ7uI3o",
+  "arweaveUrl": "https://arweave.net/Vx3kP8qR2mN7bL4tY9cW1eZ6fH0jA5sD8gK2lQ7uI3o",
+  "owner": "Zx1uQv0yH3bN6mK9pL2wR5tE8aC4dF7gJ0iO3sU6yW2",
+  "report": {
+    "treasury": "0x7e1f1e15c1d2e3f405162738495061728394a277",
+    "action": "0x7ebb6abf1c2d3e4f5061728394a5b6c7d8e9f077",
+    "configHash": "0x9b0c4e5f60718293a4b5c6d7e8f9a0b1c2d3e4f5061728394a5b6c7d8e911aa",
+    "imageId": "cd5040ae13cb2f550f5df40c1142fc9fef77836942b4bf41da933f0dbeaed804"
+  },
+  "registry": {
+    "treasuryEOA": "0x7e1f1e15c1d2e3f405162738495061728394a277",
+    "actionEOA": "0x7ebb6abf1c2d3e4f5061728394a5b6c7d8e9f077",
+    "codeHash": "0xcd5040ae13cb2f550f5df40c1142fc9fef77836942b4bf41da933f0dbeaed804",
+    "configHash": "0xe4d7fade1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081923535ec",
+    "generation": 1,
+    "lastHeartbeat": 1759023200
+  },
+  "status": "live",
+  "generationHistory": [
+    {
+      "generation": 1,
+      "treasuryEOA": "0x7e1f1e15c1d2e3f405162738495061728394a277",
+      "actionEOA": "0x7ebb6abf1c2d3e4f5061728394a5b6c7d8e9f077",
+      "codeHash": "0xcd5040ae13cb2f550f5df40c1142fc9fef77836942b4bf41da933f0dbeaed804",
+      "ts": 1758950600,
+      "txHash": "0x7a01c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e807"
+    }
+  ],
+  "verifyYourself": {
+    "imageId": "cd5040ae13cb2f550f5df40c1142fc9fef77836942b4bf41da933f0dbeaed804",
+    "enclaveIpHint": null,
+    "commands": [
+      "oyster-cvm verify --enclave-ip <ENCLAVE_IP> --image-id cd5040ae13cb2f550f5df40c1142fc9fef77836942b4bf41da933f0dbeaed804",
+      "curl -s http://<ENCLAVE_IP>:8420/attestation"
+    ]
+  }
+}

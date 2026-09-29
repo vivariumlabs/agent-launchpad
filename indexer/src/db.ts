@@ -133,6 +133,28 @@ export interface JournalOwnerRow {
   pinnedAt: number;
 }
 
+/** SPEC-M4B §1b check outcome. `skip` = not applicable (drill ref / no release table); `pending` = not yet decidable (transport, not indexed). */
+export type CheckStatus = "pass" | "fail" | "pending" | "skip";
+
+/** SPEC-M4B §1b check names, in evaluation order (the attestation_checks columns). */
+export const CHECK_NAMES = ["refShape", "itemFound", "reportParses", "eoasMatch", "configHashMatch", "imageIdMatch", "releaseMatch"] as const;
+export type CheckName = (typeof CHECK_NAMES)[number];
+
+export interface AttestationCheckRow {
+  agentId: number;
+  verifiedAt: number;
+  refShape: CheckStatus;
+  itemFound: CheckStatus;
+  reportParses: CheckStatus;
+  eoasMatch: CheckStatus;
+  configHashMatch: CheckStatus;
+  imageIdMatch: CheckStatus;
+  releaseMatch: CheckStatus;
+  releaseVersion: string | null;
+  /** JSON-encoded verify.ts VerifyDetail. */
+  detail: string;
+}
+
 /** Append-only; index = resulting user_version − 1. Never edit a shipped entry. */
 export const MIGRATIONS: readonly string[] = [
   `
@@ -189,6 +211,15 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX journal_agent ON journal (agentId, ts);
   CREATE TABLE journal_owner (agentId INTEGER PRIMARY KEY, owner TEXT NOT NULL, attestationItem TEXT NOT NULL, pinnedAt INTEGER NOT NULL);
   `,
+  // SPEC-M4B §1b — one row per agent, replaced every verify pass.
+  `
+  CREATE TABLE attestation_checks (
+    agentId INTEGER PRIMARY KEY, verifiedAt INTEGER NOT NULL,
+    refShape TEXT NOT NULL, itemFound TEXT NOT NULL, reportParses TEXT NOT NULL, eoasMatch TEXT NOT NULL,
+    configHashMatch TEXT NOT NULL, imageIdMatch TEXT NOT NULL, releaseMatch TEXT NOT NULL,
+    releaseVersion TEXT, detail TEXT NOT NULL
+  );
+  `,
 ];
 
 type Raw = Record<string, unknown>;
@@ -215,7 +246,7 @@ function toAgent(r: Raw): AgentRow {
   };
 }
 
-export const TABLES = ["agents", "instances", "events", "pools", "swaps", "trades_curve", "fees", "balances", "journal", "journal_owner"] as const;
+export const TABLES = ["agents", "instances", "events", "pools", "swaps", "trades_curve", "fees", "balances", "journal", "journal_owner", "attestation_checks"] as const;
 
 export class IndexerDb {
   readonly db: Database.Database;
@@ -413,6 +444,22 @@ export class IndexerDb {
   activity(agentId: number, limit: number): EventRow[] {
     return (
       this.db.prepare(`SELECT * FROM events WHERE agentId = ? ORDER BY blockNumber DESC, logIndex DESC LIMIT ?`).all(agentId, limit) as Raw[]
+    ).map((r) => ({
+      id: Number(r.id),
+      agentId: n(r.agentId),
+      kind: String(r.kind),
+      txHash: String(r.txHash),
+      logIndex: Number(r.logIndex),
+      blockNumber: Number(r.blockNumber),
+      ts: Number(r.ts),
+      data: String(r.data),
+    }));
+  }
+
+  /** Every event of one kind for an agent, oldest first (SPEC-M4B §1b generation history: kind "registered"). */
+  eventsOfKind(agentId: number, kind: string): EventRow[] {
+    return (
+      this.db.prepare(`SELECT * FROM events WHERE agentId = ? AND kind = ? ORDER BY blockNumber, logIndex`).all(agentId, kind) as Raw[]
     ).map((r) => ({
       id: Number(r.id),
       agentId: n(r.agentId),
@@ -623,6 +670,43 @@ export class IndexerDb {
       this.db.prepare(`UPDATE journal SET unverified = 0 WHERE agentId = ? AND owner = ?`).run(p.agentId, pinned.owner);
       return del.changes;
     });
+  }
+
+  // ---- attestation checks (SPEC-M4B §1b) ----
+
+  upsertAttestationChecks(r: AttestationCheckRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO attestation_checks (agentId, verifiedAt, refShape, itemFound, reportParses, eoasMatch, configHashMatch, imageIdMatch, releaseMatch, releaseVersion, detail)
+         VALUES (@agentId, @verifiedAt, @refShape, @itemFound, @reportParses, @eoasMatch, @configHashMatch, @imageIdMatch, @releaseMatch, @releaseVersion, @detail)
+         ON CONFLICT(agentId) DO UPDATE SET
+           verifiedAt = excluded.verifiedAt, refShape = excluded.refShape, itemFound = excluded.itemFound, reportParses = excluded.reportParses,
+           eoasMatch = excluded.eoasMatch, configHashMatch = excluded.configHashMatch, imageIdMatch = excluded.imageIdMatch,
+           releaseMatch = excluded.releaseMatch, releaseVersion = excluded.releaseVersion, detail = excluded.detail`,
+      )
+      .run(r);
+  }
+
+  private toChecks(r: Raw): AttestationCheckRow {
+    const c = (k: string): CheckStatus => String(r[k]) as CheckStatus;
+    return {
+      agentId: Number(r.agentId),
+      verifiedAt: Number(r.verifiedAt),
+      refShape: c("refShape"),
+      itemFound: c("itemFound"),
+      reportParses: c("reportParses"),
+      eoasMatch: c("eoasMatch"),
+      configHashMatch: c("configHashMatch"),
+      imageIdMatch: c("imageIdMatch"),
+      releaseMatch: c("releaseMatch"),
+      releaseVersion: s(r.releaseVersion),
+      detail: String(r.detail),
+    };
+  }
+
+  attestationChecks(agentId: number): AttestationCheckRow | undefined {
+    const r = this.db.prepare(`SELECT * FROM attestation_checks WHERE agentId = ?`).get(agentId) as Raw | undefined;
+    return r === undefined ? undefined : this.toChecks(r);
   }
 
   // ---- status ----

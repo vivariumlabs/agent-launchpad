@@ -1,17 +1,13 @@
 import { notFound } from "next/navigation";
 
 import { ActivityFeed } from "@/components/ActivityFeed";
-import { AddressRow } from "@/components/AddressRow";
-import { AgentAvatar } from "@/components/AgentAvatar";
 import { JournalFeed } from "@/components/JournalFeed";
-import { StatusBadge } from "@/components/StatusBadge";
-import { TabStub } from "@/components/TabStub";
-import { TxLink } from "@/components/TxLink";
 import { getActivity, getAgent, getJournal } from "@/lib/api";
 import { formatCompactUsd, formatEth, formatOrDash, formatUsdg } from "@/lib/format";
 
 export const revalidate = 30;
 
+/** Overview tab: stat row, journal (the centerpiece, D17), activity. Header lives in layout.tsx. */
 export default async function AgentProfilePage({
   params,
 }: {
@@ -27,49 +23,10 @@ export default async function AgentProfilePage({
     getJournal(id),
   ]);
 
-  const { instance, market, balances, fees } = agent;
+  const { market, balances, fees } = agent;
 
   return (
-    <div className="flex flex-col gap-10">
-      {/* Header */}
-      <section className="flex flex-col gap-4 rounded-xl border border-slate-800 bg-slate-900/60 p-5 sm:flex-row sm:items-start">
-        <AgentAvatar
-          agentId={agent.agentId}
-          imageURI={agent.imageURI}
-          name={agent.name}
-          size={64}
-          className="shrink-0 rounded-xl"
-        />
-        <div className="flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-xl font-semibold text-slate-50">
-              {agent.name ?? `Agent #${agent.agentId}`}
-            </h1>
-            <span className="font-mono text-sm text-slate-500">{agent.symbol ?? "—"}</span>
-            <StatusBadge status={agent.status} />
-            <span className="text-xs text-slate-500">
-              {instance ? `gen ${instance.generation}` : "not yet deployed"}
-            </span>
-          </div>
-
-          <div className="mt-4 grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2">
-            <AddressRow label="Creator" address={agent.creator} />
-            <AddressRow label="Token" address={agent.token} />
-            <AddressRow label="Curve" address={agent.curve} />
-            <AddressRow label="Pool" address={agent.poolId} />
-            <AddressRow label="Treasury EOA" address={instance?.treasuryEOA ?? null} />
-            <AddressRow label="Action EOA" address={instance?.actionEOA ?? null} />
-          </div>
-
-          {agent.requestTx ? (
-            <p className="mt-3 text-xs text-slate-500">
-              Requested <TxLink txHash={agent.requestTx} />
-              {agent.requestBlock !== null ? ` at block ${agent.requestBlock}` : null}
-            </p>
-          ) : null}
-        </div>
-      </section>
-
+    <>
       {/* Stat row */}
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
         <StatCard
@@ -98,13 +55,6 @@ export default async function AgentProfilePage({
         />
       </section>
 
-      {/* Tabs (disabled stubs for later slices) */}
-      <section className="flex flex-wrap gap-2">
-        <TabStub label="Attestation" />
-        <TabStub label="Chat" />
-        <TabStub label="Holders" />
-      </section>
-
       {/* Journal feed — the page's centerpiece (D17) */}
       <section>
         <h2 className="mb-3 text-lg font-semibold text-slate-100">Journal</h2>
@@ -116,7 +66,7 @@ export default async function AgentProfilePage({
         <h2 className="mb-3 text-lg font-semibold text-slate-100">Activity</h2>
         <ActivityFeed events={activity} />
       </section>
-    </div>
+    </>
   );
 }
 

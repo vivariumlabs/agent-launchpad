@@ -1,0 +1,13 @@
+{
+  "agentId": 10,
+  "predicted": true,
+  "configHash": "0x0f1c2e3d4a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e4f5",
+  "imageId": "f489dc60a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e4f5061728394a5b6",
+  "expectedTreasuryEOA": "0x10a1f1e15c1d2e3f405162738495061728394a10",
+  "actionEOA": "0x10bb6abf1c2d3e4f5061728394a5b6c7d8e9f010",
+  "createArgs": {
+    "factory": "0x7b257abd9BDf3377Af03DD67e2D67a8D5717b118",
+    "usdg": "0xe6f7E5832991f5af335C2A21d4F35cea3d47ccAb",
+    "fee": "75000000"
+  }
+}

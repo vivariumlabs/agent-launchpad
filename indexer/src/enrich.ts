@@ -29,6 +29,7 @@
 //
 // The only network code in this file is HttpArweaveClient, over an injected fetch.
 
+import { getAddress } from "viem";
 import type { Clock } from "./clock.js";
 import type { IndexerDb, InstanceRow } from "./db.js";
 import { errMsg, type Logger } from "./log.js";
@@ -38,6 +39,30 @@ export const MAX_TEXT_CHARS = 4096;
 export const TS_TOLERANCE_SEC = 86_400;
 export const ARWEAVE_REDIRECT_HOST_SUFFIX = ".arweave.net";
 const ID_RE = /^[A-Za-z0-9_-]{43}$/;
+/**
+ * An item owner as the gateway reports it — an Arweave address (43-char base64url) OR an Ethereum
+ * address (Turbo items signed with an EVM key — ANS-104 type 3; the live agent-8 attestation item's
+ * owner is its treasury EOA 0xd7EF…). SPEC-M4A rev 2 (Fable ruling 2026-09-29, agent-8 drill):
+ * ownerOf() accepts BOTH forms — the original 43-char-only rule made the pin path structurally dead
+ * for every runtime-uploaded item, since TurboJournalSink/TurboArweaveSink sign with the treasury
+ * key. 0x-form owners are normalized to lowercase at this client boundary (normalizeOwner) so the
+ * db's exact-equality pin comparisons hold across gateways' checksum-casing choices.
+ */
+const OWNER_ANY_RE = /^(?:[A-Za-z0-9_-]{43}|0x[0-9a-fA-F]{40})$/;
+
+/** SPEC-M4A rev 2: canonical stored/compared owner form — lowercase for 0x-form, verbatim otherwise. */
+export function normalizeOwner(owner: string): string {
+  return owner.startsWith("0x") ? owner.toLowerCase() : owner;
+}
+
+/** EIP-55 checksummed form for the gateway owners filter (a non-address input passes through). */
+function checksum0x(a: string): string {
+  try {
+    return getAddress(a);
+  } catch {
+    return a;
+  }
+}
 const REDIRECT_STATUSES: readonly number[] = [301, 302, 303, 307, 308];
 /** Journal items are ≪ 100 KiB; attestation reports carry a base64 quote (a few KiB). */
 export const MAX_ITEM_BYTES = 1024 * 1024;
@@ -53,7 +78,7 @@ export interface ArweaveTag {
 export interface ArweaveNode {
   id: string;
   cursor: string;
-  /** Arweave owner address (base64url sha256 of the owner key). */
+  /** Item owner address, normalized (43-char base64url, or lowercase 0x-form for Turbo/EVM-signed items — SPEC-M4A rev 2). */
   owner: string;
   tags: ArweaveTag[];
   blockHeight: number | null;
@@ -71,7 +96,8 @@ export interface ArweaveClient {
   query(agentId: number, owner: string | null, after: string | null): Promise<ArweavePage>;
   /** Owner address of item `id` (GraphQL lookup by id), or null when the gateway does not know it (yet). */
   ownerOf(id: string): Promise<string | null>;
-  download(id: string): Promise<Uint8Array>;
+  /** Item data; `maxBytes` DEFAULT MAX_ITEM_BYTES (a larger body throws ArweaveTooLargeError). */
+  download(id: string, maxBytes?: number): Promise<Uint8Array>;
 }
 
 /** An Arweave item / owner id: 43-char base64url. */
@@ -101,6 +127,14 @@ const QUERY_OWNED =
   "}";
 const QUERY_BY_ID = "query($ids:[ID!]){transactions(ids:$ids,first:1){edges{node{id owner{address}}}}}";
 
+/** A body (item data or GraphQL response) larger than the reader's byte cap — a property of the item, not a transport failure. */
+export class ArweaveTooLargeError extends Error {
+  constructor(readonly cap: number) {
+    super(`arweave: response body exceeds ${cap} bytes`);
+    this.name = "ArweaveTooLargeError";
+  }
+}
+
 async function readCapped(res: Response, cap: number): Promise<Uint8Array> {
   const body = res.body;
   if (body === null) return new Uint8Array(0);
@@ -113,7 +147,7 @@ async function readCapped(res: Response, cap: number): Promise<Uint8Array> {
     size += value.byteLength;
     if (size > cap) {
       await reader.cancel();
-      throw new Error(`arweave: response body exceeds ${cap} bytes`);
+      throw new ArweaveTooLargeError(cap);
     }
     chunks.push(value);
   }
@@ -165,16 +199,26 @@ export class HttpArweaveClient implements ArweaveClient {
     return tx as { pageInfo?: { hasNextPage?: unknown }; edges: unknown[] };
   }
 
-  async ownerOf(id: string): Promise<string | null> {
+  private async ownerLookup(id: string, ownerRe: RegExp): Promise<string | null> {
     if (!ID_RE.test(id)) throw new Error("arweave: bad item id");
     const tx = await this.graphql({ query: QUERY_BY_ID, variables: { ids: [id] } });
     for (const e of tx.edges as Array<Record<string, unknown>>) {
       const node = e.node as { id?: unknown; owner?: { address?: unknown } } | undefined;
       const addr = node?.owner?.address;
       // Untrusted gateway: only the node for exactly this id counts.
-      if (node?.id === id && typeof addr === "string" && ID_RE.test(addr)) return addr;
+      if (node?.id === id && typeof addr === "string" && ownerRe.test(addr)) return normalizeOwner(addr);
     }
     return null;
+  }
+
+  /** SPEC-M4A rev 2: both owner forms (see OWNER_ANY_RE), normalized; null when the gateway does not know the item (yet). */
+  async ownerOf(id: string): Promise<string | null> {
+    return this.ownerLookup(id, OWNER_ANY_RE);
+  }
+
+  /** SPEC-M4B §1b itemFound: alias of ownerOf (kept for the verifier's call site). */
+  async itemOwner(id: string): Promise<string | null> {
+    return this.ownerOf(id);
   }
 
   async query(agentId: number, owner: string | null, after: string | null): Promise<ArweavePage> {
@@ -183,7 +227,11 @@ export class HttpArweaveClient implements ArweaveClient {
       { name: "AgentId", values: [agentId.toString(10)] },
       { name: "Kind", values: ["journal"] },
     ];
-    const body = owner === null ? { query: QUERY_OPEN, variables: { tags, after } } : { query: QUERY_OWNED, variables: { owners: [owner], tags, after } };
+    // SPEC-M4A rev 2: a pinned 0x-form owner is stored lowercase, but the gateway's owners filter may
+    // match its stored representation exactly — send both casings (OR within the list). The local
+    // owner re-check downstream compares normalized forms either way.
+    const ownerFilter = owner === null ? null : owner.startsWith("0x") ? [owner, checksum0x(owner)] : [owner];
+    const body = ownerFilter === null ? { query: QUERY_OPEN, variables: { tags, after } } : { query: QUERY_OWNED, variables: { owners: ownerFilter, tags, after } };
     const tx = await this.graphql(body);
     const nodes: ArweaveNode[] = [];
     for (const e of tx.edges as Array<Record<string, unknown>>) {
@@ -201,12 +249,12 @@ export class HttpArweaveClient implements ArweaveClient {
       const block = node?.block as { height?: unknown; timestamp?: unknown } | null | undefined;
       const height = typeof block?.height === "number" && Number.isSafeInteger(block.height) ? block.height : null;
       const bts = typeof block?.timestamp === "number" && Number.isSafeInteger(block.timestamp) ? block.timestamp : null;
-      nodes.push({ id, cursor, owner: ownerAddr, tags, blockHeight: height, blockTimestamp: bts });
+      nodes.push({ id, cursor, owner: normalizeOwner(ownerAddr), tags, blockHeight: height, blockTimestamp: bts });
     }
     return { nodes, hasNextPage: tx.pageInfo?.hasNextPage === true };
   }
 
-  async download(id: string): Promise<Uint8Array> {
+  async download(id: string, maxBytes: number = MAX_ITEM_BYTES): Promise<Uint8Array> {
     if (!ID_RE.test(id)) throw new Error("arweave: bad item id");
     const first = new URL(`${this.gatewayUrl}/${id}`);
     this.checkUrl(first);
@@ -236,7 +284,7 @@ export class HttpArweaveClient implements ArweaveClient {
       await res.body?.cancel();
       throw new Error(`arweave: download ${id}: HTTP ${res.status}`);
     }
-    return readCapped(res, MAX_ITEM_BYTES);
+    return readCapped(res, maxBytes);
   }
 }
 

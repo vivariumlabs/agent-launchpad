@@ -60,5 +60,12 @@
   },
   "turbo": {
     "enabled": false
+  },
+  "launchHelper": {
+    "port": 8426,
+    "composePath": "../../runtime/releases/v0.1.6.yml",
+    "releasesTemplate": "../../runtime/releases/v0.1.6.json",
+    "platformTemplate": "platform-template.testnet.json",
+    "oysterBin": "/tmp/bin/oyster-cvm"
   }
 }

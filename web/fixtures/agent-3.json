@@ -17,9 +17,9 @@
     "treasuryEOA": "0x272f1e15c1d2e3f405162738495061728394a2eea",
     "actionEOA": "0xe2bb6abf1c2d3e4f5061728394a5b6c7d8e9f07f67",
     "codeHash": "0xcd5040ae13cb2f550f5df40c1142fc9fef77836942b4bf41da933f0dbeaed804",
-    "attestationRef": "arweave:attn-cato-gen1-9f3a",
+    "attestationRef": "Qm7pX2vN9aLk4sT0bYc8dE1fG6hJ3iK5lM2nO9pR4sU",
     "lastHeartbeat": 1759023300,
-    "generation": 1
+    "generation": 2
   },
   "market": {
     "price": "0.01234567",

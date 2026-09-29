@@ -9,7 +9,15 @@ export function Header() {
         <Link href="/" className="text-lg font-semibold tracking-tight text-slate-50">
           agent<span className="text-accent">-launchpad</span>
         </Link>
-        <ConnectButton />
+        <div className="flex items-center gap-3">
+          <Link
+            href="/launch"
+            className="text-sm font-medium text-slate-300 transition hover:text-white"
+          >
+            Launch
+          </Link>
+          <ConnectButton />
+        </div>
       </div>
     </header>
   );
