@@ -29,7 +29,7 @@
     }
   },
   "release": {
-    "composePath": "../../runtime/releases/v0.1.5.yml"
+    "composePath": "../../runtime/releases/v0.1.7.yml"
   },
   "configInboxDir": "inbox",
   "runtimeOps": {
@@ -48,13 +48,20 @@
     },
     "x402": {
       "enabled": true
+    },
+    "arweave": {
+      "enabled": true,
+      "localMirror": true
+    },
+    "turboTopUp": {
+      "enabled": false
     }
   },
   "seeding": {
     "profile": "testnet"
   },
   "oyster": {
-    "bin": "/sessions/magical-zealous-davinci/oyster-cvm",
+    "bin": "/tmp/bin/oyster-cvm",
     "walletKeyFile": "../../.secrets/m0-drill-wallet.key",
     "durationMin": 60
   },
@@ -63,8 +70,8 @@
   },
   "launchHelper": {
     "port": 8426,
-    "composePath": "../../runtime/releases/v0.1.6.yml",
-    "releasesTemplate": "../../runtime/releases/v0.1.6.json",
+    "composePath": "../../runtime/releases/v0.1.7.yml",
+    "releasesTemplate": "../../runtime/releases/v0.1.7.json",
     "platformTemplate": "platform-template.testnet.json",
     "oysterBin": "/tmp/bin/oyster-cvm"
   }
