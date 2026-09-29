@@ -16,9 +16,7 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {PoolSwapTest} from "@uniswap/v4-core/src/test/PoolSwapTest.sol";
-import {PoolModifyLiquidityTest} from "@uniswap/v4-core/src/test/PoolModifyLiquidityTest.sol";
 import {LiquidityAmounts} from "@uniswap/v4-periphery/src/libraries/LiquidityAmounts.sol";
-import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
 
 import {AgentFactory} from "../src/AgentFactory.sol";
 import {AgentRegistry} from "../src/AgentRegistry.sol";
@@ -28,10 +26,11 @@ import {AgentBondingCurve} from "../src/AgentBondingCurve.sol";
 import {RoyaltyDistributor} from "../src/RoyaltyDistributor.sol";
 import {FeeSplitHook} from "../src/FeeSplitHook.sol";
 import {LiquidityLocker} from "../src/LiquidityLocker.sol";
-import {TreasuryBuyback} from "../src/TreasuryBuyback.sol";
-import {IAgentFactory, IFeeSplitHook, ITreasuryBuyback} from "../src/interfaces/ILaunchpad.sol";
-import {FactoryMockERC20} from "./mocks/FactoryMocks.sol";
-import {BuybackSpamCaller} from "./mocks/BuybackMocks.sol";
+import {FloorVault} from "../src/FloorVault.sol";
+import {IAgentFactory, IFeeSplitHook, IFloorVault} from "../src/interfaces/ILaunchpad.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {MockPlatformToken} from "../script/support/MockPlatformToken.sol";
+import {FloorHostileRedeemer} from "./mocks/FloorVaultMocks.sol";
 import {LifecycleNotifyingUSDG, LifecycleHostileTreasury, LifecycleDoubleDistributor} from "./mocks/LifecycleMocks.sol";
 
 /// @notice M1 gate suite (b): hostile ordering against the live system. Attacker EOAs and
@@ -65,8 +64,7 @@ contract AdversarialTest is Test {
     uint64 constant GENESIS_WINDOW = 24 hours;
     int24 constant TICK_SPACING = 60;
 
-    uint256 constant PLATFORM_TOKEN_RESERVE = 1_000_000_000e18;
-    uint256 constant PLATFORM_USDG_RESERVE = 2_000_000e6;
+    uint256 constant PLATFORM_SUPPLY = 1_000_000_000e18;
 
     bytes32 constant CODE_HASH = keccak256("agent-image-v1");
     string constant IMAGE_URI = "ar://metadata-txid";
@@ -74,19 +72,16 @@ contract AdversarialTest is Test {
 
     PoolManager manager;
     PoolSwapTest swapRouter;
-    PoolModifyLiquidityTest lpRouter;
 
     LifecycleNotifyingUSDG usdg;
-    FactoryMockERC20 platformToken;
+    MockPlatformToken platformToken;
     AgentRegistry registry;
     AgentNFT nft;
     RoyaltyDistributor distributor;
     FeeSplitHook hook;
     LiquidityLocker locker;
-    TreasuryBuyback buyback;
+    FloorVault vault;
     AgentFactory factory;
-
-    PoolKey buybackPoolKey;
 
     address owner = makeAddr("platformMultisig");
     address gasRecipient = makeAddr("gasRecipient");
@@ -95,18 +90,18 @@ contract AdversarialTest is Test {
     address attacker = makeAddr("attacker");
     address actionEOA = makeAddr("actionEOA");
     address treasuryEOA = makeAddr("treasuryEOA");
+    /// @dev Honest `$TOKEN` holder: starts with the whole platform-token supply.
+    address holder = makeAddr("platformHolder");
 
     LifecycleHostileTreasury hostile;
 
     function setUp() public {
         manager = new PoolManager(address(this));
         swapRouter = new PoolSwapTest(manager);
-        lpRouter = new PoolModifyLiquidityTest(manager);
 
         usdg = new LifecycleNotifyingUSDG();
-        platformToken = new FactoryMockERC20("Platform Token", "TOKEN", 18);
-
-        buyback = new TreasuryBuyback(IPoolManager(address(manager)), address(usdg), owner, 500);
+        platformToken = new MockPlatformToken(holder);
+        vault = new FloorVault(address(usdg), address(platformToken));
 
         registry = new AgentRegistry();
         nft = new AgentNFT();
@@ -115,7 +110,7 @@ contract AdversarialTest is Test {
         address hookAddr = address(HOOK_FLAGS | (uint160(0xADAD) << 20));
         deployCodeTo(
             "FeeSplitHook.sol:FeeSplitHook",
-            abi.encode(manager, address(usdg), address(registry), address(distributor), address(buyback)),
+            abi.encode(manager, address(usdg), address(registry), address(distributor), address(vault)),
             hookAddr
         );
         hook = FeeSplitHook(hookAddr);
@@ -130,7 +125,8 @@ contract AdversarialTest is Test {
             address(distributor),
             address(hook),
             address(locker),
-            address(buyback),
+            address(vault),
+            1,
             gasRecipient,
             owner
         );
@@ -143,8 +139,6 @@ contract AdversarialTest is Test {
         hook.setFactory(address(factory));
         locker.setFactory(address(factory));
 
-        _seedBuybackPool();
-
         hostile = new LifecycleHostileTreasury();
 
         usdg.mint(creator, 10_000e6);
@@ -153,43 +147,6 @@ contract AdversarialTest is Test {
 
         vm.prank(creator);
         usdg.approve(address(factory), type(uint256).max);
-    }
-
-    /// @dev Stand-in for the PONS `$TOKEN/USDG` pool the buyback pokes against: hookless, and
-    ///      on the same PoolManager as the agent pools so the ordering tests can interleave.
-    function _seedBuybackPool() internal {
-        (Currency c0, Currency c1) = address(platformToken) < address(usdg)
-            ? (Currency.wrap(address(platformToken)), Currency.wrap(address(usdg)))
-            : (Currency.wrap(address(usdg)), Currency.wrap(address(platformToken)));
-        buybackPoolKey =
-            PoolKey({currency0: c0, currency1: c1, fee: 0, tickSpacing: TICK_SPACING, hooks: IHooks(address(0))});
-
-        bool tokenIs0 = address(platformToken) < address(usdg);
-        (uint256 amount0, uint256 amount1) =
-            tokenIs0 ? (PLATFORM_TOKEN_RESERVE, PLATFORM_USDG_RESERVE) : (PLATFORM_USDG_RESERVE, PLATFORM_TOKEN_RESERVE);
-        uint160 sqrtPriceX96 = uint160(FixedPointMathLib.sqrt(FullMath.mulDiv(amount1, 1 << 192, amount0)));
-        manager.initialize(buybackPoolKey, sqrtPriceX96);
-
-        platformToken.mint(address(this), PLATFORM_TOKEN_RESERVE);
-        usdg.mint(address(this), PLATFORM_USDG_RESERVE);
-        platformToken.approve(address(lpRouter), type(uint256).max);
-        usdg.approve(address(lpRouter), type(uint256).max);
-
-        int24 lower = TickMath.minUsableTick(TICK_SPACING);
-        int24 upper = TickMath.maxUsableTick(TICK_SPACING);
-        uint128 liquidity = LiquidityAmounts.getLiquidityForAmounts(
-            sqrtPriceX96, TickMath.getSqrtPriceAtTick(lower), TickMath.getSqrtPriceAtTick(upper), amount0, amount1
-        );
-        lpRouter.modifyLiquidity(
-            buybackPoolKey,
-            IPoolManager.ModifyLiquidityParams({
-                tickLower: lower, tickUpper: upper, liquidityDelta: int256(uint256(liquidity)), salt: 0
-            }),
-            ""
-        );
-
-        vm.prank(owner);
-        buyback.setTargetPool(buybackPoolKey);
     }
 
     // =======================================================================
@@ -532,7 +489,7 @@ contract AdversarialTest is Test {
         nft.burn(agentId);
 
         vm.expectRevert(AgentBondingCurve.AlreadyInitialized.selector);
-        impl.initialize(1, token, address(usdg), address(registry), address(distributor), address(buyback), 1, 1);
+        impl.initialize(1, token, address(usdg), address(registry), address(distributor), address(vault), 1, 1);
 
         vm.expectRevert(FeeSplitHook.NotPoolManager.selector);
         hook.unlockCallback("");
@@ -564,10 +521,13 @@ contract AdversarialTest is Test {
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, attacker));
         factory.setPlatformFeeRecipient(attacker);
 
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, attacker));
-        buyback.setMaxPerPoke(10_000e6);
-
         vm.stopPrank();
+
+        // The floor vault has no privileged surface at all: no owner, no withdrawal, no sweep.
+        (bool ok,) = address(vault).call(abi.encodeWithSignature("owner()"));
+        assertFalse(ok, "floor vault exposes owner()");
+        (ok,) = address(vault).call(abi.encodeWithSignature("withdraw(uint256)", 1));
+        assertFalse(ok, "floor vault exposes withdraw()");
 
         // Even the deployer cannot rewire anything a second time.
         vm.expectRevert(FeeSplitHook.AlreadySet.selector);
@@ -576,9 +536,6 @@ contract AdversarialTest is Test {
         locker.setFactory(attacker);
         vm.expectRevert(AgentRegistry.AlreadySet.selector);
         registry.setFactory(attacker);
-        vm.prank(owner);
-        vm.expectRevert(TreasuryBuyback.AlreadySet.selector);
-        buyback.setTargetPool(key);
     }
 
     /// @dev Opening an agent pool without going through the factory would give an untaxed pool.
@@ -623,10 +580,10 @@ contract AdversarialTest is Test {
         hook.distribute(poolId, 0);
 
         vm.warp(t0 + DISTRIBUTE_COOLDOWN);
-        uint256 buybackBefore = usdg.balanceOf(address(buyback));
+        uint256 vaultBefore = usdg.balanceOf(address(vault));
         vm.prank(attacker);
         hook.distribute(poolId, 0);
-        assertGt(usdg.balanceOf(address(buyback)), buybackBefore, "boundary call did not distribute");
+        assertGt(usdg.balanceOf(address(vault)), vaultBefore, "boundary call did not distribute");
     }
 
     /// @dev Two `distribute` calls inside one transaction — the atomic version of the same spam.
@@ -645,52 +602,266 @@ contract AdversarialTest is Test {
         assertEq(hook.lastDistribute(poolId), block.timestamp);
     }
 
-    function test_pokeSpamAtCooldownBoundary() public {
-        uint256 agentId = _live(treasuryEOA);
-        _buyToThreshold(agentId); // funds the buyback with the curve's 1% leg
-        assertGt(usdg.balanceOf(address(buyback)), 0, "buyback never funded by the curve leg");
+    // =======================================================================
+    // 4b — floor vault (D18): hostile redeem / burnStray orderings
+    // =======================================================================
 
-        // One curve's worth of buyback revenue is a few hundred USDG; size the poke so two of
-        // them fit, otherwise the second call would bounce on `NothingToBuy` before it ever
-        // reached the cooldown check this test is about.
-        vm.prank(owner);
-        buyback.setMaxPerPoke(100e6);
-
-        vm.prank(attacker);
-        vm.expectRevert(TreasuryBuyback.MinimumOutputRequired.selector);
-        buyback.poke(0);
-
-        uint256 burnedBefore = platformToken.balanceOf(0x000000000000000000000000000000000000dEaD);
-        vm.prank(attacker);
-        buyback.poke(1);
-        uint256 t0 = block.timestamp;
-        assertGt(platformToken.balanceOf(0x000000000000000000000000000000000000dEaD), burnedBefore, "nothing burned");
-
-        vm.prank(attacker);
-        vm.expectRevert(TreasuryBuyback.CooldownActive.selector);
-        buyback.poke(1);
-
-        vm.warp(t0 + buyback.cooldown() - 1);
-        vm.prank(attacker);
-        vm.expectRevert(TreasuryBuyback.CooldownActive.selector);
-        buyback.poke(1);
-
-        vm.warp(t0 + buyback.cooldown());
-        vm.prank(attacker);
-        buyback.poke(1);
-        assertEq(buyback.lastPoke(), block.timestamp);
+    function _floorState() internal view returns (uint256 b, uint256 s) {
+        b = usdg.balanceOf(address(vault));
+        s = platformToken.totalSupply();
     }
 
-    function test_doublePokeInOneTransactionReverts() public {
+    /// @dev Floor comparison by cross multiplication, never via the rounded `floorPrice`.
+    function _assertFloorNotLower(uint256 b0, uint256 s0, string memory stage) internal view {
+        (uint256 b1, uint256 s1) = _floorState();
+        if (s1 == 0) return;
+        assertGe(b1 * s0, b0 * s1, string.concat(stage, ": floor fell"));
+    }
+
+    /// @dev A redeem with the pro-rata payout, the exact receipt and the floor all asserted.
+    function _redeemChecked(address who, uint256 amount) internal returns (uint256 paid) {
+        (uint256 b0, uint256 s0) = _floorState();
+        uint256 whoBefore = usdg.balanceOf(who);
+        vm.startPrank(who);
+        platformToken.approve(address(vault), amount);
+        paid = vault.redeem(amount);
+        vm.stopPrank();
+        assertEq(paid, FullMath.mulDiv(amount, b0, s0), "payout != pro rata");
+        assertEq(usdg.balanceOf(who) - whoBefore, paid, "redeemer not paid exactly");
+        assertEq(platformToken.totalSupply(), s0 - amount, "tokens not burned");
+        _assertFloorNotLower(b0, s0, "redeem");
+    }
+
+    /// @notice An attacker holding 30% of `$TOKEN` redeems in slices interleaved with every
+    ///         hostile ordering of `distribute`, `registerInstance`, `finalize` and `cancel`,
+    ///         plus a stray send + `burnStray`. Every slice is paid exactly pro rata, the floor
+    ///         never falls at any step, and the attacker's total take is bounded by its
+    ///         tokens' worth at the final floor.
+    function test_floor_hostileRedeemOrderingsAcrossLifecycle() public {
+        vm.prank(holder);
+        platformToken.transfer(attacker, (PLATFORM_SUPPLY * 3) / 10);
+        uint256 stack = platformToken.balanceOf(attacker);
+        floorSlice = stack / 10;
+
+        uint256 agentId = _live(treasuryEOA);
+
+        // Empty vault: nothing to take, nothing consumed.
+        vm.startPrank(attacker);
+        platformToken.approve(address(vault), stack);
+        vm.expectRevert(FloorVault.ZeroPayout.selector);
+        vault.redeem(stack);
+        vm.stopPrank();
+        assertEq(platformToken.balanceOf(attacker), stack, "tokens consumed by a failed redeem");
+
+        // Curve phase funds the vault through the platform leg.
+        _buyToThreshold(agentId);
+        (floorFirstB, floorFirstS) = _floorState();
+        assertGt(floorFirstB, 0, "curve platform leg never reached the vault");
+        _attackerRedeemSlice();
+
+        // Pool phase: redeem on both sides of a distribute.
+        (, bytes32 poolId) = _graduated(agentId);
+        _poolSwapUsdgIn(agentId, trader, 2_000e6);
+        _attackerRedeemSlice();
+        (uint256 b0, uint256 s0) = _floorState();
+        vm.prank(attacker);
+        hook.distribute(poolId, 0);
+        _assertFloorNotLower(b0, s0, "distribute");
+        assertGt(usdg.balanceOf(address(vault)), b0, "pool platform leg never reached the vault");
+        _attackerRedeemSlice();
+
+        _floorSecondAgentOrderings();
+        _floorStrayOrdering();
+
+        // The attacker exits completely.
+        floorExtracted += _redeemChecked(attacker, platformToken.balanceOf(attacker));
+        floorRedeemedTokens += stack - floorSlice; // everything but the stray slice
+        assertEq(platformToken.balanceOf(attacker), 0);
+
+        // Bounded by the tokens' worth at the final floor: extracted * S <= redeemed * B.
+        (uint256 bEnd, uint256 sEnd) = _floorState();
+        assertLe(floorExtracted * sEnd, floorRedeemedTokens * bEnd, "attacker beat pro rata");
+        assertEq(usdg.balanceOf(attacker), 5_000_000e6 + floorExtracted, "attacker USDG != start + redemptions");
+        assertEq(vault.totalRedeemedUsdg(), floorExtracted, "totalRedeemedUsdg");
+
+        // The honest holder is never worse off than at the first funded floor.
+        uint256 hb = platformToken.balanceOf(holder);
+        assertGe(vault.quoteRedeem(hb), FullMath.mulDiv(hb, floorFirstB, floorFirstS), "honest holder's floor fell");
+    }
+
+    uint256 internal floorSlice;
+    uint256 internal floorExtracted;
+    uint256 internal floorRedeemedTokens;
+    uint256 internal floorFirstB;
+    uint256 internal floorFirstS;
+
+    /// @dev Redeems one slice for the attacker (bookkeeping only; the checks live in
+    ///      `_redeemChecked`). The final exit accounts for the slices by subtraction.
+    function _attackerRedeemSlice() internal {
+        floorExtracted += _redeemChecked(attacker, floorSlice);
+    }
+
+    /// @dev A second agent redeemed around (create, registerInstance, finalize) and a third
+    ///      that times out, redeemed around `cancel`.
+    function _floorSecondAgentOrderings() internal {
+        address t2 = makeAddr("treasury2");
+        uint256 second = _create(t2);
+        _attackerRedeemSlice();
+        vm.prank(t2);
+        registry.registerInstance(second, t2, actionEOA, CODE_HASH, ATTESTATION);
+        _attackerRedeemSlice();
+        (uint256 b0, uint256 s0) = _floorState();
+        factory.finalize(second);
+        _buy(second, trader, 3_000e6);
+        _assertFloorNotLower(b0, s0, "finalize + curve trade");
+
+        uint256 third = _create(makeAddr("treasury3"));
+        vm.warp(block.timestamp + GENESIS_WINDOW + 1);
+        _attackerRedeemSlice();
+        (b0, s0) = _floorState();
+        vm.prank(creator);
+        factory.cancel(third);
+        _assertFloorNotLower(b0, s0, "cancel");
+    }
+
+    /// @dev Stray tokens sent to the vault leave B/S unchanged; burning them only raises it.
+    function _floorStrayOrdering() internal {
+        vm.prank(attacker);
+        platformToken.transfer(address(vault), floorSlice);
+        (uint256 b0, uint256 s0) = _floorState();
+        uint256 burnedBefore = vault.totalBurned();
+        vm.prank(attacker);
+        assertEq(vault.burnStray(), floorSlice, "stray amount");
+        (uint256 b1, uint256 s1) = _floorState();
+        assertEq(s1, s0 - floorSlice, "stray not burned");
+        assertGt(b1 * s0, b0 * s1, "burnStray did not raise the floor");
+        assertEq(vault.totalBurned(), burnedBefore, "stray counted as redeemed");
+    }
+
+    /// @notice Splitting a redemption can never extract more than redeeming the same amount in
+    ///         one call: rounding dust from the first slice stays with every remaining holder.
+    function testFuzz_floor_splitRedeemNeverBeatsOneShot(uint256 total, uint256 first) public {
+        uint256 agentId = _live(treasuryEOA);
+        _buy(agentId, trader, 20_000e6);
+        vm.prank(attacker);
+        usdg.transfer(address(vault), 12_345_677); // odd donation to exercise rounding
+
+        FloorHostileRedeemer r = new FloorHostileRedeemer(IFloorVault(address(vault)), address(platformToken));
+        vm.prank(holder);
+        platformToken.transfer(address(r), PLATFORM_SUPPLY / 2);
+
+        total = bound(total, 2e22, PLATFORM_SUPPLY / 2);
+        first = bound(first, 1e22, total - 1e22);
+
+        uint256 snap = vm.snapshotState();
+        uint256 oneShot = r.redeem(total);
+        vm.revertToState(snap);
+        uint256 split = r.redeemTwice(first, total - first);
+
+        assertLe(split, oneShot, "split redeem beat the one-shot payout");
+        assertEq(vault.totalBurned(), total);
+    }
+
+    /// @notice A redeemer contract re-enters `redeem` and `burnStray` the moment its USDG
+    ///         payout lands: both reentries bounce on the guard and the outer redeem pays
+    ///         exactly once.
+    function test_floor_hostileRedeemerReentersOnPayout() public {
         uint256 agentId = _live(treasuryEOA);
         _buyToThreshold(agentId);
 
-        BuybackSpamCaller spam = new BuybackSpamCaller(ITreasuryBuyback(address(buyback)));
-        vm.expectRevert(TreasuryBuyback.CooldownActive.selector);
-        spam.doublePoke(1);
+        FloorHostileRedeemer r = new FloorHostileRedeemer(IFloorVault(address(vault)), address(platformToken));
+        vm.prank(holder);
+        platformToken.transfer(address(r), PLATFORM_SUPPLY / 4);
+        usdg.setNotify(address(r), true);
 
-        spam.singlePoke(1);
-        assertEq(buyback.lastPoke(), block.timestamp);
+        uint256 amount = PLATFORM_SUPPLY / 10;
+        (uint256 b0, uint256 s0) = _floorState();
+        uint256 expected = FullMath.mulDiv(amount, b0, s0);
+
+        r.armOnce(address(vault), abi.encodeCall(IFloorVault.redeem, (amount)));
+        uint256 paid = r.redeem(amount);
+
+        assertEq(r.attempts(), 1, "reentry never attempted");
+        assertEq(r.succeeded(), 0, "reentrant redeem succeeded");
+        assertEq(_selector(r.lastRevertData()), ReentrancyGuard.ReentrancyGuardReentrantCall.selector, "wrong revert");
+        assertEq(paid, expected, "payout");
+        assertEq(usdg.balanceOf(address(r)), expected, "paid more than once");
+        assertEq(platformToken.totalSupply(), s0 - amount, "burned more than once");
+        assertEq(vault.totalBurned(), amount);
+        _assertFloorNotLower(b0, s0, "reentrant redeem");
+
+        // burnStray re-entered from inside redeem's payout is guarded too.
+        vm.prank(holder);
+        platformToken.transfer(address(vault), 1e18);
+        r.armOnce(address(vault), abi.encodeCall(IFloorVault.burnStray, ()));
+        r.redeem(amount);
+        assertEq(r.attempts(), 2);
+        assertEq(r.succeeded(), 0, "reentrant burnStray succeeded");
+        assertEq(_selector(r.lastRevertData()), ReentrancyGuard.ReentrancyGuardReentrantCall.selector, "wrong revert");
+        assertEq(platformToken.balanceOf(address(vault)), 1e18, "stray touched by the guarded path");
+        // and outside the guard anyone may still burn it
+        vm.prank(attacker);
+        vault.burnStray();
+        assertEq(platformToken.balanceOf(address(vault)), 0);
+    }
+
+    /// @notice A hostile agent treasury calls `burnStray` from inside `distribute`'s treasury
+    ///         leg. It is permissionless and only raises the floor; the distribution still
+    ///         closes exactly.
+    function test_floor_hostileTreasuryBurnsStrayMidDistribute() public {
+        uint256 agentId = _liveWithHostileTreasury();
+        _buyToThreshold(agentId);
+        (, bytes32 poolId) = _graduated(agentId);
+        _poolSwapUsdgIn(agentId, trader, 2_000e6);
+
+        vm.prank(holder);
+        platformToken.transfer(address(vault), 1_000e18);
+        hostile.armOnce(address(vault), abi.encodeCall(IFloorVault.burnStray, ()));
+
+        (uint256 b0, uint256 s0) = _floorState();
+        uint256 hostileBefore = usdg.balanceOf(address(hostile));
+        vm.prank(attacker);
+        hook.distribute(poolId, 0);
+
+        assertEq(hostile.attempts(), 1, "reentry never attempted");
+        assertEq(hostile.succeeded(), 1, "permissionless burnStray should land");
+        assertEq(platformToken.totalSupply(), s0 - 1_000e18, "stray not burned");
+        uint256 leg = usdg.balanceOf(address(vault)) - b0;
+        assertGt(leg, 0, "floor leg not paid");
+        assertEq(usdg.balanceOf(address(hostile)) - hostileBefore, leg, "treasury leg wrong");
+        assertEq(
+            usdg.balanceOf(address(hook)), hook.pendingFees(poolId, address(usdg)), "hook balance != pending after"
+        );
+        _assertFloorNotLower(b0, s0, "burnStray mid-distribute");
+    }
+
+    /// @notice Dust and unapproved redeems revert without consuming anything.
+    function test_floor_dustAndUnapprovedRedeemsConsumeNothing() public {
+        uint256 agentId = _live(treasuryEOA);
+        _buyToThreshold(agentId);
+        vm.prank(holder);
+        platformToken.transfer(attacker, 1_000_000e18);
+        (uint256 b0, uint256 s0) = _floorState();
+
+        vm.startPrank(attacker);
+        platformToken.approve(address(vault), type(uint256).max);
+        vm.expectRevert(FloorVault.ZeroPayout.selector);
+        vault.redeem(1); // 1 wei of $TOKEN is worth 0 USDG base units
+        vm.expectRevert(FloorVault.ZeroAmount.selector);
+        vault.redeem(0);
+        platformToken.approve(address(vault), 0);
+        vm.expectRevert();
+        vault.redeem(1_000_000e18);
+        vm.expectRevert(FloorVault.ZeroAmount.selector);
+        vault.burnStray();
+        vm.stopPrank();
+
+        (uint256 b1, uint256 s1) = _floorState();
+        assertEq(b1, b0, "vault USDG moved");
+        assertEq(s1, s0, "supply moved");
+        assertEq(platformToken.balanceOf(attacker), 1_000_000e18, "attacker tokens moved");
+        assertEq(vault.totalBurned(), 0);
+        assertEq(vault.totalRedeemedUsdg(), 0);
     }
 
     // =======================================================================
@@ -805,7 +976,7 @@ contract AdversarialTest is Test {
 
         hostile.armOnce(address(hook), abi.encodeCall(IFeeSplitHook.distribute, (poolId, 0)));
 
-        uint256 buybackBefore = usdg.balanceOf(address(buyback));
+        uint256 vaultBefore = usdg.balanceOf(address(vault));
         uint256 hostileBefore = usdg.balanceOf(address(hostile));
         vm.prank(attacker);
         hook.distribute(poolId, 0);
@@ -814,7 +985,7 @@ contract AdversarialTest is Test {
         assertEq(hostile.succeeded(), 0, "reentrant distribute succeeded");
         assertEq(_selector(hostile.lastRevertData()), FeeSplitHook.Reentrancy.selector, "wrong revert");
 
-        uint256 leg = usdg.balanceOf(address(buyback)) - buybackBefore;
+        uint256 leg = usdg.balanceOf(address(vault)) - vaultBefore;
         assertGt(leg, 0, "outer distribute moved nothing");
         assertEq(usdg.balanceOf(address(hostile)) - hostileBefore, leg, "treasury leg wrong");
         assertEq(
@@ -887,12 +1058,12 @@ contract AdversarialTest is Test {
         assertEq(hook.pendingFees(poolId, address(usdg)), pendingUsdgBefore, "donation credited as pending");
         assertEq(hook.pendingFees(poolId, address(token)), pendingAgentBefore, "agent pending moved");
 
-        uint256 buybackBefore = usdg.balanceOf(address(buyback));
+        uint256 vaultBefore = usdg.balanceOf(address(vault));
         vm.recordLogs();
         vm.prank(attacker);
         hook.distribute(poolId, 0);
         uint256 converted = _readConverted();
-        uint256 leg = usdg.balanceOf(address(buyback)) - buybackBefore;
+        uint256 leg = usdg.balanceOf(address(vault)) - vaultBefore;
 
         // The legs are bounded by what was actually earned — pending plus the conversion's own
         // output — not by the hook's balance, which the donation inflated.

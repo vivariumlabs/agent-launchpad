@@ -122,7 +122,10 @@ export interface Manifest {
   nft: Address;
   distributor: Address;
   locker: Address;
-  treasuryBuyback: Address;
+  floorVault: Address;
+  platformToken: Address;
+  firstAgentId: number;
+  stackVersion: number;
   hookDeployer: Address;
   hook: Address;
   factory: Address;

@@ -43,7 +43,9 @@ abstract contract LaunchpadScript is Script {
         address nft;
         address distributor;
         address locker;
-        address treasuryBuyback;
+        address floorVault;
+        address platformToken;
+        uint256 firstAgentId;
         address hookDeployer;
         address hook;
         address factory;
@@ -78,7 +80,9 @@ abstract contract LaunchpadScript is Script {
         d.nft = vm.parseJsonAddress(json, ".nft");
         d.distributor = vm.parseJsonAddress(json, ".distributor");
         d.locker = vm.parseJsonAddress(json, ".locker");
-        d.treasuryBuyback = vm.parseJsonAddress(json, ".treasuryBuyback");
+        d.floorVault = vm.parseJsonAddress(json, ".floorVault");
+        d.platformToken = vm.parseJsonAddress(json, ".platformToken");
+        d.firstAgentId = vm.parseJsonUint(json, ".firstAgentId");
         d.hookDeployer = vm.parseJsonAddress(json, ".hookDeployer");
         d.hook = vm.parseJsonAddress(json, ".hook");
         d.factory = vm.parseJsonAddress(json, ".factory");

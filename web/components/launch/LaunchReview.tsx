@@ -10,7 +10,7 @@ import { ConnectButton } from "../ConnectButton";
 import { CopyButton } from "../CopyButton";
 import { ARWEAVE_GATEWAY } from "@/lib/config";
 import { erc20Abi, factoryAbi, isAddress, isBytes32, parseUint } from "@/lib/factory";
-import { formatUsdg } from "@/lib/format";
+import { formatUsdg, sameHex } from "@/lib/format";
 import { exactAgentJsonText, type PublishState } from "@/lib/launch";
 import { rhTestnet } from "@/lib/wagmi";
 import type { LaunchAgentInput, LaunchPrepared } from "@/lib/types";
@@ -53,11 +53,17 @@ function errMessage(err: unknown): string {
  * the allowance is short, then createAgent(name, symbol, "", configHash,
  * connectedAddress, expectedTreasuryEOA), then hand off to the tracker with
  * the REAL agentId from the receipt's AgentRequested (race honesty).
+ *
+ * SPEC-M4G dual-stack: the tx goes to the PRIMARY (v2) factory from
+ * /api/contracts. The helper's createArgs.factory must match it — a helper
+ * started from another stack's config predicted its id/config for that
+ * stack, so a mismatch blocks the tx rather than silently picking one.
  */
 export function LaunchReview({
   input,
   prepared,
   fixtures,
+  primaryFactory,
   publish,
   onRetryPublish,
   onBack,
@@ -65,6 +71,7 @@ export function LaunchReview({
   input: LaunchAgentInput;
   prepared: LaunchPrepared;
   fixtures: boolean;
+  primaryFactory: `0x${string}` | null;
   /** SPEC-M4E R3: the config must be on Arweave before the createAgent tx. */
   publish: PublishState;
   onRetryPublish: () => void;
@@ -82,9 +89,17 @@ export function LaunchReview({
     exactAgentJsonText(prepared) ?? JSON.stringify(prepared.agentJson, null, 2);
   const arTxId = publish.kind === "published" ? publish.txId : undefined;
 
-  const { factory, usdg, fee } = prepared.createArgs;
+  const { factory: helperFactory, usdg, fee } = prepared.createArgs;
+  const factory = primaryFactory ?? helperFactory;
   const feeAmount = parseUint(fee);
+  const factoryProblem =
+    primaryFactory === null
+      ? "Contract addresses are unavailable (indexer unreachable), so the primary factory is unknown — not submitting."
+      : !sameHex(helperFactory, primaryFactory)
+        ? `The launch helper prepared this launch for factory ${helperFactory}, but the primary (v2) factory is ${primaryFactory} — the helper is running from another stack's config. Not submitting.`
+        : null;
   const argsValid =
+    factoryProblem === null &&
     isAddress(factory) &&
     isAddress(usdg) &&
     isBytes32(prepared.configHash) &&
@@ -183,7 +198,7 @@ export function LaunchReview({
         <Field label="Action EOA" value={prepared.actionEOA} />
         <Field label="Config hash" value={prepared.configHash} />
         <Field label="Image id" value={prepared.imageId} />
-        <Field label="Factory" value={factory} />
+        <Field label="Factory (primary, v2)" value={factory} />
         <Field label="Creation fee" value={`${formatUsdg(fee)} USDG`} mono={false} />
         <PublishRow publish={publish} onRetry={onRetryPublish} disabled={busy} />
       </div>
@@ -213,7 +228,9 @@ export function LaunchReview({
         </p>
       ) : null}
 
-      {!argsValid ? (
+      {factoryProblem !== null ? (
+        <p className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">{factoryProblem}</p>
+      ) : !argsValid ? (
         <p className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
           The launch helper returned malformed transaction arguments — not submitting. Go back and
           try again.

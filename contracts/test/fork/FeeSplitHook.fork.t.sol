@@ -37,7 +37,7 @@ contract FeeSplitHookForkTest is Test {
     uint256 constant AGENT_RESERVE = 1_000_000_000e18;
     uint256 constant USDG_RESERVE = 2_000_000e6;
     int24 constant TICK_SPACING = 60;
-    address constant TREASURY_BUYBACK = address(0xBB1);
+    address constant FLOOR_VAULT = address(0xBB1);
     address constant AGENT_TREASURY = address(0x7EA);
 
     bool forkUp;
@@ -81,7 +81,7 @@ contract FeeSplitHookForkTest is Test {
         assertEq(hookAddr.code.length, 0, "mined hook address is occupied");
         deployCodeTo(
             "FeeSplitHook.sol:FeeSplitHook",
-            abi.encode(MANAGER, address(usdg), address(registry), address(distributor), TREASURY_BUYBACK),
+            abi.encode(MANAGER, address(usdg), address(registry), address(distributor), FLOOR_VAULT),
             hookAddr
         );
         hook = FeeSplitHook(hookAddr);
@@ -208,8 +208,8 @@ contract FeeSplitHookForkTest is Test {
         uint256 spot = hook.quoteAgentToUsdg(poolId, pendingAgent);
         hook.distribute(poolId, (spot * 9_900) / 10_000);
 
-        uint256 leg = usdg.balanceOf(TREASURY_BUYBACK);
-        assertGt(leg, 0, "no buyback leg");
+        uint256 leg = usdg.balanceOf(FLOOR_VAULT);
+        assertGt(leg, 0, "no floor vault leg");
         assertEq(usdg.balanceOf(AGENT_TREASURY), leg, "treasury leg mismatch");
         assertEq(usdg.balanceOf(address(distributor)), leg, "royalty leg mismatch");
         assertEq(distributor.credited(AGENT_ID), leg, "credit mismatch");

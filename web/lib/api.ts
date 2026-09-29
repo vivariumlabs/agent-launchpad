@@ -19,6 +19,7 @@
  */
 import { normalizeAttestation, normalizeSummary } from "./attestation";
 import { normalizeContracts } from "./nfts";
+import { normalizeFloor, type FloorScenario } from "./floor";
 import { FIXTURES_MODE, INDEXER_URL, LAUNCH_HELPER_URL } from "./config";
 import {
   fixtureActivity,
@@ -26,6 +27,7 @@ import {
   fixtureAttestationRaw,
   fixtureAttestationSummaryRaw,
   fixtureContractsRaw,
+  fixtureFloorRaw,
   fixtureJournal,
   fixtureLaunchTemplate,
   fixtureProfiles,
@@ -38,6 +40,7 @@ import type {
   AttestationSummary,
   AttestationView,
   ContractsResponse,
+  FloorResult,
   JournalEntry,
   JournalResponse,
   LaunchTemplate,
@@ -185,6 +188,24 @@ export async function getContracts(): Promise<ContractsResponse | null> {
     return normalizeContracts(await res.json());
   } catch {
     return null;
+  }
+}
+
+/**
+ * $TOKEN floor (SPEC-M4G §3/§4). `scenario` applies in fixtures mode only.
+ * Unreachable / garbage => "unavailable" (the page says so; never zeros).
+ */
+export async function getFloor(scenario: FloorScenario = "active"): Promise<FloorResult> {
+  if (FIXTURES_MODE) return normalizeFloor(fixtureFloorRaw[scenario]);
+  try {
+    const res = await fetch(`${INDEXER_URL}/api/floor`, {
+      next: { revalidate: 15 },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return { kind: "unavailable", message: `indexer answered ${res.status}` };
+    return normalizeFloor(await res.json());
+  } catch (err) {
+    return { kind: "unavailable", message: `indexer unreachable: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 

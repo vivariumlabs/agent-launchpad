@@ -24,10 +24,19 @@
   },
   "balances": null,
   "fees": {
-    "buybackLeg": "0",
+    "platformLeg": "0",
     "treasuryLeg": "0",
     "royaltyLeg": "0",
     "converted": "0",
     "count": 0
+  },
+  "stack": {
+    "version": 1,
+    "legacy": true,
+    "factory": "0x7b257abd9BDf3377Af03DD67e2D67a8D5717b118",
+    "registry": "0xDBA9680C0F1958Af7Bc34a225863D93df2B92f59",
+    "hook": "0x40053E41fa0Bcdcd2EB127954Ce624323e9aa044",
+    "distributor": "0x25138BDF01F7b7E0e7ea6761ef54Ac8e8250d53B",
+    "nft": "0x08024EDD43dcc639d2b99f17f85b4E527301B1A5"
   }
 }

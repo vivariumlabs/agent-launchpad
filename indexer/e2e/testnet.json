@@ -4,6 +4,7 @@
     "chainId": 46630
   },
   "deploymentManifest": "../../contracts/deployments/testnet-46630.json",
+  "legacyManifests": ["../../contracts/deployments/testnet-46630.v1.json"],
   "dbPath": "data/indexer.sqlite",
   "port": 8425,
   "pollMs": 3000,

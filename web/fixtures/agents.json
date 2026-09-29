@@ -40,11 +40,20 @@
         "updatedAt": 1757030400
       },
       "fees": {
-        "buybackLeg": "250000",
+        "platformLeg": "250000",
         "treasuryLeg": "333333",
         "royaltyLeg": "250000",
         "converted": "0",
         "count": 1
+      },
+      "stack": {
+        "version": 1,
+        "legacy": true,
+        "factory": "0x7b257abd9BDf3377Af03DD67e2D67a8D5717b118",
+        "registry": "0xDBA9680C0F1958Af7Bc34a225863D93df2B92f59",
+        "hook": "0x40053E41fa0Bcdcd2EB127954Ce624323e9aa044",
+        "distributor": "0x25138BDF01F7b7E0e7ea6761ef54Ac8e8250d53B",
+        "nft": "0x08024EDD43dcc639d2b99f17f85b4E527301B1A5"
       }
     },
     {
@@ -87,11 +96,20 @@
         "updatedAt": 1758727800
       },
       "fees": {
-        "buybackLeg": "90000",
+        "platformLeg": "90000",
         "treasuryLeg": "120000",
         "royaltyLeg": "90000",
         "converted": "0",
         "count": 3
+      },
+      "stack": {
+        "version": 1,
+        "legacy": true,
+        "factory": "0x7b257abd9BDf3377Af03DD67e2D67a8D5717b118",
+        "registry": "0xDBA9680C0F1958Af7Bc34a225863D93df2B92f59",
+        "hook": "0x40053E41fa0Bcdcd2EB127954Ce624323e9aa044",
+        "distributor": "0x25138BDF01F7b7E0e7ea6761ef54Ac8e8250d53B",
+        "nft": "0x08024EDD43dcc639d2b99f17f85b4E527301B1A5"
       }
     },
     {
@@ -134,11 +152,20 @@
         "updatedAt": 1759023300
       },
       "fees": {
-        "buybackLeg": "20449500",
+        "platformLeg": "20449500",
         "treasuryLeg": "27266000",
         "royaltyLeg": "20449500",
         "converted": "68165000000000000000",
         "count": 1
+      },
+      "stack": {
+        "version": 1,
+        "legacy": true,
+        "factory": "0x7b257abd9BDf3377Af03DD67e2D67a8D5717b118",
+        "registry": "0xDBA9680C0F1958Af7Bc34a225863D93df2B92f59",
+        "hook": "0x40053E41fa0Bcdcd2EB127954Ce624323e9aa044",
+        "distributor": "0x25138BDF01F7b7E0e7ea6761ef54Ac8e8250d53B",
+        "nft": "0x08024EDD43dcc639d2b99f17f85b4E527301B1A5"
       }
     },
     {
@@ -181,11 +208,20 @@
         "updatedAt": 1759023000
       },
       "fees": {
-        "buybackLeg": "0",
+        "platformLeg": "0",
         "treasuryLeg": "0",
         "royaltyLeg": "0",
         "converted": "0",
         "count": 0
+      },
+      "stack": {
+        "version": 1,
+        "legacy": true,
+        "factory": "0x7b257abd9BDf3377Af03DD67e2D67a8D5717b118",
+        "registry": "0xDBA9680C0F1958Af7Bc34a225863D93df2B92f59",
+        "hook": "0x40053E41fa0Bcdcd2EB127954Ce624323e9aa044",
+        "distributor": "0x25138BDF01F7b7E0e7ea6761ef54Ac8e8250d53B",
+        "nft": "0x08024EDD43dcc639d2b99f17f85b4E527301B1A5"
       }
     },
     {
@@ -214,11 +250,20 @@
       },
       "balances": null,
       "fees": {
-        "buybackLeg": "0",
+        "platformLeg": "0",
         "treasuryLeg": "0",
         "royaltyLeg": "0",
         "converted": "0",
         "count": 0
+      },
+      "stack": {
+        "version": 1,
+        "legacy": true,
+        "factory": "0x7b257abd9BDf3377Af03DD67e2D67a8D5717b118",
+        "registry": "0xDBA9680C0F1958Af7Bc34a225863D93df2B92f59",
+        "hook": "0x40053E41fa0Bcdcd2EB127954Ce624323e9aa044",
+        "distributor": "0x25138BDF01F7b7E0e7ea6761ef54Ac8e8250d53B",
+        "nft": "0x08024EDD43dcc639d2b99f17f85b4E527301B1A5"
       }
     },
     {
@@ -261,11 +306,20 @@
         "updatedAt": 1759023000
       },
       "fees": {
-        "buybackLeg": "0",
+        "platformLeg": "0",
         "treasuryLeg": "0",
         "royaltyLeg": "0",
         "converted": "0",
         "count": 0
+      },
+      "stack": {
+        "version": 1,
+        "legacy": true,
+        "factory": "0x7b257abd9BDf3377Af03DD67e2D67a8D5717b118",
+        "registry": "0xDBA9680C0F1958Af7Bc34a225863D93df2B92f59",
+        "hook": "0x40053E41fa0Bcdcd2EB127954Ce624323e9aa044",
+        "distributor": "0x25138BDF01F7b7E0e7ea6761ef54Ac8e8250d53B",
+        "nft": "0x08024EDD43dcc639d2b99f17f85b4E527301B1A5"
       }
     },
     {
@@ -308,11 +362,76 @@
         "updatedAt": 1748908800
       },
       "fees": {
-        "buybackLeg": "3120000",
+        "platformLeg": "3120000",
         "treasuryLeg": "4160000",
         "royaltyLeg": "3120000",
         "converted": "0",
         "count": 1
+      },
+      "stack": {
+        "version": 1,
+        "legacy": true,
+        "factory": "0x7b257abd9BDf3377Af03DD67e2D67a8D5717b118",
+        "registry": "0xDBA9680C0F1958Af7Bc34a225863D93df2B92f59",
+        "hook": "0x40053E41fa0Bcdcd2EB127954Ce624323e9aa044",
+        "distributor": "0x25138BDF01F7b7E0e7ea6761ef54Ac8e8250d53B",
+        "nft": "0x08024EDD43dcc639d2b99f17f85b4E527301B1A5"
+      }
+    },
+    {
+      "agentId": 101,
+      "name": "Nyx",
+      "symbol": "NYX",
+      "imageURI": null,
+      "creator": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+      "configHash": "0x1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f801",
+      "token": "0x9a8B7c6D5e4F3a2B1c0D9e8F7a6B5c4D3e2F1a01",
+      "curve": "0xAb9C8d7E6f5A4b3C2d1E0f9A8b7C6d5E4f3A2b12",
+      "poolId": "0x1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9a1",
+      "state": "graduated",
+      "requestTx": "0xb31018adf2a1b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3c5d",
+      "requestBlock": 12004410,
+      "createdAt": 1790208000,
+      "status": "live",
+      "instance": {
+        "treasuryEOA": "0x101f1e15c1d2e3f405162738495061728394a101",
+        "actionEOA": "0x101b6abf1c2d3e4f5061728394a5b6c7d8e9f101",
+        "codeHash": "0xcd5040ae13cb2f550f5df40c1142fc9fef77836942b4bf41da933f0dbeaed804",
+        "attestationRef": null,
+        "lastHeartbeat": 1790640000,
+        "generation": 0
+      },
+      "market": {
+        "price": "0.00402",
+        "priceE18": "4020000000000000",
+        "priceSource": "pool",
+        "totalSupply": "1000000000000000000000000",
+        "mcapUsdg": "4020000000",
+        "volume24hUsdg": "812000000"
+      },
+      "balances": {
+        "treasuryUsdg": "1204330000",
+        "treasuryRhEth": "3100000000000000",
+        "actionUsdg": "45120000",
+        "actionRhEth": "900000000000000",
+        "actionToken": "0",
+        "updatedAt": 1790640000
+      },
+      "fees": {
+        "platformLeg": "820450000",
+        "treasuryLeg": "820450000",
+        "royaltyLeg": "820450000",
+        "converted": "0",
+        "count": 14
+      },
+      "stack": {
+        "version": 2,
+        "legacy": false,
+        "factory": "0x2F1a0b9C8d7E6f5A4b3C2d1E0f9A8b7C6d5E4f31",
+        "registry": "0x3A2b1C0d9E8f7A6b5C4d3E2f1A0b9C8d7E6f5a42",
+        "hook": "0x4B3c2D1e0F9a8B7c6D5e4F3a2B1c0D9e8F7a2044",
+        "distributor": "0x5C4d3E2f1A0b9C8d7E6f5A4b3C2d1E0f9A8b7c53",
+        "nft": "0x6D5e4F3a2B1c0D9e8F7a6B5c4D3e2F1a0B9c8d64"
       }
     }
   ]

@@ -1,0 +1,50 @@
+{
+  "agentId": 101,
+  "events": [
+    {
+      "id": 9101,
+      "kind": "distributed",
+      "txHash": "0x5a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e801",
+      "logIndex": 4,
+      "blockNumber": 12031977,
+      "ts": 1790632800,
+      "data": {
+        "poolId": "0x1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9a1",
+        "platformLeg": "61200000",
+        "treasuryLeg": "61200000",
+        "royaltyLeg": "61200000",
+        "converted": "0"
+      }
+    },
+    {
+      "id": 9100,
+      "kind": "graduated",
+      "txHash": "0x5a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e800",
+      "logIndex": 2,
+      "blockNumber": 12010021,
+      "ts": 1790380800,
+      "data": {
+        "poolUsdg": "25000000000",
+        "poolTokens": "200000000000000000000000"
+      }
+    },
+    {
+      "id": 9001,
+      "kind": "live",
+      "txHash": "0x5a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e7ff",
+      "logIndex": 1,
+      "blockNumber": 12004998,
+      "ts": 1790215200,
+      "data": {}
+    },
+    {
+      "id": 9000,
+      "kind": "requested",
+      "txHash": "0xb31018adf2a1b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3c5d",
+      "logIndex": 0,
+      "blockNumber": 12004410,
+      "ts": 1790208000,
+      "data": {}
+    }
+  ]
+}

@@ -29,7 +29,7 @@ import { FACTORY, USDG } from "./helpers/mockWorld.js";
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(here, "..", "..");
 const RELEASES = join(REPO, "runtime", "releases");
-const MANIFEST = join(REPO, "contracts", "deployments", "testnet-46630.json");
+const MANIFEST = join(REPO, "contracts", "deployments", "testnet-46630.v1.json");
 const AGENT8_TEXT = readFileSync(join(here, "fixtures", "agent-8.json"), "utf8");
 const CFG8 = "0x06640d641b49e5f0918360fb46ab6d24036b1888d062290d3e46c231243905d2";
 const IMG8 = "f489dc609c6b33a7016c113f0965a46de35c4cfd2ef8e8f4751bd845923a4350";

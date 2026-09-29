@@ -36,7 +36,7 @@ import { computeImageIdArgs, OysterCli, type OysterSettings } from "../src/oyste
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(here, "..", "..");
-const MANIFEST = join(REPO, "contracts", "deployments", "testnet-46630.json");
+const MANIFEST = join(REPO, "contracts", "deployments", "testnet-46630.v1.json");
 const COMPOSE = join(REPO, "runtime", "releases", "v0.1.6.yml");
 const RELEASE = JSON.parse(readFileSync(join(REPO, "runtime", "releases", "v0.1.6.json"), "utf8")) as { configHashes: Record<string, string>; imageIds: Record<string, string> };
 const AGENT8 = JSON.parse(readFileSync(join(here, "fixtures", "agent-8.json"), "utf8")) as { platform: Record<string, unknown>; agent: Record<string, unknown> };

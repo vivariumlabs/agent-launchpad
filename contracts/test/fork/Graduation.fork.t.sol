@@ -59,7 +59,7 @@ contract GraduationForkTest is Test {
     LiquidityLocker locker;
     AgentFactory factory;
 
-    address constant BUYBACK = address(0xBB1);
+    address constant FLOOR_VAULT = address(0xBB1);
     address owner = makeAddr("owner");
     address gasRecipient = makeAddr("gasRecipient");
     address creator = makeAddr("creator");
@@ -89,7 +89,7 @@ contract GraduationForkTest is Test {
         assertEq(hookAddr.code.length, 0, "mined hook address is occupied");
         deployCodeTo(
             "FeeSplitHook.sol:FeeSplitHook",
-            abi.encode(MANAGER, address(usdg), address(registry), address(distributor), BUYBACK),
+            abi.encode(MANAGER, address(usdg), address(registry), address(distributor), FLOOR_VAULT),
             hookAddr
         );
         hook = FeeSplitHook(hookAddr);
@@ -104,7 +104,8 @@ contract GraduationForkTest is Test {
             address(distributor),
             address(hook),
             address(locker),
-            BUYBACK,
+            FLOOR_VAULT,
+            1,
             gasRecipient,
             owner
         );
@@ -272,13 +273,13 @@ contract GraduationForkTest is Test {
         uint256 pendingUsdg = hook.pendingFees(poolId, address(usdg));
         assertGt(pendingUsdg, 0, "hook took no USDG fee");
 
-        uint256 buybackBefore = usdg.balanceOf(BUYBACK);
+        uint256 vaultBefore = usdg.balanceOf(FLOOR_VAULT);
         uint256 treasuryBefore = usdg.balanceOf(treasury);
         uint256 accruedBefore = distributor.accrued(agentId);
 
         hook.distribute(poolId, 0);
 
-        uint256 leg = usdg.balanceOf(BUYBACK) - buybackBefore;
+        uint256 leg = usdg.balanceOf(FLOOR_VAULT) - vaultBefore;
         assertGt(leg, 0, "nothing distributed");
         assertEq(usdg.balanceOf(treasury) - treasuryBefore, leg, "treasury leg");
         assertEq(distributor.accrued(agentId) - accruedBefore, leg, "royalty leg");
@@ -348,7 +349,7 @@ contract GraduationForkTest is Test {
         console2.log("-- 2. curve phase (closed at threshold) --");
         console2.log("  real USDG reserve:", reserveUsdg);
         console2.log("  AGENT reserve/1e18:", reserveTokens / 1e18);
-        console2.log("  buyback leg (1%) :", usdg.balanceOf(BUYBACK));
+        console2.log("  floor vault leg (1%):", usdg.balanceOf(FLOOR_VAULT));
         console2.log("  treasury leg (1%):", usdg.balanceOf(treasury));
         console2.log("  royalty leg (1%) :", distributor.accrued(agentId));
     }
@@ -382,9 +383,9 @@ contract GraduationForkTest is Test {
         console2.log("  pending USDG fees:", hook.pendingFees(poolId, address(usdg)));
         console2.log("  pending AGENT/1e18:", hook.pendingFees(poolId, token) / 1e18);
 
-        uint256 buybackBefore = usdg.balanceOf(BUYBACK);
+        uint256 vaultBefore = usdg.balanceOf(FLOOR_VAULT);
         hook.distribute(poolId, 0);
-        uint256 leg = usdg.balanceOf(BUYBACK) - buybackBefore;
+        uint256 leg = usdg.balanceOf(FLOOR_VAULT) - vaultBefore;
         console2.log("-- 5. distribute (AGENT converted, split in thirds) --");
         console2.log("  leg, each of 3   :", leg);
         console2.log("  AGENT left/1e18  :", hook.pendingFees(poolId, token) / 1e18);
@@ -451,16 +452,16 @@ contract GraduationForkTest is Test {
         // 9. every later royalty leg goes straight to the treasury EOA
         _swap(key, !agentIsCurrency0, -1_000e6);
         vm.warp(block.timestamp + hook.DISTRIBUTE_COOLDOWN());
-        uint256 buybackBefore = usdg.balanceOf(BUYBACK);
+        uint256 vaultBefore = usdg.balanceOf(FLOOR_VAULT);
         uint256 treasuryBefore = usdg.balanceOf(treasury);
         hook.distribute(poolId, 0);
-        uint256 leg = usdg.balanceOf(BUYBACK) - buybackBefore;
+        uint256 leg = usdg.balanceOf(FLOOR_VAULT) - vaultBefore;
         assertEq(usdg.balanceOf(treasury) - treasuryBefore, leg * 2, "royalty leg not re-routed to the treasury");
         assertEq(distributor.accrued(agentId), 0, "royalties still accruing after the burn");
         console2.log("-- 9. post-burn distribute (royalty leg re-routed) --");
         console2.log("  leg, each of 3   :", leg);
         console2.log("  treasury received:", leg * 2);
         console2.log("  treasury total   :", usdg.balanceOf(treasury));
-        console2.log("  buyback total    :", usdg.balanceOf(BUYBACK));
+        console2.log("  floor vault total:", usdg.balanceOf(FLOOR_VAULT));
     }
 }

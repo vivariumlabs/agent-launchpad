@@ -287,7 +287,48 @@ export const MIGRATIONS: readonly string[] = [
       AND e.id = (SELECT l.id FROM events l WHERE l.kind = 'nft_transfer' AND l.agentId = e.agentId ORDER BY l.blockNumber DESC, l.logIndex DESC LIMIT 1)
       AND lower(json_extract(e.data, '$.to')) != '0x0000000000000000000000000000000000000000';
   `,
+  // SPEC-M4G §3 — floor vault (D18) flows: USDG inflows (fee_pool | fee_curve | donation, from the
+  // topic-filtered USDG Transfer logs to the vault) and the vault's own Redeemed / StrayBurned.
+  // Keyed (txHash, logIndex) like every chain-derived row. usdg / tokens are base-10 TEXT
+  // ("0" where the flow has no such leg); agentId null for platform-wide flows.
+  `
+  CREATE TABLE floor_flows (
+    txHash TEXT NOT NULL, logIndex INTEGER NOT NULL, kind TEXT NOT NULL, account TEXT NOT NULL,
+    usdg TEXT NOT NULL, tokens TEXT NOT NULL, agentId INTEGER, ts INTEGER NOT NULL, blockNumber INTEGER NOT NULL,
+    PRIMARY KEY (txHash, logIndex)
+  );
+  CREATE INDEX floor_flows_block ON floor_flows (blockNumber, logIndex);
+  `,
 ];
+
+/** SPEC-M4G §3 floor_flows.kind. */
+export const FLOOR_FLOW_KINDS = ["fee_pool", "fee_curve", "donation", "redeem", "stray_burn"] as const;
+export type FloorFlowKind = (typeof FLOOR_FLOW_KINDS)[number];
+
+export interface FloorFlowRow {
+  txHash: string;
+  logIndex: number;
+  kind: FloorFlowKind;
+  /** Checksummed: the inflow's USDG sender, the redeemer, or the burnStray caller. */
+  account: string;
+  /** USDG base units (inflow amount / redeem payout; "0" for stray_burn). */
+  usdg: string;
+  /** Platform-token base units (redeem burn / stray burn; "0" for inflows). */
+  tokens: string;
+  agentId: number | null;
+  ts: number;
+  blockNumber: number;
+}
+
+export interface FloorTotals {
+  feePool: bigint;
+  feeCurve: bigint;
+  donations: bigint;
+  redeemedUsdg: bigint;
+  burnedTokens: bigint;
+  strayBurned: bigint;
+  redemptions: number;
+}
 
 /** AgentNFT mint source / burn destination. */
 export const NFT_ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -324,7 +365,7 @@ function toAgent(r: Raw): AgentRow {
   };
 }
 
-export const TABLES = ["agents", "instances", "events", "pools", "swaps", "trades_curve", "fees", "balances", "journal", "journal_owner", "attestation_checks", "nft_owners"] as const;
+export const TABLES = ["agents", "instances", "events", "pools", "swaps", "trades_curve", "fees", "balances", "journal", "journal_owner", "attestation_checks", "nft_owners", "floor_flows"] as const;
 
 export class IndexerDb {
   readonly db: Database.Database;
@@ -439,6 +480,12 @@ export class IndexerDb {
   agent(agentId: number): AgentRow | undefined {
     const r = this.db.prepare(`SELECT * FROM agents WHERE agentId = ?`).get(agentId) as Raw | undefined;
     return r === undefined ? undefined : toAgent(r);
+  }
+
+  /** True iff an agent row exists with lo ≤ agentId < hi (hi null = unbounded). SPEC-M4G stack coverage. */
+  hasAgentInRange(lo: number, hi: number | null): boolean {
+    const r = hi === null ? this.db.prepare(`SELECT 1 FROM agents WHERE agentId >= ? LIMIT 1`).get(lo) : this.db.prepare(`SELECT 1 FROM agents WHERE agentId >= ? AND agentId < ? LIMIT 1`).get(lo, hi);
+    return r !== undefined;
   }
 
   /** lowercase curve address → agentId, for every agent seen live. */
@@ -815,6 +862,76 @@ export class IndexerDb {
       ts: Number(r.ts),
       blockNumber: Number(r.blockNumber),
     }));
+  }
+
+  // ---- floor flows (SPEC-M4G §3) ----
+
+  /**
+   * Idempotent upsert keyed (txHash, logIndex): a re-scan rewrites the same row (a later, better
+   * classification wins; a resolved agentId is never cleared). Returns true iff the row is new.
+   */
+  upsertFloorFlow(r: FloorFlowRow): boolean {
+    const existed = this.db.prepare(`SELECT 1 FROM floor_flows WHERE txHash = ? AND logIndex = ?`).get(r.txHash, r.logIndex) !== undefined;
+    this.db
+      .prepare(
+        `INSERT INTO floor_flows (txHash, logIndex, kind, account, usdg, tokens, agentId, ts, blockNumber)
+         VALUES (@txHash, @logIndex, @kind, @account, @usdg, @tokens, @agentId, @ts, @blockNumber)
+         ON CONFLICT(txHash, logIndex) DO UPDATE SET
+           kind = excluded.kind, account = excluded.account, usdg = excluded.usdg, tokens = excluded.tokens,
+           agentId = COALESCE(excluded.agentId, floor_flows.agentId), ts = excluded.ts, blockNumber = excluded.blockNumber`,
+      )
+      .run(r);
+    return !existed;
+  }
+
+  private toFloorFlow(r: Raw): FloorFlowRow {
+    return {
+      txHash: String(r.txHash),
+      logIndex: Number(r.logIndex),
+      kind: String(r.kind) as FloorFlowKind,
+      account: String(r.account),
+      usdg: String(r.usdg),
+      tokens: String(r.tokens),
+      agentId: n(r.agentId),
+      ts: Number(r.ts),
+      blockNumber: Number(r.blockNumber),
+    };
+  }
+
+  /** Newest first (blockNumber, logIndex desc). */
+  floorFlows(limit: number): FloorFlowRow[] {
+    return (this.db.prepare(`SELECT * FROM floor_flows ORDER BY blockNumber DESC, logIndex DESC LIMIT ?`).all(limit) as Raw[]).map((r) => this.toFloorFlow(r));
+  }
+
+  /** Lifetime sums (bigint in JS — TEXT amounts never summed in SQL). */
+  floorTotals(): FloorTotals {
+    const t: FloorTotals = { feePool: 0n, feeCurve: 0n, donations: 0n, redeemedUsdg: 0n, burnedTokens: 0n, strayBurned: 0n, redemptions: 0 };
+    for (const r of this.db.prepare(`SELECT kind, usdg, tokens FROM floor_flows`).all() as Array<{ kind: string; usdg: string; tokens: string }>) {
+      const usdg = BigInt(r.usdg);
+      const tokens = BigInt(r.tokens);
+      switch (r.kind) {
+        case "fee_pool":
+          t.feePool += usdg;
+          break;
+        case "fee_curve":
+          t.feeCurve += usdg;
+          break;
+        case "donation":
+          t.donations += usdg;
+          break;
+        case "redeem":
+          t.redeemedUsdg += usdg;
+          t.burnedTokens += tokens;
+          t.redemptions++;
+          break;
+        case "stray_burn":
+          t.strayBurned += tokens;
+          break;
+        default:
+          break;
+      }
+    }
+    return t;
   }
 
   // ---- balances ----

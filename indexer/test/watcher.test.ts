@@ -8,7 +8,6 @@ import {
   feeSplitHookAbi,
   poolManagerAbi,
   royaltyDistributorAbi,
-  treasuryBuybackAbi,
 } from "../src/abi.js";
 import { BalanceRefresher } from "../src/balances.js";
 import { IndexerDb } from "../src/db.js";
@@ -28,6 +27,20 @@ const P7 = `0x${"7".repeat(64)}` as Hex;
 const FOREIGN = `0x${"f".repeat(64)}` as Hex;
 const CODE = `0x${"c0de".repeat(16)}` as Hex;
 const CFG = `0x${"ab".repeat(32)}` as Hex;
+/** The retired v1 TreasuryBuyback's event (SPEC-M4G R7: no longer indexed — kept here only to prove it is ignored). */
+const retiredBuybackAbi = [
+  {
+    type: "event",
+    name: "Poked",
+    anonymous: false,
+    inputs: [
+      { name: "caller", type: "address", indexed: true },
+      { name: "usdgIn", type: "uint256", indexed: false },
+      { name: "tokensBurned", type: "uint256", indexed: false },
+      { name: "callerReward", type: "uint256", indexed: false },
+    ],
+  },
+] as const;
 
 function setup(startBlock = 100n) {
   const chain = new MockChain();
@@ -69,9 +82,9 @@ function scenario(chain: MockChain): void {
     mkLog(poolManagerAbi, "Swap", { id: FOREIGN, sender: CREATOR, amount0: 1n, amount1: -1n, sqrtPriceX96: 1n << 96n, liquidity: 1n, tick: 0, fee: 3000 }, { address: ADDR.poolManager, blockNumber: 170n, logIndex: 2 }),
   );
   L.push(mkLog(feeSplitHookAbi, "FeeCollected", { poolId: P2, currency: ADDR.usdg, amount: 30_000n }, { address: ADDR.hook, blockNumber: 170n, logIndex: 3 }));
-  L.push(mkLog(feeSplitHookAbi, "Distributed", { poolId: P2, buybackLeg: 10n, treasuryLeg: 10n, royaltyLeg: 10n, converted: 4n }, { address: ADDR.hook, blockNumber: 180n, logIndex: 0 }));
+  L.push(mkLog(feeSplitHookAbi, "Distributed", { poolId: P2, floorLeg: 10n, treasuryLeg: 10n, royaltyLeg: 10n, converted: 4n }, { address: ADDR.hook, blockNumber: 180n, logIndex: 0 }));
   L.push(mkLog(royaltyDistributorAbi, "Credited", { agentId: 2n, amount: 10n }, { address: ADDR.distributor, blockNumber: 180n, logIndex: 1 }));
-  L.push(mkLog(treasuryBuybackAbi, "Poked", { caller: CREATOR, usdgIn: 5n, tokensBurned: 6n, callerReward: 1n }, { address: ADDR.treasuryBuyback, blockNumber: 185n, logIndex: 0 }));
+  L.push(mkLog(retiredBuybackAbi, "Poked", { caller: CREATOR, usdgIn: 5n, tokensBurned: 6n, callerReward: 1n }, { address: ADDR.treasuryBuyback, blockNumber: 185n, logIndex: 0 }));
   L.push(mkLog(agentFactoryAbi, "AgentCancelled", { agentId: 3n }, { address: ADDR.factory, blockNumber: 190n, logIndex: 0 }));
 }
 
@@ -122,7 +135,10 @@ describe("watcher: event batch → rows", () => {
     ]);
     const swapEv = db.activity(2, 200).find((e) => e.kind === "swap")!;
     expect(JSON.parse(swapEv.data)).toMatchObject({ amount1: "1000000", sqrtPriceX96: "1771595571142957102961", agentIsCurrency0: true });
-    expect(db.counts().events).toBe(12 + 2 /* agent 3 */ + 1 /* poked, agentId null */);
+    expect(db.counts().events).toBe(12 + 2 /* agent 3 */); // the v1 buyback's Poked is not indexed (SPEC-M4G R7)
+    expect(chain.getLogsCalls[0]!.addresses).not.toContain(ADDR.treasuryBuyback.toLowerCase());
+    const dist = db.activity(2, 200).find((e) => e.kind === "distributed")!;
+    expect(JSON.parse(dist.data)).toMatchObject({ platformLeg: "10", treasuryLeg: "10", royaltyLeg: "10", converted: "4" });
     expect(db.kvGet(CURSOR_KEY)).toBe("1001");
     expect(db.kvGet(HEAD_KEY)).toBe("1000");
     expect(db.kvGet(REVIVAL_WINDOW_KEY)).toBe("604800");

@@ -23,7 +23,11 @@ const ContractsSchema = z
     registry: addressLike,
     hook: addressLike,
     distributor: addressLike,
-    treasuryBuyback: addressLike,
+    /** v1 only (SPEC-M4G R7: retired; kept in the v1 manifest for the as-built record, not indexed). */
+    treasuryBuyback: addressLike.optional(),
+    /** SPEC-M4G: v2 floor vault + platform token (D18). */
+    floorVault: addressLike.optional(),
+    platformToken: addressLike.optional(),
     poolManager: addressLike,
     nft: addressLike,
     usdg: addressLike,
@@ -42,7 +46,12 @@ export const IndexerConfigFileSchema = z
       .strict(),
     /** contracts/deployments/<net>.json — addresses + startBlock (= deployedAtBlock). */
     deploymentManifest: z.string().min(1).optional(),
-    /** Explicit addresses (must equal the manifest's when both are given). */
+    /**
+     * SPEC-M4G §3: older stacks that stay indexed (dual-stack), each a deployments manifest path
+     * relative to the config file. `deploymentManifest` is the PRIMARY (newest) stack.
+     */
+    legacyManifests: z.array(z.string().min(1)).optional(),
+    /** Explicit addresses (must equal the primary manifest's when both are given). */
     contracts: ContractsSchema.optional(),
     dbPath: z.string().min(1),
     /** API port DEFAULT 8425 (SPEC-M4A §4). */
@@ -79,12 +88,16 @@ export const IndexerConfigFileSchema = z
 
 export type IndexerConfigFile = z.infer<typeof IndexerConfigFileSchema>;
 
+/** The PRIMARY stack's addresses (+ shared usdg / poolManager). */
 export interface ContractsCfg {
   factory: Address;
   registry: Address;
   hook: Address;
   distributor: Address;
-  treasuryBuyback: Address;
+  /** v1 only (SPEC-M4G R7). */
+  treasuryBuyback?: Address;
+  floorVault?: Address;
+  platformToken?: Address;
   poolManager: Address;
   nft: Address;
   usdg: Address;
@@ -92,29 +105,112 @@ export interface ContractsCfg {
 }
 
 /**
+ * SPEC-M4G §3 — one deployed contract stack. Stacks share USDG + the v4 PoolManager and issue
+ * disjoint agent-id ranges (R2: v1 = 1.., v2 = 101..), so an agentId names its stack.
+ */
+export interface StackCfg {
+  /** manifest `stackVersion` (DEFAULT 1 when absent). */
+  version: number;
+  /** manifest `legacy` (DEFAULT false). */
+  legacy: boolean;
+  factory: Address;
+  registry: Address;
+  hook: Address;
+  distributor: Address;
+  nft: Address;
+  /** manifest deployedAtBlock. */
+  startBlock: bigint;
+  /** manifest `firstAgentId` (DEFAULT 1). */
+  firstAgentId: number;
+}
+
+/** SPEC-M4G §3 the floor vault (D18) + the platform token it redeems — from the primary manifest. */
+export interface FloorCfg {
+  vault: Address;
+  token: Address;
+}
+
+/** Everything the watcher indexes: every stack (primary first) + the shared contracts + the floor. */
+export interface ChainContracts {
+  stacks: StackCfg[];
+  usdg: Address;
+  poolManager: Address;
+  floor: FloorCfg | null;
+}
+
+/**
+ * The stack an agentId belongs to (R2 disjoint ranges): the stack with the greatest
+ * firstAgentId ≤ agentId. undefined when agentId is below every stack's range.
+ */
+export function stackForAgent<S extends { firstAgentId: number }>(stacks: readonly S[], agentId: number): S | undefined {
+  let best: S | undefined;
+  for (const s of stacks) if (s.firstAgentId <= agentId && (best === undefined || s.firstAgentId > best.firstAgentId)) best = s;
+  return best;
+}
+
+/** GET /api/contracts `stacks[]` entry (StackCfg with JSON-number startBlock). */
+export interface StackView {
+  version: number;
+  legacy: boolean;
+  factory: string;
+  registry: string;
+  hook: string;
+  distributor: string;
+  nft: string;
+  startBlock: number;
+  firstAgentId: number;
+}
+
+export function stackViewOf(s: StackCfg): StackView {
+  return {
+    version: s.version,
+    legacy: s.legacy,
+    factory: s.factory,
+    registry: s.registry,
+    hook: s.hook,
+    distributor: s.distributor,
+    nft: s.nft,
+    startBlock: Number(s.startBlock),
+    firstAgentId: s.firstAgentId,
+  };
+}
+
+/**
  * SPEC-M4E §2 / R5 — GET /api/contracts body: chainId + every address the deployments manifest
  * carries (checksummed; non-address keys such as hookSalt / deployedAtBlock omitted), or the
  * explicit `contracts` addresses when the config names no manifest. Web carries NO hardcoded addresses.
  */
-export type ContractsView = { chainId: number } & Record<string, string | number>;
+export type ContractsView = { chainId: number; stacks?: StackView[] } & Record<string, string | number | StackView[]>;
 
-export type IndexerConfig = Omit<IndexerConfigFile, "contracts" | "deploymentManifest" | "chain"> & {
+export type IndexerConfig = Omit<IndexerConfigFile, "contracts" | "deploymentManifest" | "legacyManifests" | "chain"> & {
   chain: { rpc: string[]; chainId: number };
+  /** The PRIMARY stack (+ shared usdg / poolManager). */
   contracts: ContractsCfg;
+  /** SPEC-M4G §3: every stack, primary first. */
+  stacks: StackCfg[];
+  /** Shared across stacks (asserted equal). */
+  usdg: Address;
+  poolManager: Address;
+  /** From the primary manifest; null when it names no floorVault (v1-only config). */
+  floor: FloorCfg | null;
   contractsView: ContractsView;
 };
 
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
 /** ContractsView from the resolved contracts + (optionally) the raw manifest's other address-valued keys. */
-export function contractsViewOf(chainId: number, contracts: ContractsCfg, manifestRaw: unknown): ContractsView {
+export function contractsViewOf(chainId: number, contracts: ContractsCfg, manifestRaw: unknown, stacks?: readonly StackCfg[]): ContractsView {
   const view: ContractsView = { chainId };
   if (manifestRaw !== null && typeof manifestRaw === "object" && !Array.isArray(manifestRaw)) {
     for (const [k, v] of Object.entries(manifestRaw as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
       if (k !== "chainId" && typeof v === "string" && ADDRESS_RE.test(v)) view[k] = getAddress(v);
     }
   }
-  for (const k of CONTRACT_KEYS) view[k] = contracts[k];
+  for (const k of CONTRACT_KEYS) {
+    const v = contracts[k];
+    if (v !== undefined) view[k] = v;
+  }
+  if (stacks !== undefined) view.stacks = stacks.map(stackViewOf);
   return view;
 }
 
@@ -126,24 +222,45 @@ const ManifestSchema = z
     registry: addressLike,
     hook: addressLike,
     distributor: addressLike,
-    treasuryBuyback: addressLike,
+    /** v1 only (SPEC-M4G R7). */
+    treasuryBuyback: addressLike.optional(),
     poolManager: addressLike,
     nft: addressLike,
     usdg: addressLike,
+    /** SPEC-M4G v2 keys. */
+    floorVault: addressLike.optional(),
+    platformToken: addressLike.optional(),
+    firstAgentId: z.number().int().positive().optional(),
+    stackVersion: z.number().int().positive().optional(),
+    legacy: z.boolean().optional(),
   })
   .passthrough();
 
-const CONTRACT_KEYS = ["factory", "registry", "hook", "distributor", "treasuryBuyback", "poolManager", "nft", "usdg"] as const;
+const CONTRACT_KEYS = ["factory", "registry", "hook", "distributor", "treasuryBuyback", "floorVault", "platformToken", "poolManager", "nft", "usdg"] as const;
 
-/** Reads contracts/deployments/<net>.json → addresses + scan start block + chain id. */
-export function configFromDeployment(manifestPath: string): { chainId: number; contracts: ContractsCfg } {
+export interface DeploymentCfg {
+  chainId: number;
+  contracts: ContractsCfg;
+  stack: StackCfg;
+}
+
+/** Reads contracts/deployments/<net>.json → addresses + scan start block + chain id + its stack. */
+export function configFromDeployment(manifestPath: string): DeploymentCfg {
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(manifestPath, "utf8"));
   } catch (e) {
     throw new Error(`deployment manifest ${manifestPath}: ${e instanceof Error ? e.message : String(e)}`);
   }
-  const m = ManifestSchema.parse(raw);
+  let m: z.infer<typeof ManifestSchema>;
+  try {
+    m = ManifestSchema.parse(raw);
+  } catch (e) {
+    throw new Error(`deployment manifest ${manifestPath}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if ((m.floorVault === undefined) !== (m.platformToken === undefined)) {
+    throw new Error(`deployment manifest ${manifestPath}: floorVault and platformToken must be given together`);
+  }
   return {
     chainId: m.chainId,
     contracts: {
@@ -151,12 +268,35 @@ export function configFromDeployment(manifestPath: string): { chainId: number; c
       registry: m.registry,
       hook: m.hook,
       distributor: m.distributor,
-      treasuryBuyback: m.treasuryBuyback,
+      ...(m.treasuryBuyback === undefined ? {} : { treasuryBuyback: m.treasuryBuyback }),
+      ...(m.floorVault === undefined ? {} : { floorVault: m.floorVault }),
+      ...(m.platformToken === undefined ? {} : { platformToken: m.platformToken }),
       poolManager: m.poolManager,
       nft: m.nft,
       usdg: m.usdg,
       startBlock: m.deployedAtBlock,
     },
+    stack: stackOf(
+      { factory: m.factory, registry: m.registry, hook: m.hook, distributor: m.distributor, nft: m.nft, startBlock: m.deployedAtBlock },
+      { version: m.stackVersion, legacy: m.legacy, firstAgentId: m.firstAgentId },
+    ),
+  };
+}
+
+function stackOf(
+  c: Pick<ContractsCfg, "factory" | "registry" | "hook" | "distributor" | "nft" | "startBlock">,
+  meta: { version?: number | undefined; legacy?: boolean | undefined; firstAgentId?: number | undefined },
+): StackCfg {
+  return {
+    version: meta.version ?? 1,
+    legacy: meta.legacy ?? false,
+    factory: c.factory,
+    registry: c.registry,
+    hook: c.hook,
+    distributor: c.distributor,
+    nft: c.nft,
+    startBlock: c.startBlock,
+    firstAgentId: meta.firstAgentId ?? 1,
   };
 }
 
@@ -169,27 +309,68 @@ export function buildConfig(rawJson: unknown, baseDir: string): IndexerConfig {
   const f = IndexerConfigFileSchema.parse(rawJson);
   let contracts = f.contracts;
   let manifestRaw: unknown = null;
+  let primary: StackCfg | undefined;
   if (f.deploymentManifest !== undefined) {
     const m = configFromDeployment(abs(baseDir, f.deploymentManifest));
     manifestRaw = JSON.parse(readFileSync(abs(baseDir, f.deploymentManifest), "utf8")) as unknown;
     if (m.chainId !== f.chain.chainId) throw new Error(`deployment manifest chainId ${m.chainId} ≠ chain.chainId ${f.chain.chainId}`);
     if (contracts !== undefined) {
       for (const k of CONTRACT_KEYS) {
-        if (contracts[k] !== m.contracts[k]) throw new Error(`contracts.${k} ${contracts[k]} ≠ manifest ${m.contracts[k]}`);
+        if (contracts[k] !== m.contracts[k]) throw new Error(`contracts.${k} ${String(contracts[k])} ≠ manifest ${String(m.contracts[k])}`);
       }
     }
     contracts = contracts ?? m.contracts;
+    primary = m.stack;
   }
   if (contracts === undefined) throw new Error("config needs deploymentManifest (preferred) or contracts");
-  const { deploymentManifest: _m, contracts: _c, ...rest } = f;
+  if ((contracts.floorVault === undefined) !== (contracts.platformToken === undefined)) {
+    throw new Error("contracts: floorVault and platformToken must be given together");
+  }
+  primary ??= stackOf(contracts, {});
+
+  // SPEC-M4G §3 legacy stacks: same chain, same USDG + PoolManager (R1), distinct contracts.
+  const stacks: StackCfg[] = [primary];
+  for (const p of f.legacyManifests ?? []) {
+    const m = configFromDeployment(abs(baseDir, p));
+    if (m.chainId !== f.chain.chainId) throw new Error(`legacy manifest ${p}: chainId ${m.chainId} ≠ chain.chainId ${f.chain.chainId}`);
+    if (m.contracts.usdg !== contracts.usdg) throw new Error(`legacy manifest ${p}: usdg ${m.contracts.usdg} ≠ primary usdg ${contracts.usdg} (stacks must share USDG)`);
+    if (m.contracts.poolManager !== contracts.poolManager) {
+      throw new Error(`legacy manifest ${p}: poolManager ${m.contracts.poolManager} ≠ primary poolManager ${contracts.poolManager} (stacks must share the PoolManager)`);
+    }
+    stacks.push(m.stack);
+  }
+  const seen = new Set<string>();
+  for (const s of stacks) {
+    for (const a of [s.factory, s.registry, s.hook, s.distributor, s.nft]) {
+      if (seen.has(a)) throw new Error(`stack v${s.version}: address ${a} appears in more than one stack (duplicate manifest?)`);
+      seen.add(a);
+    }
+  }
+  const ids = new Set<number>();
+  for (const s of stacks) {
+    if (ids.has(s.firstAgentId)) throw new Error(`two stacks share firstAgentId ${s.firstAgentId} — agent-id ranges must be disjoint (SPEC-M4G R2)`);
+    ids.add(s.firstAgentId);
+  }
+
+  const floor: FloorCfg | null = contracts.floorVault !== undefined && contracts.platformToken !== undefined ? { vault: contracts.floorVault, token: contracts.platformToken } : null;
+  const { deploymentManifest: _m, legacyManifests: _l, contracts: _c, ...rest } = f;
   return {
     ...rest,
     chain: { rpc: typeof f.chain.rpc === "string" ? [f.chain.rpc] : f.chain.rpc, chainId: f.chain.chainId },
     dbPath: f.dbPath === ":memory:" ? f.dbPath : abs(baseDir, f.dbPath),
     ...(f.releasesDir === undefined ? {} : { releasesDir: abs(baseDir, f.releasesDir) }),
     contracts,
-    contractsView: contractsViewOf(f.chain.chainId, contracts, manifestRaw),
+    stacks,
+    usdg: contracts.usdg,
+    poolManager: contracts.poolManager,
+    floor,
+    contractsView: contractsViewOf(f.chain.chainId, contracts, manifestRaw, stacks),
   };
+}
+
+/** The watcher's contract set from a resolved config. */
+export function chainContractsOf(cfg: Pick<IndexerConfig, "stacks" | "usdg" | "poolManager" | "floor">): ChainContracts {
+  return { stacks: cfg.stacks, usdg: cfg.usdg, poolManager: cfg.poolManager, floor: cfg.floor };
 }
 
 export function loadConfig(path: string): IndexerConfig {

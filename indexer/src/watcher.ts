@@ -1,7 +1,11 @@
 // SPEC-M4A §1 watcher.ts — viem getLogs poller (genesis/src/watcher.ts discipline).
 //
-// One address-set getLogs per chunk: factory, registry, hook, distributor, treasuryBuyback,
-// poolManager, nft + every known bonding-curve clone. Cursor (next block to scan) in the `cursor`
+// One address-set getLogs per chunk: every stack's factory, registry, hook, distributor, nft
+// (SPEC-M4G §3 dual-stack: the legacy v1 stack + the primary v2 stack, disjoint agent-id ranges R2)
+// + the shared poolManager + the floor vault (D18) + every known bonding-curve clone. Plus, per
+// chunk, one topic-filtered getLogs for USDG Transfers TO the vault (inflow classification:
+// any stack's hook ⇒ fee_pool, a v2 curve ⇒ fee_curve, anything else ⇒ donation → floor_flows).
+// The v1 TreasuryBuyback is not indexed (SPEC-M4G R7). Cursor (next block to scan) in the `cursor`
 // table. Each poll re-scans a trailing window of `reorgWindowBlocks` (DEFAULT 30) below the cursor,
 // then walks to head in `maxBlockRange` (DEFAULT 10k) chunks — the same path is the historical
 // backfill from startBlock (= manifest deployedAtBlock). A range-limited RPC (getLogs error naming
@@ -20,6 +24,12 @@
 // logIndex). Best-effort: a txFrom failure leaves the swap senderResolved = 0 for the per-poll
 // backfill (backfillSenders, oldest first, senderBackfillPerPoll DEFAULT 25), never blocks ingest.
 //
+// Stack coverage (SPEC-M4G §3): the scan starts at min(stack startBlock). A stack added to an
+// EXISTING db is fully covered only if its startBlock ≥ the poll's first `from`; otherwise its
+// history below the cursor was never scanned — a LOUD warning (no auto-rescan). Covered stacks are
+// remembered in kv (by factory); a pre-M4G db's stack counts as covered when the db already holds
+// an agent in its id range.
+//
 // The loop (run) never throws: per-poll try/catch, LOUD warn, exponential backoff (cap 60 s).
 
 import { decodeEventLog, encodeEventTopics, getAddress, type Abi, type Address, type Hex } from "viem";
@@ -28,24 +38,28 @@ import {
   agentNftAbi,
   agentRegistryAbi,
   bondingCurveAbi,
+  erc20Abi,
   feeSplitHookAbi,
+  floorVaultAbi,
   poolManagerAbi,
   royaltyDistributorAbi,
-  treasuryBuybackAbi,
 } from "./abi.js";
-import { ZERO_ADDRESS, type IndexerChain, type RawLog } from "./chain.js";
+import { ERC20_TRANSFER_TOPIC, ZERO_ADDRESS, type IndexerChain, type RawLog } from "./chain.js";
 import type { Clock } from "./clock.js";
-import type { ContractsCfg } from "./config.js";
-import type { IndexerDb, PoolRow } from "./db.js";
+import { stackForAgent, type ChainContracts, type StackCfg } from "./config.js";
+import type { FloorFlowKind, IndexerDb, PoolRow } from "./db.js";
 import { errMsg, type Logger } from "./log.js";
 
 export const CURSOR_KEY = "watcher.nextBlock";
 export const HEAD_KEY = "watcher.head";
 export const LAST_POLL_KEY = "watcher.lastPollAt";
 export const REVIVAL_WINDOW_KEY = "meta.revivalWindow";
+/** JSON array of lowercase factory addresses whose stack history this db fully covers. */
+export const STACKS_COVERED_KEY = "watcher.stacksCovered";
 
 export interface WatcherOpts {
-  contracts: ContractsCfg;
+  /** SPEC-M4G §3: every stack (primary first) + shared usdg / poolManager + the floor vault. */
+  contracts: ChainContracts;
   reorgWindowBlocks: number;
   maxBlockRange: number;
   /** Unresolved swap senders resolved per poll (M4A debt (a) backfill) DEFAULT 25. */
@@ -105,9 +119,18 @@ function decode(abi: Abi, l: RawLog): Decoded | null {
 
 type Op = () => void;
 
+interface Role {
+  name: "factory" | "registry" | "hook" | "distributor" | "nft" | "poolManager" | "vault";
+  abi: Abi;
+  /** The stack the contract belongs to (null for shared / platform-wide contracts). */
+  stack: StackCfg | null;
+}
+
 export class Watcher {
-  private readonly roles: Map<string, { name: string; abi: Abi }>;
+  private readonly roles: Map<string, Role>;
   private failures = 0;
+  /** Uncovered stacks already warned about in this process (by factory). */
+  private readonly warnedStacks = new Set<string>();
 
   constructor(
     private readonly db: IndexerDb,
@@ -117,26 +140,73 @@ export class Watcher {
     private readonly log: Logger,
   ) {
     const c = opts.contracts;
-    this.roles = new Map<string, { name: string; abi: Abi }>([
-      [c.factory.toLowerCase(), { name: "factory", abi: agentFactoryAbi as unknown as Abi }],
-      [c.registry.toLowerCase(), { name: "registry", abi: agentRegistryAbi as unknown as Abi }],
-      [c.hook.toLowerCase(), { name: "hook", abi: feeSplitHookAbi as unknown as Abi }],
-      [c.distributor.toLowerCase(), { name: "distributor", abi: royaltyDistributorAbi as unknown as Abi }],
-      [c.treasuryBuyback.toLowerCase(), { name: "buyback", abi: treasuryBuybackAbi as unknown as Abi }],
-      [c.poolManager.toLowerCase(), { name: "poolManager", abi: poolManagerAbi as unknown as Abi }],
-      [c.nft.toLowerCase(), { name: "nft", abi: agentNftAbi as unknown as Abi }],
-    ]);
+    if (c.stacks.length === 0) throw new Error("watcher: no stacks configured");
+    this.roles = new Map<string, Role>();
+    const add = (a: Address, r: Role): void => {
+      const k = a.toLowerCase();
+      if (this.roles.has(k)) throw new Error(`watcher: address ${a} has two roles (${this.roles.get(k)!.name}, ${r.name})`);
+      this.roles.set(k, r);
+    };
+    for (const st of c.stacks) {
+      add(st.factory, { name: "factory", abi: agentFactoryAbi as unknown as Abi, stack: st });
+      add(st.registry, { name: "registry", abi: agentRegistryAbi as unknown as Abi, stack: st });
+      add(st.hook, { name: "hook", abi: feeSplitHookAbi as unknown as Abi, stack: st });
+      add(st.distributor, { name: "distributor", abi: royaltyDistributorAbi as unknown as Abi, stack: st });
+      add(st.nft, { name: "nft", abi: agentNftAbi as unknown as Abi, stack: st });
+    }
+    add(c.poolManager, { name: "poolManager", abi: poolManagerAbi as unknown as Abi, stack: null });
+    if (c.floor !== null) add(c.floor.vault, { name: "vault", abi: floorVaultAbi as unknown as Abi, stack: null });
+  }
+
+  /** Scan start = min(stack startBlock). */
+  startBlock(): bigint {
+    let m = this.opts.contracts.stacks[0]!.startBlock;
+    for (const st of this.opts.contracts.stacks) if (st.startBlock < m) m = st.startBlock;
+    return m;
   }
 
   /** Next block to scan. */
   cursor(): bigint {
     const v = this.db.kvGet(CURSOR_KEY);
-    return v === undefined ? this.opts.contracts.startBlock : BigInt(v);
+    return v === undefined ? this.startBlock() : BigInt(v);
   }
 
   private staticAddresses(): Address[] {
-    const c = this.opts.contracts;
-    return [c.factory, c.registry, c.hook, c.distributor, c.treasuryBuyback, c.poolManager, c.nft];
+    return [...this.roles.keys()].map((a) => getAddress(a));
+  }
+
+  /** Agent-id range [firstAgentId, next stack's firstAgentId) of a stack (hi null = unbounded). */
+  private idRange(st: StackCfg): { lo: number; hi: number | null } {
+    let hi: number | null = null;
+    for (const o of this.opts.contracts.stacks) if (o.firstAgentId > st.firstAgentId && (hi === null || o.firstAgentId < hi)) hi = o.firstAgentId;
+    return { lo: st.firstAgentId, hi };
+  }
+
+  /**
+   * SPEC-M4G §3 stack coverage check (see header). `from` = this poll's first scanned block.
+   * Never rescans; an uncovered stack is a LOUD warning once per process.
+   */
+  private checkStackCoverage(from: bigint): void {
+    const raw = this.db.kvGet(STACKS_COVERED_KEY);
+    const covered = new Set<string>(raw === undefined ? [] : (JSON.parse(raw) as string[]));
+    const before = covered.size;
+    const cur = this.cursor();
+    for (const st of this.opts.contracts.stacks) {
+      const f = st.factory.toLowerCase();
+      if (covered.has(f)) continue;
+      const r = this.idRange(st);
+      if (st.startBlock >= from || this.db.hasAgentInRange(r.lo, r.hi)) {
+        covered.add(f);
+        continue;
+      }
+      if (this.warnedStacks.has(f)) continue;
+      this.warnedStacks.add(f);
+      this.log.warn(
+        `STACK NOT BACKFILLED: stack v${st.version} (factory ${st.factory}) startBlock ${st.startBlock} < cursor ${cur} and this db has never seen its factory — ` +
+          `blocks [${st.startBlock}, ${from}) were NOT scanned for it (no auto-rescan; re-index from a fresh db to backfill)`,
+      );
+    }
+    if (covered.size !== before) this.db.kvSet(STACKS_COVERED_KEY, JSON.stringify([...covered].sort()));
   }
 
   /**
@@ -149,11 +219,12 @@ export class Watcher {
     if (this.db.kvGet(REVIVAL_WINDOW_KEY) === undefined) {
       this.db.kvSet(REVIVAL_WINDOW_KEY, (await this.chain.revivalWindow()).toString());
     }
-    const start = this.opts.contracts.startBlock;
+    const start = this.startBlock();
     const cur = this.cursor();
     const window = BigInt(this.opts.reorgWindowBlocks);
     let from = cur - window > start ? cur - window : start;
     const firstFrom = from;
+    this.checkStackCoverage(firstFrom);
     const configured = BigInt(this.opts.maxBlockRange);
     let step = configured;
     let chunks = 0;
@@ -269,11 +340,10 @@ export class Watcher {
     };
     let logs = await getLogs(known);
 
-    // Curves born inside this chunk: re-query the chunk for them.
+    // Curves born inside this chunk (AgentLive from ANY stack's factory): re-query the chunk for them.
     const fresh = new Set<string>();
-    const factory = this.opts.contracts.factory.toLowerCase();
     for (const l of logs) {
-      if (l.address.toLowerCase() !== factory) continue;
+      if (this.roles.get(l.address.toLowerCase())?.name !== "factory") continue;
       const d = decode(agentFactoryAbi as unknown as Abi, l);
       if (d?.eventName !== "AgentLive") continue;
       const c = String(d.args.curve).toLowerCase();
@@ -282,6 +352,15 @@ export class Watcher {
     if (fresh.size > 0) {
       const extra = await getLogs([...fresh].map((a) => getAddress(a)));
       logs = [...logs, ...extra];
+    }
+    // SPEC-M4G §3 vault inflows: USDG Transfer logs with topic2 = vault over the same range.
+    const floor = this.opts.contracts.floor;
+    if (floor !== null) {
+      try {
+        logs = [...logs, ...(await this.chain.getTransferLogsTo(this.opts.contracts.usdg, floor.vault, from, to))];
+      } catch (e) {
+        throw isRangeError(e) ? new GetLogsRangeError(e) : e;
+      }
     }
     const seen = new Set<string>();
     logs = logs
@@ -317,6 +396,22 @@ export class Watcher {
     const usdg = this.opts.contracts.usdg.toLowerCase();
     const poolManager = this.opts.contracts.poolManager.toLowerCase();
     const txFromOf = this.txFromResolver();
+    const stacks = this.opts.contracts.stacks;
+    const vault = this.opts.contracts.floor?.vault.toLowerCase() ?? null;
+    const vaultTopic = vault === null ? null : `0x${vault.slice(2).padStart(64, "0")}`;
+    // fee_pool attribution: every hook Distributed in this chunk, by tx (the hook's USDG transfer to
+    // the vault precedes its Distributed event in the same tx, FeeSplitHook.sol:374-380).
+    const distributedByTx = new Map<string, Array<{ hook: string; poolId: string; floorLeg: bigint }>>();
+    for (const l of logs) {
+      const r = this.roles.get(l.address.toLowerCase());
+      if (r?.name !== "hook") continue;
+      const d = decode(r.abi, l);
+      if (d?.eventName !== "Distributed") continue;
+      const k = l.transactionHash.toLowerCase();
+      const list = distributedByTx.get(k) ?? [];
+      list.push({ hook: l.address.toLowerCase(), poolId: String(d.args.poolId).toLowerCase(), floorLeg: d.args.floorLeg as bigint });
+      distributedByTx.set(k, list);
+    }
 
     for (const l of logs) {
       const addr = l.address.toLowerCase();
@@ -326,6 +421,33 @@ export class Watcher {
         const row = { ...base, agentId, kind, ts: t, data: jsonData(data) };
         return () => void this.db.insertEvent(row);
       };
+
+      // SPEC-M4G §3 floor-vault USDG inflow (from the topic-filtered getLogs).
+      if (addr === usdg) {
+        if (vaultTopic === null || l.topics[0]?.toLowerCase() !== ERC20_TRANSFER_TOPIC.toLowerCase() || l.topics[2]?.toLowerCase() !== vaultTopic) continue;
+        const d = decode(erc20Abi as unknown as Abi, l);
+        if (d === null) continue;
+        const sender = getAddress(String(d.args.from));
+        const value = d.args.value as bigint;
+        const s = sender.toLowerCase();
+        let kind: FloorFlowKind = "donation";
+        let agentId: number | null = null;
+        if (this.roles.get(s)?.name === "hook") {
+          kind = "fee_pool";
+          let cands = (distributedByTx.get(txHash) ?? []).filter((x) => x.hook === s);
+          if (cands.length > 1) cands = cands.filter((x) => x.floorLeg === value);
+          if (cands.length === 1) agentId = poolOf(cands[0]!.poolId)?.agentId ?? null;
+        } else {
+          const ca = curves.get(s);
+          if (ca !== undefined && (stackForAgent(stacks, ca)?.version ?? 0) >= 2) {
+            kind = "fee_curve";
+            agentId = ca;
+          }
+        }
+        const row = { ...base, kind, account: sender, usdg: value.toString(10), tokens: "0", agentId, ts: await ts(l.blockNumber) };
+        ops.push(() => void this.db.upsertFloorFlow(row));
+        continue;
+      }
 
       // PoolManager: cheap pre-filter (shared contract — most Swaps belong to foreign pools).
       if (addr === poolManager) {
@@ -370,6 +492,11 @@ export class Watcher {
         if (typeof v !== "bigint") return null;
         const id = safeAgentId(v);
         if (id === null) this.log.error(`watcher: ignoring ${d.eventName} with out-of-range ${k} ${v} (tx ${txHash})`);
+        else if (role?.stack != null && stackForAgent(stacks, id) !== role.stack) {
+          // R2 disjoint ranges violated (a stack issued an id inside another stack's range): per-agent
+          // reads route by id, so this agent's contract reads may hit the wrong stack.
+          this.log.warn(`STACK ID RANGE VIOLATION: ${role.name} of stack v${role.stack.version} emitted ${d.eventName} for agent ${id} outside its id range (tx ${txHash})`);
+        }
         return id;
       };
 
@@ -520,7 +647,7 @@ export class Watcher {
               ...base,
               agentId: pool.agentId,
               poolId,
-              buybackLeg: String(a.buybackLeg),
+              buybackLeg: String(a.floorLeg), // db column keeps its v1 name (SPEC-M4G §3); API: platformLeg
               treasuryLeg: String(a.treasuryLeg),
               royaltyLeg: String(a.royaltyLeg),
               converted: String(a.converted),
@@ -528,7 +655,7 @@ export class Watcher {
             };
             ops.push(() => void this.db.insertFee(fee));
           }
-          ops.push(event(pool?.agentId ?? null, "distributed", t, { poolId, buybackLeg: a.buybackLeg, treasuryLeg: a.treasuryLeg, royaltyLeg: a.royaltyLeg, converted: a.converted }));
+          ops.push(event(pool?.agentId ?? null, "distributed", t, { poolId, platformLeg: a.floorLeg, treasuryLeg: a.treasuryLeg, royaltyLeg: a.royaltyLeg, converted: a.converted }));
           break;
         }
         case "distributor.Credited": {
@@ -549,9 +676,15 @@ export class Watcher {
           ops.push(event(id, "emancipated", await ts(l.blockNumber), { sweptToTreasury: a.sweptToTreasury }));
           break;
         }
-        case "buyback.Poked": {
-          // Platform-wide buyback: no agent.
-          ops.push(event(null, "buyback_poked", await ts(l.blockNumber), { caller: a.caller, usdgIn: a.usdgIn, tokensBurned: a.tokensBurned, callerReward: a.callerReward }));
+        case "vault.Redeemed": {
+          // Platform-wide (D18): no agent.
+          const row = { ...base, kind: "redeem" as const, account: getAddress(String(a.redeemer)), usdg: String(a.usdgPaid), tokens: String(a.tokensBurned), agentId: null, ts: await ts(l.blockNumber) };
+          ops.push(() => void this.db.upsertFloorFlow(row));
+          break;
+        }
+        case "vault.StrayBurned": {
+          const row = { ...base, kind: "stray_burn" as const, account: getAddress(String(a.caller)), usdg: "0", tokens: String(a.amount), agentId: null, ts: await ts(l.blockNumber) };
+          ops.push(() => void this.db.upsertFloorFlow(row));
           break;
         }
         case "nft.Transfer": {

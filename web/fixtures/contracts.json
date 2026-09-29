@@ -1,10 +1,39 @@
 {
   "chainId": 46630,
-  "addresses": {
-    "factory": "0x7b257abd9BDf3377Af03DD67e2D67a8D5717b118",
-    "registry": "0xDBA9680C0F1958Af7Bc34a225863D93df2B92f59",
-    "nft": "0x08024EDD43dcc639d2b99f17f85b4E527301B1A5",
-    "distributor": "0x25138BDF01F7b7E0e7ea6761ef54Ac8e8250d53B",
-    "usdg": "0xe6f7E5832991f5af335C2A21d4F35cea3d47ccAb"
-  }
+  "deployedAtBlock": 12004000,
+  "distributor": "0x5C4d3E2f1A0b9C8d7E6f5A4b3C2d1E0f9A8b7c53",
+  "factory": "0x2F1a0b9C8d7E6f5A4b3C2d1E0f9A8b7C6d5E4f31",
+  "floorVault": "0x7E6f5A4b3C2d1E0f9A8b7C6d5E4f3A2b1C0d9e75",
+  "hook": "0x4B3c2D1e0F9a8B7c6D5e4F3a2B1c0D9e8F7a2044",
+  "nft": "0x6D5e4F3a2B1c0D9e8F7a6B5c4D3e2F1a0B9c8d64",
+  "platformToken": "0x8F7a6B5c4D3e2F1a0B9c8D7e6F5a4B3c2D1e0f86",
+  "registry": "0x3A2b1C0d9E8f7A6b5C4d3E2f1A0b9C8d7E6f5a42",
+  "usdg": "0xe6f7E5832991f5af335C2A21d4F35cea3d47ccAb",
+  "firstAgentId": 101,
+  "stackVersion": 2,
+  "stacks": [
+    {
+      "version": 2,
+      "legacy": false,
+      "factory": "0x2F1a0b9C8d7E6f5A4b3C2d1E0f9A8b7C6d5E4f31",
+      "registry": "0x3A2b1C0d9E8f7A6b5C4d3E2f1A0b9C8d7E6f5a42",
+      "hook": "0x4B3c2D1e0F9a8B7c6D5e4F3a2B1c0D9e8F7a2044",
+      "distributor": "0x5C4d3E2f1A0b9C8d7E6f5A4b3C2d1E0f9A8b7c53",
+      "nft": "0x6D5e4F3a2B1c0D9e8F7a6B5c4D3e2F1a0B9c8d64",
+      "startBlock": 12004000,
+      "firstAgentId": 101
+    },
+    {
+      "version": 1,
+      "legacy": true,
+      "factory": "0x7b257abd9BDf3377Af03DD67e2D67a8D5717b118",
+      "registry": "0xDBA9680C0F1958Af7Bc34a225863D93df2B92f59",
+      "hook": "0x40053E41fa0Bcdcd2EB127954Ce624323e9aa044",
+      "distributor": "0x25138BDF01F7b7E0e7ea6761ef54Ac8e8250d53B",
+      "nft": "0x08024EDD43dcc639d2b99f17f85b4E527301B1A5",
+      "startBlock": 11758253,
+      "firstAgentId": 1
+    }
+  ],
+  "_comment": "Fixtures-mode /api/contracts in the indexer's wire shape: manifest address keys FLAT beside chainId (primary = v2 stack), plus SPEC-M4G stacks[] (primary first). v2 addresses are fixture placeholders."
 }

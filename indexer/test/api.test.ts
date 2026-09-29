@@ -90,7 +90,7 @@ describe("GET /api/agents", () => {
         volume24hUsdg: "6000000", // swap 1 USDG + curve 5 USDG
       },
       balances: { treasuryUsdg: "12345678", actionUsdg: "4275000", actionToken: "2204007000000000000000", updatedAt: NOW - 5 },
-      fees: { buybackLeg: "10", treasuryLeg: "11", royaltyLeg: "12", converted: "3", count: 1 },
+      fees: { platformLeg: "10", treasuryLeg: "11", royaltyLeg: "12", converted: "3", count: 1 },
     });
     const a5 = agents.find((a) => a.agentId === 5)!;
     expect(a5).toMatchObject({ state: "cancelled", status: "pending", instance: null, balances: null, market: { price: null, mcapUsdg: null, volume24hUsdg: "0" } });

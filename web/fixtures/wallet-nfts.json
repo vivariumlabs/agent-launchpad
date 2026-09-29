@@ -17,6 +17,14 @@
       "emancipated": true,
       "lifetimeClaimed": "1870000",
       "sweptToTreasury": "1250000"
+    },
+    {
+      "agentId": 101,
+      "name": "Nyx",
+      "symbol": "NYX",
+      "since": 1790215200,
+      "emancipated": false,
+      "lifetimeClaimed": "402000000"
     }
   ]
 }

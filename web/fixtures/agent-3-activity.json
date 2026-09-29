@@ -8,7 +8,9 @@
       "logIndex": 0,
       "blockNumber": 11762104,
       "ts": 1759023300,
-      "data": { "timestamp": 1759023300 }
+      "data": {
+        "timestamp": 1759023300
+      }
     },
     {
       "id": 58,
@@ -38,7 +40,7 @@
       "ts": 1759020600,
       "data": {
         "poolId": "0xfcc61dbf2a1c3d4e5f60718293a1b2c3d4e5f6071829a3d4e5f60718293a395",
-        "buybackLeg": "20449500",
+        "platformLeg": "20449500",
         "treasuryLeg": "27266000",
         "royaltyLeg": "20449500",
         "converted": "68165000000000000000"

@@ -11,6 +11,7 @@ import { TxHashText } from "./TxHashText";
 import { BurnDialog, type BurnPhase } from "./BurnDialog";
 import { formatAbsoluteTime, formatRelativeTime, formatUsdg, sameHex } from "@/lib/format";
 import { agentNftAbi, displayName, distributorAbi, type NftContracts } from "@/lib/nfts";
+import { LEGACY_STACK_COPY } from "@/lib/stack";
 import { rhTestnet } from "@/lib/wagmi";
 import type { WalletNft } from "@/lib/types";
 
@@ -62,15 +63,17 @@ function errMessage(err: unknown): string {
 
 export function LiveNftCard({
   nft,
-  contracts,
+  resolved,
   wallet,
   writeBlocked,
 }: {
   nft: WalletNft;
-  contracts: NftContracts | null;
+  /** SPEC-M4G: this agent's stack addresses (lib/nfts.ts contractsForNft), or why they are unknown. */
+  resolved: { contracts: NftContracts | null; reason: string | null };
   wallet: `0x${string}`;
   writeBlocked: string | null;
 }) {
+  const contracts = resolved.contracts;
   const config = useConfig();
   const { writeContractAsync } = useWriteContract();
   const id = BigInt(nft.agentId);
@@ -95,7 +98,7 @@ export function LiveNftCard({
 
   const accrued: AccruedState =
     contracts === null
-      ? { kind: "unavailable", reason: "contract addresses unavailable" }
+      ? { kind: "unavailable", reason: resolved.reason ?? "contract addresses unavailable" }
       : accruedQ.data !== undefined
         ? { kind: "ok", value: accruedQ.data }
         : accruedQ.isError
@@ -117,7 +120,7 @@ export function LiveNftCard({
   const controller: NftController = {
     accrued,
     owner,
-    writeBlocked: contracts === null ? "contract addresses unavailable" : writeBlocked,
+    writeBlocked: contracts === null ? (resolved.reason ?? "contract addresses unavailable") : writeBlocked,
     simulated: false,
     async claim(onSent) {
       if (!contracts) throw new Error("contract addresses unavailable");
@@ -300,7 +303,14 @@ function NftCardView({ nft, c }: { nft: WalletNft; c: NftController }) {
             </Link>
             {nft.symbol ? <span className="shrink-0 font-mono text-xs text-slate-500">{nft.symbol}</span> : null}
           </div>
-          <p className="text-xs text-slate-500">NFT #{nft.agentId}</p>
+          <p className="text-xs text-slate-500">
+            NFT #{nft.agentId}
+            {nft.stack?.legacy ? (
+              <span className="ml-1.5 text-amber-300/80" title={LEGACY_STACK_COPY}>
+                · legacy stack
+              </span>
+            ) : null}
+          </p>
         </div>
         {emancipated ? (
           <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-500/15 px-2.5 py-0.5 text-xs font-medium text-violet-300 ring-1 ring-inset ring-violet-500/30">

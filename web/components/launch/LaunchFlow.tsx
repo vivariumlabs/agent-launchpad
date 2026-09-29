@@ -96,9 +96,12 @@ export function LaunchFlow({
   template,
   fixtures,
   fixtureFailFirstPublish = false,
+  primaryFactory,
 }: {
   template: LaunchTemplate;
   fixtures: boolean;
+  /** SPEC-M4G: the primary (v2) factory from /api/contracts; null = unavailable (launch tx disabled). */
+  primaryFactory: `0x${string}` | null;
   /** Fixtures only (`/launch?publish=fail`): the first publish attempt answers 502, to walk the retry UI. */
   fixtureFailFirstPublish?: boolean;
 }) {
@@ -232,6 +235,7 @@ export function LaunchFlow({
         input={phase.input}
         prepared={phase.prepared}
         fixtures={fixtures}
+        primaryFactory={primaryFactory}
         publish={publish}
         onRetryPublish={() => void runPublish(phase.prepared)}
         onBack={() => {

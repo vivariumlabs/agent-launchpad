@@ -26,7 +26,7 @@ import { parseDataItem, verifyDataItem } from "../src/runtimeArweave.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(here, "..", "..");
-const MANIFEST = join(REPO, "contracts", "deployments", "testnet-46630.json");
+const MANIFEST = join(REPO, "contracts", "deployments", "testnet-46630.v1.json");
 const COMPOSE = join(REPO, "runtime", "releases", "v0.1.6.yml");
 /** Agent 8's committed frozen agent.json — the exact bytes (on-chain configHash CFG8). */
 const AGENT8_TEXT = readFileSync(join(here, "fixtures", "agent-8.json"), "utf8");

@@ -33,7 +33,7 @@ import {FactoryMockERC20, FactoryRejectingRecipient} from "./mocks/FactoryMocks.
 
 /// @notice Full-stack unit tests for AgentFactory against a local PoolManager and the real
 ///         registry, NFT, distributor, curve implementation, hook and locker — only USDG is a
-///         mock (6 decimals) and TreasuryBuyback is a plain address, since the factory only
+///         mock (6 decimals) and the floor vault is a plain address, since the factory only
 ///         ever transfers to it.
 contract AgentFactoryTest is Test {
     using PoolIdLibrary for PoolKey;
@@ -63,7 +63,7 @@ contract AgentFactoryTest is Test {
     LiquidityLocker locker;
     AgentFactory factory;
 
-    address constant BUYBACK = address(0xBB1);
+    address constant FLOOR_VAULT = address(0xBB1);
     address owner = makeAddr("owner");
     address gasRecipient = makeAddr("gasRecipient");
     address creator = makeAddr("creator");
@@ -85,7 +85,7 @@ contract AgentFactoryTest is Test {
         address hookAddr = address(HOOK_FLAGS | (uint160(0xF00D) << 20));
         deployCodeTo(
             "FeeSplitHook.sol:FeeSplitHook",
-            abi.encode(manager, address(usdg), address(registry), address(distributor), BUYBACK),
+            abi.encode(manager, address(usdg), address(registry), address(distributor), FLOOR_VAULT),
             hookAddr
         );
         hook = FeeSplitHook(hookAddr);
@@ -100,7 +100,8 @@ contract AgentFactoryTest is Test {
             address(distributor),
             address(hook),
             address(locker),
-            BUYBACK,
+            FLOOR_VAULT,
+            1,
             gasRecipient,
             owner
         );
@@ -215,17 +216,84 @@ contract AgentFactoryTest is Test {
             address(distributor),
             address(hook),
             address(locker),
-            BUYBACK,
+            FLOOR_VAULT,
+            1,
             gasRecipient,
             owner
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // firstAgentId (SPEC-M4G R2)
+    // -----------------------------------------------------------------------
+
+    function _factoryWithFirstId(uint256 firstId, address registry_) internal returns (AgentFactory) {
+        return new AgentFactory(
+            address(usdg),
+            address(manager),
+            registry_,
+            address(nft),
+            address(distributor),
+            address(hook),
+            address(locker),
+            FLOOR_VAULT,
+            firstId,
+            gasRecipient,
+            owner
+        );
+    }
+
+    function test_firstAgentId_defaultStackStartsAtOne() public view {
+        assertEq(factory.firstAgentId(), 1);
+        assertEq(factory.agentCount(), 0);
+        assertEq(factory.floorVault(), FLOOR_VAULT);
+    }
+
+    function test_firstAgentId_zeroReverts() public {
+        vm.expectRevert(AgentFactory.InvalidFirstAgentId.selector);
+        _factoryWithFirstId(0, address(registry));
+    }
+
+    function test_firstAgentId_firstIdAndCounterContinue() public {
+        AgentRegistry registry2 = new AgentRegistry();
+        AgentFactory f2 = _factoryWithFirstId(101, address(registry2));
+        registry2.setFactory(address(f2));
+
+        assertEq(f2.firstAgentId(), 101);
+        assertEq(f2.agentCount(), 100, "agentCount = firstAgentId - 1");
+
+        vm.startPrank(creator);
+        usdg.approve(address(f2), type(uint256).max);
+        vm.expectEmit(true, false, false, true, address(f2));
+        emit IAgentFactory.AgentRequested(101, keccak256("config"), creator);
+        uint256 a = f2.createAgent("a", "A", IMAGE_URI, keccak256("config"), creator, _nextTreasury());
+        uint256 b = f2.createAgent("b", "B", IMAGE_URI, keccak256("config"), creator, _nextTreasury());
+        vm.stopPrank();
+
+        assertEq(a, 101, "first id == firstAgentId");
+        assertEq(b, 102, "counter continues");
+        assertEq(f2.agentCount(), 102);
+        assertEq(f2.pendingAgent(101).creator, creator);
+        assertGt(registry2.genesisDeadline(101), 0, "genesis opened under id 101");
+        assertEq(registry2.genesisDeadline(100), 0, "no id below firstAgentId");
+    }
+
+    function testFuzz_firstAgentId_anyPositiveStart(uint256 firstId) public {
+        firstId = bound(firstId, 1, type(uint128).max);
+        AgentRegistry registry2 = new AgentRegistry();
+        AgentFactory f2 = _factoryWithFirstId(firstId, address(registry2));
+        registry2.setFactory(address(f2));
+        vm.startPrank(creator);
+        usdg.approve(address(f2), type(uint256).max);
+        assertEq(f2.createAgent("a", "A", IMAGE_URI, bytes32(0), creator, _nextTreasury()), firstId);
+        vm.stopPrank();
     }
 
     /// @dev The cloned implementation is bricked by its own constructor.
     function test_curveImplementationIsNotInitializable() public {
         AgentBondingCurve impl = AgentBondingCurve(factory.curveImplementation());
         vm.expectRevert(AgentBondingCurve.AlreadyInitialized.selector);
-        impl.initialize(1, address(usdg), address(usdg), address(registry), address(distributor), BUYBACK, 1, 1);
+        impl.initialize(1, address(usdg), address(usdg), address(registry), address(distributor), FLOOR_VAULT, 1, 1);
     }
 
     // -----------------------------------------------------------------------
@@ -286,7 +354,8 @@ contract AgentFactoryTest is Test {
             address(distributor),
             address(hook),
             address(locker),
-            BUYBACK,
+            FLOOR_VAULT,
+            1,
             address(bad),
             owner
         );
@@ -368,7 +437,7 @@ contract AgentFactoryTest is Test {
         assertEq(c.agentToken(), token);
         assertEq(c.phantomQuote(), PHANTOM_QUOTE);
         assertEq(c.graduationThreshold(), GRADUATION_THRESHOLD);
-        assertEq(c.treasuryBuyback(), BUYBACK);
+        assertEq(c.floorVault(), FLOOR_VAULT);
 
         // NFT minted to the creator with the Arweave metadata URI
         assertEq(nft.ownerOf(agentId), creator, "nft owner");
@@ -761,7 +830,7 @@ contract AgentFactoryTest is Test {
         _buyToThreshold(agentId);
 
         // the curve already paid its three fee legs while trading
-        assertGt(usdg.balanceOf(BUYBACK), 0, "buyback leg never paid");
+        assertGt(usdg.balanceOf(FLOOR_VAULT), 0, "floor vault leg never paid");
         assertGt(usdg.balanceOf(treasury), 0, "treasury leg never paid");
         assertGt(distributor.accrued(agentId), 0, "royalty leg never accrued");
 
@@ -794,12 +863,12 @@ contract AgentFactoryTest is Test {
         assertEq(AgentToken(token).balanceOf(address(hook)), pendingAgent, "fee not backed by balance");
 
         // and the fee splits three ways out of the pool phase too
-        uint256 buybackBefore = usdg.balanceOf(BUYBACK);
+        uint256 vaultBefore = usdg.balanceOf(FLOOR_VAULT);
         uint256 treasuryBefore = usdg.balanceOf(treasury);
         uint256 accruedBefore = distributor.accrued(agentId);
         hook.distribute(poolId, 0);
 
-        uint256 leg = usdg.balanceOf(BUYBACK) - buybackBefore;
+        uint256 leg = usdg.balanceOf(FLOOR_VAULT) - vaultBefore;
         assertGt(leg, 0, "nothing distributed");
         assertEq(usdg.balanceOf(treasury) - treasuryBefore, leg, "treasury leg");
         assertEq(distributor.accrued(agentId) - accruedBefore, leg, "royalty leg");

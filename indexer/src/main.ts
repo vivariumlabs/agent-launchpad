@@ -1,8 +1,9 @@
 // SPEC-M4A §1 main.ts — argv only (no environment variables, no secrets).
 //
 //   npm start -- --config <indexer.json>
-//     config → db (migrations) → watcher loop (every pollMs; backfill from startBlock in maxBlockRange
-//     chunks) + balance refresh loop (every balanceRefreshSec) + journal enrich loop (every enrichSec,
+//     config → db (migrations) → watcher loop (every pollMs; backfill from min(stack startBlock) in
+//     maxBlockRange chunks; SPEC-M4G every stack) + balance refresh loop (every balanceRefreshSec; the
+//     SPEC-M4G floor refresher runs at the same cadence when a floor vault is configured) + journal enrich loop (every enrichSec,
 //     only when arweave.enabled) + attestation verify loop (every verifySec, SPEC-M4B §1b; Arweave checks
 //     skip when arweave.enabled is false; release table re-read from releasesDir each pass) + HTTP API on host:port. SIGINT/SIGTERM ⇒ stop the loops after their
 //     current step, close the server, close the db.
@@ -17,9 +18,10 @@ import { IndexerApi } from "./api.js";
 import { BalanceRefresher } from "./balances.js";
 import { ViemIndexerChain } from "./chain.js";
 import { sleep, systemClock } from "./clock.js";
-import { loadConfig } from "./config.js";
+import { chainContractsOf, loadConfig } from "./config.js";
 import { IndexerDb } from "./db.js";
 import { Enricher, HttpArweaveClient } from "./enrich.js";
+import { FloorRefresher } from "./floor.js";
 import { errMsg, type Logger } from "./log.js";
 import { loadReleaseTable } from "./releases.js";
 import { Verifier } from "./verify.js";
@@ -47,14 +49,27 @@ async function main(): Promise<void> {
   const cfg = loadConfig(configPath(process.argv.slice(2)));
   if (cfg.dbPath !== ":memory:") mkdirSync(dirname(cfg.dbPath), { recursive: true });
   const db = new IndexerDb(cfg.dbPath);
-  const chain = new ViemIndexerChain({ rpc: cfg.chain.rpc, factory: cfg.contracts.factory, registry: cfg.contracts.registry, nft: cfg.contracts.nft });
-  const watcher = new Watcher(db, chain, { contracts: cfg.contracts, reorgWindowBlocks: cfg.reorgWindowBlocks, maxBlockRange: cfg.maxBlockRange, senderBackfillPerPoll: cfg.senderBackfillPerPoll }, systemClock, log);
-  const balances = new BalanceRefresher(db, chain, cfg.contracts.usdg, systemClock, log);
+  const chain = new ViemIndexerChain({ rpc: cfg.chain.rpc, stacks: cfg.stacks });
+  const watcher = new Watcher(db, chain, { contracts: chainContractsOf(cfg), reorgWindowBlocks: cfg.reorgWindowBlocks, maxBlockRange: cfg.maxBlockRange, senderBackfillPerPoll: cfg.senderBackfillPerPoll }, systemClock, log);
+  const balances = new BalanceRefresher(db, chain, cfg.usdg, systemClock, log);
+  const floor = cfg.floor === null ? null : new FloorRefresher(db, chain, cfg.usdg, cfg.floor, systemClock, log);
   const arweave = cfg.arweave.enabled ? new HttpArweaveClient({ graphqlUrl: cfg.arweave.graphqlUrl, gatewayUrl: cfg.arweave.gatewayUrl }) : null;
   const enricher = arweave === null ? null : new Enricher(db, arweave, systemClock, log);
   const releasesDir = cfg.releasesDir;
   const verifier = new Verifier(db, arweave, () => (releasesDir === undefined ? null : loadReleaseTable(releasesDir, log)), systemClock, log);
-  const api = new IndexerApi(db, systemClock, { staleAfterSec: cfg.staleAfterSec, startBlock: cfg.contracts.startBlock, gatewayUrl: cfg.arweave.gatewayUrl, contracts: cfg.contractsView }, log);
+  const api = new IndexerApi(
+    db,
+    systemClock,
+    {
+      staleAfterSec: cfg.staleAfterSec,
+      startBlock: watcher.startBlock(),
+      gatewayUrl: cfg.arweave.gatewayUrl,
+      contracts: cfg.contractsView,
+      stacks: cfg.stacks,
+      floor: cfg.floor === null ? null : { ...cfg.floor, usdg: cfg.usdg },
+    },
+    log,
+  );
   const server = api.server();
 
   let stopping = false;
@@ -69,7 +84,9 @@ async function main(): Promise<void> {
     server.once("error", rej);
     server.listen(cfg.port, cfg.host, () => res());
   });
-  log.info(`indexer up: api http://${cfg.host}:${cfg.port}, db ${cfg.dbPath}, factory ${cfg.contracts.factory}, from block ${watcher.cursor()} (startBlock ${cfg.contracts.startBlock})`);
+  const stackList = cfg.stacks.map((s) => `v${s.version}${s.legacy ? " (legacy)" : ""} factory ${s.factory} ids ${s.firstAgentId}+ from ${s.startBlock}`).join("; ");
+  log.info(`indexer up: api http://${cfg.host}:${cfg.port}, db ${cfg.dbPath}, stacks [${stackList}], from block ${watcher.cursor()} (startBlock ${watcher.startBlock()})`);
+  log.info(cfg.floor === null ? "no floorVault in the primary manifest: /api/floor {enabled:false}" : `floor vault ${cfg.floor.vault}, token ${cfg.floor.token}`);
   if (enricher === null) log.info("arweave.enabled = false: journal enrichment off; attestation Arweave checks skip");
   if (releasesDir === undefined) log.warn("releasesDir unset: attestation releaseMatch renders \"no release table\"");
 
@@ -95,6 +112,7 @@ async function main(): Promise<void> {
   await Promise.all([
     watcherLoop(),
     periodic("balances", cfg.balanceRefreshSec, () => balances.refreshAll()),
+    floor === null ? Promise.resolve() : periodic("floor", cfg.balanceRefreshSec, () => floor.refresh()),
     enricher === null ? Promise.resolve() : periodic("enrich", cfg.enrichSec, () => enricher.runOnce()),
     periodic("verify", cfg.verifySec, () => verifier.runOnce()),
   ]);

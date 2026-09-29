@@ -1,5 +1,12 @@
 {
   "_comment": "Fixtures-mode stand-in for the live wagmi view reads (SPEC-M4E §3): distributor.accrued(agentId) and nft.ownerOf(agentId) per agentId. Emancipated agents have no owner (burned).",
-  "accrued": { "3": "12199500", "9": "0" },
-  "ownerOf": { "3": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" }
+  "accrued": {
+    "3": "12199500",
+    "9": "0",
+    "101": "418450000"
+  },
+  "ownerOf": {
+    "3": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    "101": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+  }
 }

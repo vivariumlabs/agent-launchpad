@@ -32,7 +32,7 @@ abstract contract CurveTestBase is Test {
 
     address internal factory = makeAddr("factory");
     address internal treasury = makeAddr("agentTreasury");
-    address internal buyback = makeAddr("treasuryBuyback");
+    address internal floorVault = makeAddr("floorVault");
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
 
@@ -52,7 +52,9 @@ abstract contract CurveTestBase is Test {
         c = AgentBondingCurve(_clone(address(implementation)));
         t = new CurveMockAgentToken(address(c), SUPPLY);
         vm.prank(factory);
-        c.initialize(AGENT_ID, address(t), address(usdg), address(registry), distributor_, buyback, PHANTOM, THRESHOLD);
+        c.initialize(
+            AGENT_ID, address(t), address(usdg), address(registry), distributor_, floorVault, PHANTOM, THRESHOLD
+        );
     }
 
     function _setUpBase() internal {
@@ -106,7 +108,7 @@ contract AgentBondingCurveTest is CurveTestBase {
         assertEq(curve.usdg(), address(usdg), "usdg");
         assertEq(curve.registry(), address(registry), "registry");
         assertEq(curve.distributor(), address(distributor), "distributor");
-        assertEq(curve.treasuryBuyback(), buyback, "buyback");
+        assertEq(curve.floorVault(), floorVault, "floorVault");
         assertEq(curve.phantomQuote(), PHANTOM, "phantom");
         assertEq(curve.graduationThreshold(), THRESHOLD, "threshold");
         assertEq(curve.TOTAL_FEE_BPS(), FEE_BPS, "fee bps");
@@ -127,7 +129,7 @@ contract AgentBondingCurveTest is CurveTestBase {
             address(usdg),
             address(registry),
             address(distributor),
-            buyback,
+            floorVault,
             PHANTOM,
             THRESHOLD
         );
@@ -141,7 +143,7 @@ contract AgentBondingCurveTest is CurveTestBase {
             address(usdg),
             address(registry),
             address(distributor),
-            buyback,
+            floorVault,
             PHANTOM,
             THRESHOLD
         );
@@ -151,7 +153,7 @@ contract AgentBondingCurveTest is CurveTestBase {
         AgentBondingCurve fresh = AgentBondingCurve(_clone(address(implementation)));
         vm.expectRevert(AgentBondingCurve.ZeroAddress.selector);
         fresh.initialize(
-            AGENT_ID, address(0), address(usdg), address(registry), address(distributor), buyback, PHANTOM, THRESHOLD
+            AGENT_ID, address(0), address(usdg), address(registry), address(distributor), floorVault, PHANTOM, THRESHOLD
         );
         vm.expectRevert(AgentBondingCurve.ZeroAddress.selector);
         fresh.initialize(
@@ -168,7 +170,7 @@ contract AgentBondingCurveTest is CurveTestBase {
         // calls, which an EOA would answer successfully and silently.
         vm.expectRevert(AgentBondingCurve.ZeroAddress.selector);
         fresh.initialize(
-            AGENT_ID, alice, address(usdg), address(registry), address(distributor), buyback, PHANTOM, THRESHOLD
+            AGENT_ID, alice, address(usdg), address(registry), address(distributor), floorVault, PHANTOM, THRESHOLD
         );
     }
 
@@ -176,15 +178,15 @@ contract AgentBondingCurveTest is CurveTestBase {
         AgentBondingCurve fresh = AgentBondingCurve(_clone(address(implementation)));
         vm.expectRevert(AgentBondingCurve.ZeroAmount.selector);
         fresh.initialize(
-            0, address(token), address(usdg), address(registry), address(distributor), buyback, PHANTOM, THRESHOLD
+            0, address(token), address(usdg), address(registry), address(distributor), floorVault, PHANTOM, THRESHOLD
         );
         vm.expectRevert(AgentBondingCurve.ZeroAmount.selector);
         fresh.initialize(
-            AGENT_ID, address(token), address(usdg), address(registry), address(distributor), buyback, 0, THRESHOLD
+            AGENT_ID, address(token), address(usdg), address(registry), address(distributor), floorVault, 0, THRESHOLD
         );
         vm.expectRevert(AgentBondingCurve.ZeroAmount.selector);
         fresh.initialize(
-            AGENT_ID, address(token), address(usdg), address(registry), address(distributor), buyback, PHANTOM, 0
+            AGENT_ID, address(token), address(usdg), address(registry), address(distributor), floorVault, PHANTOM, 0
         );
     }
 
@@ -199,7 +201,7 @@ contract AgentBondingCurveTest is CurveTestBase {
             address(usdg),
             address(registry),
             address(distributor),
-            buyback,
+            floorVault,
             PHANTOM,
             THRESHOLD
         );
@@ -241,7 +243,7 @@ contract AgentBondingCurveTest is CurveTestBase {
         assertEq(token.balanceOf(address(curve)), SUPPLY - BUY_1000_TOKENS_OUT, "curve token balance matches tracking");
 
         // 3% split three ways, 1% each.
-        assertEq(usdg.balanceOf(buyback), 10e6, "buyback leg");
+        assertEq(usdg.balanceOf(floorVault), 10e6, "floor vault leg");
         assertEq(usdg.balanceOf(treasury), 10e6, "agent treasury leg");
         assertEq(usdg.balanceOf(address(distributor)), 10e6, "royalty leg held");
         assertEq(distributor.accrued(AGENT_ID), 10e6, "royalty leg credited");
@@ -314,17 +316,17 @@ contract AgentBondingCurveTest is CurveTestBase {
 
         uint256 fee = (usdgIn * FEE_BPS) / 10_000;
         assertEq(fee, 30_001, "fee");
-        assertEq(usdg.balanceOf(buyback), 10_000, "buyback third");
+        assertEq(usdg.balanceOf(floorVault), 10_000, "floor vault third");
         assertEq(usdg.balanceOf(treasury), 10_000, "treasury third");
         assertEq(distributor.accrued(AGENT_ID), 10_001, "royalty leg absorbs the dust");
-        assertEq(usdg.balanceOf(buyback) + usdg.balanceOf(treasury) + distributor.accrued(AGENT_ID), fee, "legs sum");
+        assertEq(usdg.balanceOf(floorVault) + usdg.balanceOf(treasury) + distributor.accrued(AGENT_ID), fee, "legs sum");
     }
 
     /// @dev A fee of one or two wei leaves nothing for the first two legs; the
     /// whole fee goes to royalties rather than being stranded on the curve.
     function test_Buy_SubWeiFeeSplit() public {
         _buy(alice, 34, 0); // fee == 1
-        assertEq(usdg.balanceOf(buyback), 0, "no buyback leg");
+        assertEq(usdg.balanceOf(floorVault), 0, "no floor vault leg");
         assertEq(usdg.balanceOf(treasury), 0, "no treasury leg");
         assertEq(distributor.accrued(AGENT_ID), 1, "royalty leg takes the whole wei");
 
@@ -373,9 +375,9 @@ contract AgentBondingCurveTest is CurveTestBase {
 
         // Fees from both trades: 30e6 from the buy, 15_638_164 from the sell.
         uint256 totalFee = 30e6 + fee;
-        uint256 legs = usdg.balanceOf(buyback) + usdg.balanceOf(treasury) + distributor.accrued(AGENT_ID);
+        uint256 legs = usdg.balanceOf(floorVault) + usdg.balanceOf(treasury) + distributor.accrued(AGENT_ID);
         assertEq(legs, totalFee, "all fee legs across both trades");
-        assertEq(usdg.balanceOf(buyback), 10e6 + fee / 3, "buyback leg");
+        assertEq(usdg.balanceOf(floorVault), 10e6 + fee / 3, "floor vault leg");
         assertEq(usdg.balanceOf(treasury), 10e6 + fee / 3, "treasury leg");
         assertEq(distributor.accrued(AGENT_ID), 10e6 + (fee - 2 * (fee / 3)), "royalty leg");
     }
@@ -659,11 +661,13 @@ contract AgentBondingCurveTest is CurveTestBase {
 
         uint256 fee = (usdgIn * FEE_BPS) / 10_000;
         uint256 third = fee / 3;
-        assertEq(usdg.balanceOf(buyback), third, "buyback leg is a third");
+        assertEq(usdg.balanceOf(floorVault), third, "floor vault leg is a third");
         assertEq(usdg.balanceOf(treasury), third, "treasury leg is a third");
         assertEq(distributor.accrued(AGENT_ID), fee - third - third, "royalty leg is the remainder");
         assertEq(
-            usdg.balanceOf(buyback) + usdg.balanceOf(treasury) + distributor.accrued(AGENT_ID), fee, "legs sum to fee"
+            usdg.balanceOf(floorVault) + usdg.balanceOf(treasury) + distributor.accrued(AGENT_ID),
+            fee,
+            "legs sum to fee"
         );
         assertLe(fee - third - third - third, 2, "dust is at most two wei");
 
@@ -685,7 +689,7 @@ contract AgentBondingCurveTest is CurveTestBase {
 
         uint256 usdgOut = _sell(alice, tokensIn, 0);
 
-        uint256 legs = usdg.balanceOf(buyback) + usdg.balanceOf(treasury) + distributor.accrued(AGENT_ID);
+        uint256 legs = usdg.balanceOf(floorVault) + usdg.balanceOf(treasury) + distributor.accrued(AGENT_ID);
         // Gross is recoverable from the payout: legs across both trades must
         // equal the buy fee plus 3% of this sell's gross.
         uint256 grossOut = usdgOut + (legs - buyFee);
@@ -758,7 +762,7 @@ contract AgentBondingCurveTest is CurveTestBase {
         assertEq(usdg.balanceOf(address(curve)), 0, "nothing left behind");
         assertEq(token.balanceOf(address(curve)) + tokensSwept + token.balanceOf(alice), SUPPLY, "token supply closes");
         assertEq(
-            usdgSwept + usdg.balanceOf(alice) + usdg.balanceOf(buyback) + usdg.balanceOf(treasury)
+            usdgSwept + usdg.balanceOf(alice) + usdg.balanceOf(floorVault) + usdg.balanceOf(treasury)
                 + usdg.balanceOf(address(distributor)),
             totalIn,
             "usdg closes"
@@ -776,7 +780,7 @@ contract CurveHandler is Test {
     CurveMockUSDG public usdg;
     CurveMockAgentToken public token;
     CurveMockDistributor public distributor;
-    address public buyback;
+    address public floorVault;
     address public treasury;
     uint256 public agentId;
 
@@ -796,7 +800,7 @@ contract CurveHandler is Test {
         CurveMockUSDG usdg_,
         CurveMockAgentToken token_,
         CurveMockDistributor distributor_,
-        address buyback_,
+        address floorVault_,
         address treasury_,
         uint256 agentId_
     ) {
@@ -804,7 +808,7 @@ contract CurveHandler is Test {
         usdg = usdg_;
         token = token_;
         distributor = distributor_;
-        buyback = buyback_;
+        floorVault = floorVault_;
         treasury = treasury_;
         agentId = agentId_;
         actors = [makeAddr("h1"), makeAddr("h2"), makeAddr("h3")];
@@ -817,7 +821,7 @@ contract CurveHandler is Test {
     }
 
     function _legs() internal view returns (uint256) {
-        return usdg.balanceOf(buyback) + usdg.balanceOf(treasury) + distributor.accrued(agentId);
+        return usdg.balanceOf(floorVault) + usdg.balanceOf(treasury) + distributor.accrued(agentId);
     }
 
     function _record(uint256 fee, uint256 legsBefore) internal {
@@ -887,7 +891,7 @@ contract AgentBondingCurveInvariantTest is CurveTestBase {
 
     function setUp() public {
         _setUpBase();
-        handler = new CurveHandler(curve, usdg, token, distributor, buyback, treasury, AGENT_ID);
+        handler = new CurveHandler(curve, usdg, token, distributor, floorVault, treasury, AGENT_ID);
 
         bytes4[] memory selectors = new bytes4[](2);
         selectors[0] = CurveHandler.buy.selector;
@@ -908,7 +912,7 @@ contract AgentBondingCurveInvariantTest is CurveTestBase {
     /// forge-config: default.invariant.runs = 24
     /// forge-config: default.invariant.depth = 48
     function invariant_FeeLegsSumToTotalFees() public view {
-        uint256 legs = usdg.balanceOf(buyback) + usdg.balanceOf(treasury) + distributor.accrued(AGENT_ID);
+        uint256 legs = usdg.balanceOf(floorVault) + usdg.balanceOf(treasury) + distributor.accrued(AGENT_ID);
         assertEq(legs, handler.totalFeesCharged(), "fee legs drifted from the total fee charged");
         assertEq(usdg.balanceOf(address(distributor)), distributor.accrued(AGENT_ID), "royalty leg funded on credit");
         assertFalse(handler.feeSplitViolated(), "a trade's legs did not sum to its fee");
@@ -923,7 +927,7 @@ contract AgentBondingCurveInvariantTest is CurveTestBase {
     /// forge-config: default.invariant.runs = 24
     /// forge-config: default.invariant.depth = 48
     function invariant_UsdgIsConserved() public view {
-        uint256 held = usdg.balanceOf(address(curve)) + usdg.balanceOf(buyback) + usdg.balanceOf(treasury)
+        uint256 held = usdg.balanceOf(address(curve)) + usdg.balanceOf(floorVault) + usdg.balanceOf(treasury)
             + usdg.balanceOf(address(distributor));
         for (uint256 i = 0; i < 3; i++) {
             held += usdg.balanceOf(handler.actorAt(i));

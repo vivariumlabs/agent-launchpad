@@ -1,8 +1,8 @@
 // In-memory IndexerChain (no network) + an ABI-encoding log builder for watcher tests.
 
 import { encodeAbiParameters, encodeEventTopics, type Abi, type AbiEvent, type Address, type Hex } from "viem";
-import type { AgentInstance, IndexerChain, PendingAgent, RawLog, TokenInfo } from "../../src/chain.js";
-import type { ContractsCfg } from "../../src/config.js";
+import { ERC20_TRANSFER_TOPIC, type AgentInstance, type IndexerChain, type PendingAgent, type RawLog, type TokenInfo } from "../../src/chain.js";
+import type { ChainContracts, StackCfg } from "../../src/config.js";
 
 export const ADDR = {
   factory: "0x1000000000000000000000000000000000000001",
@@ -15,8 +15,34 @@ export const ADDR = {
   usdg: "0x5000000000000000000000000000000000000005",
 } as const satisfies Record<string, Address>;
 
-export function contracts(startBlock = 100n): ContractsCfg {
-  return { ...ADDR, startBlock };
+/** The v1 stack of ADDR (single-stack configs: version 1, not legacy, ids from 1). */
+export function stackV1(startBlock = 100n, legacy = false): StackCfg {
+  return { version: 1, legacy, factory: ADDR.factory, registry: ADDR.registry, hook: ADDR.hook, distributor: ADDR.distributor, nft: ADDR.nft, startBlock, firstAgentId: 1 };
+}
+
+/** Single-stack (v1, no floor vault) watcher contracts. */
+export function contracts(startBlock = 100n): ChainContracts {
+  return { stacks: [stackV1(startBlock)], usdg: ADDR.usdg, poolManager: ADDR.poolManager, floor: null };
+}
+
+/** SPEC-M4G v2 stack (same USDG + PoolManager as ADDR) + its floor vault / platform token. */
+export const ADDR2 = {
+  factory: "0x2000000000000000000000000000000000000001",
+  registry: "0x2000000000000000000000000000000000000002",
+  hook: "0x2000000000000000000000000000000000000003",
+  distributor: "0x2000000000000000000000000000000000000004",
+  nft: "0x2000000000000000000000000000000000000007",
+  floorVault: "0x2000000000000000000000000000000000000008",
+  platformToken: "0x2000000000000000000000000000000000000009",
+} as const satisfies Record<string, Address>;
+
+export function stackV2(startBlock = 500n): StackCfg {
+  return { version: 2, legacy: false, factory: ADDR2.factory, registry: ADDR2.registry, hook: ADDR2.hook, distributor: ADDR2.distributor, nft: ADDR2.nft, startBlock, firstAgentId: 101 };
+}
+
+/** Dual-stack: primary v2 (ids 101+, floor vault) + legacy v1 (ids 1+). */
+export function dualContracts(v1Start = 100n, v2Start = 500n): ChainContracts {
+  return { stacks: [stackV2(v2Start), stackV1(v1Start, true)], usdg: ADDR.usdg, poolManager: ADDR.poolManager, floor: { vault: ADDR2.floorVault, token: ADDR2.platformToken } };
 }
 
 export const ZERO: Address = "0x0000000000000000000000000000000000000000";
@@ -81,6 +107,25 @@ export class MockChain implements IndexerChain {
     return this.logs.filter((l) => set.has(l.address.toLowerCase()) && l.blockNumber >= fromBlock && l.blockNumber <= toBlock);
   }
 
+  transferCalls: Array<{ token: string; to: string; from: bigint; toBlock: bigint }> = [];
+
+  /** Topic-filtered view of `logs`: token Transfer logs whose topic2 is `to`. */
+  async getTransferLogsTo(token: Address, to: Address, fromBlock: bigint, toBlock: bigint): Promise<RawLog[]> {
+    this.transferCalls.push({ token: token.toLowerCase(), to: to.toLowerCase(), from: fromBlock, toBlock });
+    if (this.rangeLimit !== null && toBlock - fromBlock + 1n > this.rangeLimit) {
+      throw new Error(`eth_getLogs block range too large (${toBlock - fromBlock + 1n} > ${this.rangeLimit})`);
+    }
+    const t2 = `0x${to.toLowerCase().slice(2).padStart(64, "0")}`;
+    return this.logs.filter(
+      (l) =>
+        l.address.toLowerCase() === token.toLowerCase() &&
+        l.topics[0]?.toLowerCase() === ERC20_TRANSFER_TOPIC.toLowerCase() &&
+        l.topics[2]?.toLowerCase() === t2 &&
+        l.blockNumber >= fromBlock &&
+        l.blockNumber <= toBlock,
+    );
+  }
+
   async blockTimestamp(n: bigint): Promise<bigint> {
     return BASE_TS + n;
   }
@@ -112,7 +157,23 @@ export class MockChain implements IndexerChain {
   }
 
   async erc20Balance(token: Address, who: Address): Promise<bigint> {
+    if (this.failErc20) throw new Error("mock erc20 failure");
     return this.erc20.get(`${token.toLowerCase()}:${who.toLowerCase()}`) ?? 0n;
+  }
+
+  supplies = new Map<string, bigint>();
+  decimals = new Map<string, number>();
+  /** Throw on every erc20 read while true. */
+  failErc20 = false;
+
+  async erc20TotalSupply(token: Address): Promise<bigint> {
+    if (this.failErc20) throw new Error("mock erc20 failure");
+    return this.supplies.get(token.toLowerCase()) ?? 0n;
+  }
+
+  async erc20Decimals(token: Address): Promise<number> {
+    if (this.failErc20) throw new Error("mock erc20 failure");
+    return this.decimals.get(token.toLowerCase()) ?? 18;
   }
 
   async nativeBalance(who: Address): Promise<bigint> {

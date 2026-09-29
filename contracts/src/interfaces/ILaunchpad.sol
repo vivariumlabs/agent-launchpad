@@ -77,7 +77,7 @@ interface IAgentBondingCurve {
         address usdg,
         address registry,
         address distributor,
-        address treasuryBuyback,
+        address floorVault,
         uint256 phantomQuote,
         uint256 graduationThreshold
     ) external; // factory only, once (clone pattern)
@@ -97,7 +97,7 @@ interface IFeeSplitHook {
     event PoolRegistered(bytes32 indexed poolId, uint256 indexed agentId, address agentToken);
     event FeeCollected(bytes32 indexed poolId, address currency, uint256 amount);
     event Distributed(
-        bytes32 indexed poolId, uint256 buybackLeg, uint256 treasuryLeg, uint256 royaltyLeg, uint256 converted
+        bytes32 indexed poolId, uint256 floorLeg, uint256 treasuryLeg, uint256 royaltyLeg, uint256 converted
     );
 
     function registerPool(PoolKey calldata key, uint256 agentId, address agentToken) external; // factory only
@@ -122,11 +122,18 @@ interface ILiquidityLocker {
     function lockedLiquidity(uint256 agentId) external view returns (uint128);
 }
 
-interface ITreasuryBuyback {
-    event Poked(address indexed caller, uint256 usdgIn, uint256 tokensBurned, uint256 callerReward);
-
-    function poke(uint256 minTokensOut) external; // permissionless; reverts until target pool set
-    function setTargetPool(PoolKey calldata key) external; // multisig, one-time
+interface IFloorVault {
+    event Redeemed(address indexed redeemer, uint256 tokensBurned, uint256 usdgPaid);
+    event StrayBurned(address indexed caller, uint256 amount);
+    function redeem(uint256 amount) external returns (uint256 usdgPaid);
+    function burnStray() external returns (uint256 amount);
+    function quoteRedeem(uint256 amount) external view returns (uint256 usdgPaid);
+    /// USDG base units per whole token (1e18 base units), scaled by 1e18: mulDiv(B, 1e36, S); 0 if S == 0.
+    function floorPrice() external view returns (uint256);
+    function state()
+        external
+        view
+        returns (uint256 usdgBalance, uint256 tokenSupply, uint256 totalRedeemedUsdg, uint256 totalBurned);
 }
 
 interface IAgentFactory {

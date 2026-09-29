@@ -11,8 +11,8 @@
  * Launch helper mocks (SPEC-M4B §3b): template + prepare (+ SPEC-M4E publish,
  * assembled in web/app/api/launch/publish/route.ts).
  *
- * NFT dashboard (SPEC-M4E §3): /api/contracts + a 2-NFT wallet (Cato #3 with
- * accrued royalties, Marcus #9 emancipated) for the demo wallet; any other
+ * NFT dashboard (SPEC-M4E §3): /api/contracts + a 3-NFT wallet (Cato #3 with
+ * accrued royalties, Marcus #9 emancipated, Nyx #101 on the v2 stack) for the demo wallet; any other
  * wallet (or the "empty" scenario) is empty. nft-chain.json stands in for the
  * live wagmi view reads (accrued / ownerOf).
  *
@@ -21,6 +21,12 @@
  * "dying" with an evictableAt countdown). Agents 1/2 have no dedicated
  * profile JSON: their profile is their directory row. revive.json holds the
  * RAW helper quote bodies.
+ *
+ * $TOKEN floor (SPEC-M4G §4): floor.json holds RAW /api/floor bodies for the
+ * active / fresh / disabled scenarios (+ the simulated redeem walk's demo
+ * wallet). Dual-stack: agents 1–9 carry the legacy v1 `stack`; 101 (Nyx) is
+ * the v2 agent (profile = its directory row). contracts.json is the
+ * indexer's flat wire shape + stacks[]; the launch prediction is 102.
  */
 import type {
   ActivityItem,
@@ -65,6 +71,8 @@ import agent2JournalJson from "../fixtures/agent-2-journal.json";
 import reviveJson from "../fixtures/revive.json";
 
 import contractsJson from "../fixtures/contracts.json";
+import floorJson from "../fixtures/floor.json";
+import agent101ActivityJson from "../fixtures/agent-101-activity.json";
 import walletNftsJson from "../fixtures/wallet-nfts.json";
 import nftChainJson from "../fixtures/nft-chain.json";
 
@@ -76,6 +84,7 @@ function listRow(id: number): AgentView | undefined {
 
 const agent1Row = listRow(1);
 const agent2Row = listRow(2);
+const agent101Row = listRow(101);
 
 export const fixtureProfiles: Record<string, AgentView> = {
   ...(agent1Row ? { "1": agent1Row } : {}),
@@ -85,12 +94,14 @@ export const fixtureProfiles: Record<string, AgentView> = {
   "5": agent5Json as AgentView,
   "7": agent7Json as AgentView,
   "9": agent9Json as AgentView,
+  ...(agent101Row ? { "101": agent101Row } : {}),
 };
 
 export const fixtureActivity: Record<string, ActivityItem[]> = {
   "3": (agent3ActivityJson as ActivityResponse).events,
   "5": (agent5ActivityJson as ActivityResponse).events,
   "9": (agent9ActivityJson as ActivityResponse).events,
+  "101": (agent101ActivityJson as ActivityResponse).events,
 };
 
 export const fixtureJournal: Record<string, JournalEntry[]> = {
@@ -140,3 +151,9 @@ export const fixtureRevive = reviveJson as {
   simulatedRevivalId: string;
   quotes: Record<string, Record<string, unknown>>;
 };
+
+/** SPEC-M4G §4: RAW /api/floor bodies per scenario (normalized by web/lib/floor.ts like a live response). */
+export const fixtureFloorRaw: Record<"active" | "fresh" | "disabled", unknown> = floorJson.scenarios;
+
+/** Simulated redeem walk: the demo wallet's $TOKEN balance + allowance to the vault (base-unit strings). */
+export const fixtureFloorDemoWallet: { balance: string; allowance: string } = floorJson.demoWallet;

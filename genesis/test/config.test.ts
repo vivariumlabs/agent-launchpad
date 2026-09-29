@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { buildConfig, configFromDeployment, describeRental, effectiveLegModes, loadConfig, projectedRentalMicroUsdc } from "../src/config.js";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const MANIFEST = join(REPO, "contracts", "deployments", "testnet-46630.json");
+const MANIFEST = join(REPO, "contracts", "deployments", "testnet-46630.v1.json");
 
 function fixtureDir(composeText?: string): string {
   const d = mkdtempSync(join(tmpdir(), "genesis-cfg-"));
@@ -36,6 +36,19 @@ describe("configFromDeployment", () => {
     expect(m.contracts.registry).toBe("0xDBA9680C0F1958Af7Bc34a225863D93df2B92f59");
     expect(m.contracts.usdg).toBe("0xe6f7E5832991f5af335C2A21d4F35cea3d47ccAb");
     expect(m.contracts.startBlock).toBe(11_758_253n);
+  });
+
+  it("M4G R8: per-stack configs — v1 e2e config on the legacy archive, v2 config on the v2 manifest (ids from 101, separate data dir)", () => {
+    const v1 = loadConfig(join(REPO, "genesis", "e2e", "genesis.testnet.json"));
+    expect(v1.contracts.factory).toBe("0x7b257abd9BDf3377Af03DD67e2D67a8D5717b118");
+    const v2 = loadConfig(join(REPO, "genesis", "e2e", "genesis.testnet.v2.json"));
+    const m2 = configFromDeployment(join(REPO, "contracts", "deployments", "testnet-46630.json"));
+    expect(v2.contracts.factory).toBe(m2.contracts.factory);
+    expect(v2.contracts.registry).toBe(m2.contracts.registry);
+    expect(v2.contracts.usdg).toBe(v1.contracts.usdg); // MockUSDG reused (R1)
+    expect(v2.contracts.factory).not.toBe(v1.contracts.factory);
+    expect(v2.dataDir).not.toBe(v1.dataDir);
+    expect(v2.configInboxDir).not.toBe(v1.configInboxDir);
   });
 });
 

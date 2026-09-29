@@ -95,7 +95,11 @@ contract AgentFactory is IAgentFactory, Ownable2Step, Pausable, ReentrancyGuard 
     IRoyaltyDistributor public immutable distributor;
     IFeeSplitHook public immutable hook;
     ILiquidityLocker public immutable locker;
-    address public immutable treasuryBuyback;
+    /// @notice The floor vault (D18): recipient of the platform fee leg via each agent's curve.
+    address public immutable floorVault;
+    /// @notice The id the first `createAgent` issues (R2, SPEC-M4G). Disjoint id ranges per stack
+    ///         keep dual-stack deployments collision-free off-chain. Always >= 1.
+    uint256 public immutable firstAgentId;
     /// @notice Orchestrator gas address: every `msg.value` sent with `createAgent` is forwarded
     ///         here to fund the enclave launch. Never refundable — it is spent off-chain.
     address public immutable genesisGasRecipient;
@@ -116,7 +120,7 @@ contract AgentFactory is IAgentFactory, Ownable2Step, Pausable, ReentrancyGuard 
     ///         are the only admin powers this contract has.
     address public platformFeeRecipient;
 
-    /// @notice Last issued agent id. Ids start at 1; 0 is never valid.
+    /// @notice Last issued agent id. Ids start at `firstAgentId` (>= 1); 0 is never valid.
     uint256 public agentCount;
 
     mapping(uint256 agentId => PendingAgent) private _pending;
@@ -144,6 +148,7 @@ contract AgentFactory is IAgentFactory, Ownable2Step, Pausable, ReentrancyGuard 
     error GasForwardFailed();
     error InexactTransfer(address token, uint256 expected, uint256 actual);
     error RenounceDisabled();
+    error InvalidFirstAgentId();
 
     /// @notice Emitted once a graduated agent's pool exists and its liquidity is locked.
     event GraduatedPoolCreated(
@@ -155,6 +160,8 @@ contract AgentFactory is IAgentFactory, Ownable2Step, Pausable, ReentrancyGuard 
     // Construction
     // -----------------------------------------------------------------------
 
+    /// @param floorVault_ The floor vault (D18); forwarded to every curve as its platform leg.
+    /// @param firstAgentId_ First id `createAgent` issues; must be >= 1 (`InvalidFirstAgentId`).
     /// @param owner_ Platform multisig. Also the initial `platformFeeRecipient`.
     constructor(
         address usdg_,
@@ -164,15 +171,17 @@ contract AgentFactory is IAgentFactory, Ownable2Step, Pausable, ReentrancyGuard 
         address distributor_,
         address hook_,
         address locker_,
-        address treasuryBuyback_,
+        address floorVault_,
+        uint256 firstAgentId_,
         address genesisGasRecipient_,
         address owner_
     ) Ownable(owner_) {
         if (
             usdg_ == address(0) || poolManager_ == address(0) || registry_ == address(0) || nft_ == address(0)
                 || distributor_ == address(0) || hook_ == address(0) || locker_ == address(0)
-                || treasuryBuyback_ == address(0) || genesisGasRecipient_ == address(0)
+                || floorVault_ == address(0) || genesisGasRecipient_ == address(0)
         ) revert ZeroAddress();
+        if (firstAgentId_ == 0) revert InvalidFirstAgentId();
 
         usdg = IERC20(usdg_);
         poolManager = IPoolManager(poolManager_);
@@ -181,7 +190,9 @@ contract AgentFactory is IAgentFactory, Ownable2Step, Pausable, ReentrancyGuard 
         distributor = IRoyaltyDistributor(distributor_);
         hook = IFeeSplitHook(hook_);
         locker = ILiquidityLocker(locker_);
-        treasuryBuyback = treasuryBuyback_;
+        floorVault = floorVault_;
+        firstAgentId = firstAgentId_;
+        agentCount = firstAgentId_ - 1;
         genesisGasRecipient = genesisGasRecipient_;
 
         // One implementation, cloned per agent (EIP-1167). Its constructor bricks itself, so the
@@ -261,7 +272,7 @@ contract AgentFactory is IAgentFactory, Ownable2Step, Pausable, ReentrancyGuard 
                 address(usdg),
                 address(registry),
                 address(distributor),
-                treasuryBuyback,
+                floorVault,
                 PHANTOM_QUOTE,
                 GRADUATION_THRESHOLD
             );

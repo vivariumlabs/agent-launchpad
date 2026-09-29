@@ -3,9 +3,11 @@ import { notFound } from "next/navigation";
 import { AddressRow } from "@/components/AddressRow";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { AgentTabs } from "@/components/AgentTabs";
+import { LegacyBadge } from "@/components/LegacyBadge";
 import { StatusBadge } from "@/components/StatusBadge";
 import { TxLink } from "@/components/TxLink";
 import { getAgent } from "@/lib/api";
+import { agentStack } from "@/lib/stack";
 
 export const revalidate = 30;
 
@@ -27,6 +29,7 @@ export default async function AgentLayout({
   if (!agent) notFound();
 
   const { instance } = agent;
+  const stack = agentStack(agent);
 
   return (
     <div className="flex flex-col gap-10">
@@ -50,6 +53,12 @@ export default async function AgentLayout({
               {instance ? `gen ${instance.generation}` : "not yet deployed"}
             </span>
           </div>
+
+          {stack?.legacy ? (
+            <div className="mt-2">
+              <LegacyBadge withCopy />
+            </div>
+          ) : null}
 
           <div className="mt-4 grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2">
             <AddressRow label="Creator" address={agent.creator} />

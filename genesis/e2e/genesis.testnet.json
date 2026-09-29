@@ -1,7 +1,7 @@
 {
   "dataDir": "data",
   "walletKeyPath": "../../.secrets/m0-drill-wallet.json",
-  "deploymentManifest": "../../contracts/deployments/testnet-46630.json",
+  "deploymentManifest": "../../contracts/deployments/testnet-46630.v1.json",
   "contracts": {
     "factory": "0x7b257abd9BDf3377Af03DD67e2D67a8D5717b118",
     "registry": "0xDBA9680C0F1958Af7Bc34a225863D93df2B92f59",

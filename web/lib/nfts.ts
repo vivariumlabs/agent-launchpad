@@ -18,10 +18,13 @@
  *     tokenId == agentId always (:9).
  *
  * R5: addresses come ONLY from /api/contracts — this file carries none.
+ * SPEC-M4G dual-stack: claim/burn use the AGENT's stack addresses
+ * (contractsForNft), not the primary manifest's.
  */
 import { isAddress } from "./factory";
 import { parseTimestamp } from "./format";
-import type { ContractsResponse, WalletNft, WalletNftsResponse } from "./types";
+import { normalizeStack, normalizeStackInfo } from "./stack";
+import type { ContractsResponse, StackInfo, WalletNft, WalletNftsResponse } from "./types";
 
 export const distributorAbi = [
   {
@@ -91,29 +94,73 @@ export interface NftContracts {
   distributor: `0x${string}`;
 }
 
-/** Tolerant /api/contracts parse: null unless chainId is a safe integer and addresses is a string record. */
+/**
+ * Tolerant /api/contracts parse: null unless chainId is a safe integer and
+ * some address record is present. The indexer serves the manifest's address
+ * keys FLAT beside `chainId` (indexer/src/config.ts contractsViewOf); an
+ * `addresses` sub-object (the SPEC-M4E pinned shape) is accepted too.
+ * SPEC-M4G `stacks[]` is parsed when present (malformed entries dropped).
+ */
 export function normalizeContracts(raw: unknown): ContractsResponse | null {
   if (typeof raw !== "object" || raw === null) return null;
   const r = raw as Record<string, unknown>;
   const chainId = typeof r.chainId === "string" && /^\d+$/.test(r.chainId) ? Number(r.chainId) : r.chainId;
   if (typeof chainId !== "number" || !Number.isSafeInteger(chainId)) return null;
-  if (typeof r.addresses !== "object" || r.addresses === null) return null;
   const addresses: Record<string, string> = {};
-  for (const [k, v] of Object.entries(r.addresses as Record<string, unknown>)) {
-    if (typeof v === "string") addresses[k] = v;
+  if (typeof r.addresses === "object" && r.addresses !== null && !Array.isArray(r.addresses)) {
+    for (const [k, v] of Object.entries(r.addresses as Record<string, unknown>)) {
+      if (typeof v === "string") addresses[k] = v;
+    }
+  } else {
+    for (const [k, v] of Object.entries(r)) {
+      if (k !== "chainId" && typeof v === "string" && isAddress(v)) addresses[k] = v;
+    }
   }
-  return { chainId, addresses };
+  if (Object.keys(addresses).length === 0) return null;
+  const stacks = Array.isArray(r.stacks)
+    ? r.stacks.map(normalizeStackInfo).filter((s): s is StackInfo => s !== null)
+    : null;
+  return { chainId, addresses, stacks };
 }
 
-/** Pick nft + distributor (case-insensitive keys); null when either is missing/malformed. */
+/** Case-insensitive address lookup in /api/contracts; null when absent or malformed. */
+export function contractAddress(c: ContractsResponse | null, ...names: string[]): `0x${string}` | null {
+  if (!c) return null;
+  for (const name of names) {
+    const v = Object.entries(c.addresses).find(([k]) => k.toLowerCase() === name.toLowerCase())?.[1];
+    if (v !== undefined && isAddress(v)) return v;
+  }
+  return null;
+}
+
+/** Pick the PRIMARY stack's nft + distributor (case-insensitive keys); null when either is missing/malformed. */
 export function nftContracts(c: ContractsResponse | null): NftContracts | null {
   if (!c) return null;
-  const find = (name: string): string | undefined =>
-    Object.entries(c.addresses).find(([k]) => k.toLowerCase() === name.toLowerCase())?.[1];
-  const nft = find("nft") ?? find("agentNft");
-  const distributor = find("distributor") ?? find("royaltyDistributor");
-  if (!nft || !distributor || !isAddress(nft) || !isAddress(distributor)) return null;
+  const nft = contractAddress(c, "nft", "agentNft");
+  const distributor = contractAddress(c, "distributor", "royaltyDistributor");
+  if (!nft || !distributor) return null;
   return { chainId: c.chainId, nft, distributor };
+}
+
+/**
+ * SPEC-M4G dual-stack: claim/burn target addresses for ONE NFT — from the
+ * agent's own `stack`. Only when the indexer predates dual-stack (no
+ * `stacks` in /api/contracts: one stack, no ambiguity) does it fall back to
+ * the manifest's top-level nft/distributor. Never guesses across stacks.
+ */
+export function contractsForNft(
+  nft: Pick<WalletNft, "stack">,
+  c: ContractsResponse | null,
+): { contracts: NftContracts | null; reason: string | null } {
+  if (!c) return { contracts: null, reason: "contract addresses unavailable" };
+  if (nft.stack) {
+    return { contracts: { chainId: c.chainId, nft: nft.stack.nft, distributor: nft.stack.distributor }, reason: null };
+  }
+  if (c.stacks === null) {
+    const single = nftContracts(c);
+    return single ? { contracts: single, reason: null } : { contracts: null, reason: "contract addresses unavailable" };
+  }
+  return { contracts: null, reason: "this agent's contract stack is unknown to the indexer — claim/burn disabled" };
 }
 
 function uintString(v: unknown): string | null {
@@ -148,6 +195,7 @@ export function normalizeWalletNft(raw: unknown): WalletNft | null {
     emancipated: r.emancipated === true,
     lifetimeClaimed: uintString(r.lifetimeClaimed),
     sweptToTreasury: uintString(r.sweptToTreasury ?? r.swept),
+    stack: normalizeStack(r.stack),
   };
 }
 

@@ -1,0 +1,162 @@
+{
+  "_comment": "RAW /api/floor wire bodies per fixtures scenario (SPEC-M4G §3/§4). active: fee flows + a donation + 3 redemptions + a stray burn (vaultUsdg = feePool + feeCurve + donations - redeemedUsdg; supply = 1e27 - burnedTokens - strayBurned). demoWallet: the simulated redeem walk's wallet state.",
+  "scenarios": {
+    "active": {
+      "enabled": true,
+      "vault": "0x7E6f5A4b3C2d1E0f9A8b7C6d5E4f3A2b1C0d9e75",
+      "token": {
+        "address": "0x8F7a6B5c4D3e2F1a0B9c8D7e6F5a4B3c2D1e0f86",
+        "name": "Vivarium Test Platform Token",
+        "symbol": "tVIV",
+        "decimals": 18,
+        "totalSupply": "987500000000000000000000000"
+      },
+      "usdg": "0xe6f7E5832991f5af335C2A21d4F35cea3d47ccAb",
+      "vaultUsdg": "1234567891",
+      "floorPriceX18": "1250195332658227848",
+      "totals": {
+        "feePool": "820450000",
+        "feeCurve": "402117891",
+        "donations": "25000000",
+        "redeemedUsdg": "13000000",
+        "burnedTokens": "12000000000000000000000000",
+        "strayBurned": "500000000000000000000000",
+        "redemptions": 3
+      },
+      "recent": [
+        {
+          "txHash": "0x00000000000000000000000000000000000000000000000000000000000f10ac",
+          "logIndex": 7,
+          "kind": "fee_pool",
+          "account": "0x4B3c2D1e0F9a8B7c6D5e4F3a2B1c0D9e8F7a2044",
+          "usdg": "61200000",
+          "tokens": "0",
+          "agentId": 101,
+          "ts": 1790632800,
+          "blockNumber": 12031977
+        },
+        {
+          "txHash": "0x00000000000000000000000000000000000000000000000000000000000f10ab",
+          "logIndex": 3,
+          "kind": "redeem",
+          "account": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+          "usdg": "6100000",
+          "tokens": "5000000000000000000000000",
+          "agentId": null,
+          "ts": 1790625600,
+          "blockNumber": 12031210
+        },
+        {
+          "txHash": "0x00000000000000000000000000000000000000000000000000000000000f10aa",
+          "logIndex": 1,
+          "kind": "donation",
+          "account": "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
+          "usdg": "25000000",
+          "tokens": "0",
+          "agentId": null,
+          "ts": 1790596800,
+          "blockNumber": 12029001
+        },
+        {
+          "txHash": "0x00000000000000000000000000000000000000000000000000000000000f10a9",
+          "logIndex": 5,
+          "kind": "fee_pool",
+          "account": "0x4B3c2D1e0F9a8B7c6D5e4F3a2B1c0D9e8F7a2044",
+          "usdg": "158400000",
+          "tokens": "0",
+          "agentId": 101,
+          "ts": 1790553600,
+          "blockNumber": 12024410
+        },
+        {
+          "txHash": "0x00000000000000000000000000000000000000000000000000000000000f10a8",
+          "logIndex": 2,
+          "kind": "stray_burn",
+          "account": "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
+          "usdg": "0",
+          "tokens": "500000000000000000000000",
+          "agentId": null,
+          "ts": 1790539200,
+          "blockNumber": 12023002
+        },
+        {
+          "txHash": "0x00000000000000000000000000000000000000000000000000000000000f10a7",
+          "logIndex": 4,
+          "kind": "redeem",
+          "account": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+          "usdg": "4300000",
+          "tokens": "4000000000000000000000000",
+          "agentId": null,
+          "ts": 1790510400,
+          "blockNumber": 12021877
+        },
+        {
+          "txHash": "0x00000000000000000000000000000000000000000000000000000000000f10a6",
+          "logIndex": 6,
+          "kind": "fee_pool",
+          "account": "0x4B3c2D1e0F9a8B7c6D5e4F3a2B1c0D9e8F7a2044",
+          "usdg": "600850000",
+          "tokens": "0",
+          "agentId": 101,
+          "ts": 1790467200,
+          "blockNumber": 12018004
+        },
+        {
+          "txHash": "0x00000000000000000000000000000000000000000000000000000000000f10a5",
+          "logIndex": 3,
+          "kind": "redeem",
+          "account": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+          "usdg": "2600000",
+          "tokens": "3000000000000000000000000",
+          "agentId": null,
+          "ts": 1790424000,
+          "blockNumber": 12015320
+        },
+        {
+          "txHash": "0x00000000000000000000000000000000000000000000000000000000000f10a4",
+          "logIndex": 9,
+          "kind": "fee_curve",
+          "account": "0xAb9C8d7E6f5A4b3C2d1E0f9A8b7C6d5E4f3A2b12",
+          "usdg": "402117891",
+          "tokens": "0",
+          "agentId": 101,
+          "ts": 1790380800,
+          "blockNumber": 12009950
+        }
+      ],
+      "updatedAt": 1790640000
+    },
+    "fresh": {
+      "enabled": true,
+      "vault": "0x7E6f5A4b3C2d1E0f9A8b7C6d5E4f3A2b1C0d9e75",
+      "token": {
+        "address": "0x8F7a6B5c4D3e2F1a0B9c8D7e6F5a4B3c2D1e0f86",
+        "name": "Vivarium Test Platform Token",
+        "symbol": "tVIV",
+        "decimals": 18,
+        "totalSupply": "1000000000000000000000000000"
+      },
+      "usdg": "0xe6f7E5832991f5af335C2A21d4F35cea3d47ccAb",
+      "vaultUsdg": "0",
+      "floorPriceX18": "0",
+      "totals": {
+        "feePool": "0",
+        "feeCurve": "0",
+        "donations": "0",
+        "redeemedUsdg": "0",
+        "burnedTokens": "0",
+        "strayBurned": "0",
+        "redemptions": 0
+      },
+      "recent": [],
+      "updatedAt": 1790640000
+    },
+    "disabled": {
+      "enabled": false
+    }
+  },
+  "demoWallet": {
+    "balance": "2500000000000000000000000",
+    "allowance": "0"
+  }
+}

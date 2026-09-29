@@ -95,10 +95,10 @@ describe("mcap + fee totals + formatting", () => {
   it("feeTotals sums each leg", () => {
     expect(
       feeTotals([
-        { buybackLeg: 1n, treasuryLeg: 2n, royaltyLeg: 3n, converted: 4n },
-        { buybackLeg: 10n, treasuryLeg: 20n, royaltyLeg: 30n, converted: 40n },
+        { platformLeg: 1n, treasuryLeg: 2n, royaltyLeg: 3n, converted: 4n },
+        { platformLeg: 10n, treasuryLeg: 20n, royaltyLeg: 30n, converted: 40n },
       ]),
-    ).toEqual({ buybackLeg: 11n, treasuryLeg: 22n, royaltyLeg: 33n, converted: 44n, count: 2 });
+    ).toEqual({ platformLeg: 11n, treasuryLeg: 22n, royaltyLeg: 33n, converted: 44n, count: 2 });
   });
   it("formatFixed trims trailing zeros", () => {
     expect(formatFixed(1_500_000n, 6)).toBe("1.5");

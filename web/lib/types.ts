@@ -68,8 +68,13 @@ export interface AgentBalances {
 }
 
 export interface AgentFees {
-  /** USDG base units (6 dec) integer string — lifetime buyback leg. */
-  buybackLeg: string;
+  /**
+   * USDG base units (6 dec) integer string — lifetime platform leg (SPEC-M4G
+   * §3: renamed from `buybackLeg`). v2 stack: it went to the FloorVault (D18);
+   * legacy v1 stack: it went to the retired TreasuryBuyback. Read via
+   * lib/stack.ts `platformLegOf` (tolerates a pre-rename indexer).
+   */
+  platformLeg: string;
   /** USDG base units (6 dec) integer string — lifetime treasury leg. */
   treasuryLeg: string;
   /** USDG base units (6 dec) integer string — lifetime NFT royalty leg. */
@@ -100,6 +105,34 @@ export interface AgentView {
   market: AgentMarket;
   balances: AgentBalances | null;
   fees: AgentFees;
+  /**
+   * SPEC-M4G §3 dual-stack: the contract stack this agent lives on. Optional
+   * in the type only so a pre-M4G indexer still parses — always read it via
+   * lib/stack.ts `agentStack` (validated; null when absent/malformed).
+   */
+  stack?: AgentStack | null;
+}
+
+/**
+ * SPEC-M4G §3: per-agent contract stack. The legacy v1 stack (agents 1–11)
+ * stays live and indexed; the v2 stack issues agent ids from 101. Every
+ * per-agent contract read/write (NFT claim/burn, …) uses THESE addresses,
+ * never the primary manifest's.
+ */
+export interface AgentStack {
+  version: number;
+  legacy: boolean;
+  factory: `0x${string}`;
+  registry: `0x${string}`;
+  hook: `0x${string}`;
+  distributor: `0x${string}`;
+  nft: `0x${string}`;
+}
+
+/** SPEC-M4G §3 `/api/contracts` `stacks[]` entry (primary first). */
+export interface StackInfo extends AgentStack {
+  startBlock: number | null;
+  firstAgentId: number | null;
 }
 
 /**
@@ -398,11 +431,18 @@ export interface LaunchStatus {
 //   GET /api/wallets/:address/nfts      -> WalletNftsResponse
 // ---------------------------------------------------------------------------
 
-/** R5: the ONLY source of contract addresses for the web — nothing hardcoded. */
+/**
+ * R5: the ONLY source of contract addresses for the web — nothing hardcoded.
+ * Normalized by web/lib/nfts.ts `normalizeContracts`: the indexer serves the
+ * manifest's address keys FLAT next to `chainId` (indexer/src/config.ts
+ * contractsViewOf); an `addresses` sub-object is accepted too.
+ */
 export interface ContractsResponse {
   chainId: number;
-  /** factory, registry, nft, distributor, usdg, ... (whatever the deployments manifest carries). */
+  /** PRIMARY (v2) stack: factory, registry, nft, distributor, usdg, floorVault, platformToken, ... */
   addresses: Record<string, string>;
+  /** SPEC-M4G §3 `stacks` (primary first); null when the indexer predates dual-stack. */
+  stacks: StackInfo[] | null;
 }
 
 /** One agent NFT (tokenId == agentId, AgentNFT.sol:9) held by the wallet, as the web consumes it. */
@@ -423,6 +463,12 @@ export interface WalletNft {
    * `emancipated` activity event.
    */
   sweptToTreasury: string | null;
+  /**
+   * SPEC-M4G: the agent's contract stack (claim/burn target addresses). Read
+   * from the row when the indexer carries it, else enriched by the web route
+   * from the agent payload's `stack`. null = unknown.
+   */
+  stack: AgentStack | null;
 }
 
 export interface WalletNftsResponse {
@@ -534,3 +580,67 @@ export interface ReviveStatus {
   /** Unix seconds this status was assembled. */
   observedAt: number;
 }
+
+// ---------------------------------------------------------------------------
+// SPEC-M4G §3 — GET /api/floor (indexer, being built in parallel). Pinned
+// contract DUPLICATED here by design; parsed TOLERANTLY by web/lib/floor.ts
+// (unknown fields ignored, bad values -> null — never NaN, never a guess).
+//
+//   GET /api/floor -> {enabled:false} | {enabled:true, vault, token, usdg,
+//                      vaultUsdg, floorPriceX18, totals, recent, updatedAt}
+// ---------------------------------------------------------------------------
+
+export interface FloorTokenInfo {
+  address: string | null;
+  name: string | null;
+  symbol: string | null;
+  decimals: number | null;
+  /** Token base units (18 dec) integer string. */
+  totalSupply: string | null;
+}
+
+/** Lifetime totals. USDG amounts: 6-dec base-unit strings; token amounts: 18-dec base-unit strings. */
+export interface FloorTotals {
+  feePool: string | null;
+  feeCurve: string | null;
+  donations: string | null;
+  redeemedUsdg: string | null;
+  burnedTokens: string | null;
+  strayBurned: string | null;
+  redemptions: number | null;
+}
+
+/** One floor_flows row (kind in fee_pool | fee_curve | donation | redeem | stray_burn — free-form tolerated). */
+export interface FloorFlow {
+  txHash: string;
+  logIndex: number | null;
+  kind: string;
+  account: string | null;
+  usdg: string | null;
+  tokens: string | null;
+  agentId: number | null;
+  ts: number | null;
+  blockNumber: number | null;
+}
+
+export interface FloorView {
+  vault: string | null;
+  token: FloorTokenInfo;
+  usdg: string | null;
+  /** USDG base units held by the vault (B). */
+  vaultUsdg: string | null;
+  /** B·1e36/S as an integer string: USDG base units per whole token × 1e18; "0" when S = 0. */
+  floorPriceX18: string | null;
+  totals: FloorTotals;
+  /** Newest first, ≤ 50. */
+  recent: FloorFlow[];
+  /** Unix seconds, null when absent. */
+  updatedAt: number | null;
+}
+
+/** Server-side floor read outcome (web/lib/api.ts getFloor). */
+export type FloorResult =
+  | { kind: "ok"; floor: FloorView }
+  /** {enabled:false}: no vault configured (the floor launches with the v2 stack). */
+  | { kind: "disabled" }
+  | { kind: "unavailable"; message: string };

@@ -1,11 +1,14 @@
 import Link from "next/link";
 
 import { AgentAvatar } from "./AgentAvatar";
+import { LegacyBadge } from "./LegacyBadge";
 import { StatusBadge } from "./StatusBadge";
 import { formatCompactUsd, formatOrDash, formatUsdg } from "@/lib/format";
+import { LEGACY_STACK_COPY, agentStack } from "@/lib/stack";
 import type { AgentView } from "@/lib/types";
 
 export function AgentCard({ agent }: { agent: AgentView }) {
+  const legacy = agentStack(agent)?.legacy === true;
   return (
     <Link
       href={`/agent/${agent.agentId}`}
@@ -44,6 +47,13 @@ export function AgentCard({ agent }: { agent: AgentView }) {
           mono
         />
       </dl>
+
+      {legacy ? (
+        <div className="-mt-1 flex flex-wrap items-center gap-2">
+          <LegacyBadge />
+          <span className="text-[11px] text-slate-500">{LEGACY_STACK_COPY.replace(/^legacy stack — /, "")}</span>
+        </div>
+      ) : null}
     </Link>
   );
 }

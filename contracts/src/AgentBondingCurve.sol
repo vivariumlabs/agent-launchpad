@@ -21,7 +21,7 @@ interface IERC20Minimal {
  *
  * @dev Money-path rules this contract is built around:
  *  - Fees are charged on the USDG leg of every trade (3%, `TOTAL_FEE_BPS`) and
- *    pushed out immediately in three legs: TreasuryBuyback, the agent's
+ *    pushed out immediately in three legs: the floor vault (D18), the agent's
  *    registered treasury EOA (looked up live, never stored) and the
  *    RoyaltyDistributor (transfer, then `credit`). Nothing accrues here.
  *  - Reserves are tracked in storage. `balanceOf` is read exactly twice: to
@@ -60,7 +60,8 @@ contract AgentBondingCurve is IAgentBondingCurve {
     address public usdg;
     address public registry;
     address public distributor;
-    address public treasuryBuyback;
+    /// @notice The floor vault (D18): recipient of the platform fee leg.
+    address public floorVault;
 
     /// @notice Virtual USDG added to the real reserve for pricing only.
     uint256 public phantomQuote;
@@ -110,14 +111,14 @@ contract AgentBondingCurve is IAgentBondingCurve {
         address usdg_,
         address registry_,
         address distributor_,
-        address treasuryBuyback_,
+        address floorVault_,
         uint256 phantomQuote_,
         uint256 graduationThreshold_
     ) external {
         if (_initialized) revert AlreadyInitialized();
         if (
             agentToken_ == address(0) || usdg_ == address(0) || registry_ == address(0) || distributor_ == address(0)
-                || treasuryBuyback_ == address(0)
+                || floorVault_ == address(0)
         ) revert ZeroAddress();
         if (agentId_ == 0 || phantomQuote_ == 0 || graduationThreshold_ == 0) revert ZeroAmount();
         // Both legs are paid out with low-level calls, which a codeless
@@ -132,7 +133,7 @@ contract AgentBondingCurve is IAgentBondingCurve {
         usdg = usdg_;
         registry = registry_;
         distributor = distributor_;
-        treasuryBuyback = treasuryBuyback_;
+        floorVault = floorVault_;
         phantomQuote = phantomQuote_;
         graduationThreshold = graduationThreshold_;
 
@@ -285,7 +286,7 @@ contract AgentBondingCurve is IAgentBondingCurve {
         uint256 royaltyLeg = fee - third - third;
 
         if (third != 0) {
-            _safeTransfer(usdg, treasuryBuyback, third);
+            _safeTransfer(usdg, floorVault, third);
             _safeTransfer(usdg, IAgentRegistry(registry).treasuryOf(agentId), third);
         }
         _safeTransfer(usdg, distributor, royaltyLeg);

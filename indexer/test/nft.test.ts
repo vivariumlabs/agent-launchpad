@@ -11,11 +11,11 @@ import { getAddress, type Address } from "viem";
 import { afterEach, describe, expect, it } from "vitest";
 import { agentFactoryAbi, agentNftAbi, royaltyDistributorAbi } from "../src/abi.js";
 import { IndexerApi } from "../src/api.js";
-import { buildConfig, loadConfig } from "../src/config.js";
+import { buildConfig } from "../src/config.js";
 import { IndexerDb, MIGRATIONS } from "../src/db.js";
 import { memoryLogger } from "../src/log.js";
 import { CURSOR_KEY, Watcher } from "../src/watcher.js";
-import { ADDR, BASE_TS, contracts, fixedClock, MockChain, mkLog, ZERO } from "./helpers/mockChain.js";
+import { ADDR, ADDR2, BASE_TS, contracts, fixedClock, MockChain, mkLog, ZERO } from "./helpers/mockChain.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CREATOR: Address = getAddress("0xcc00000000000000000000000000000000000001");
@@ -138,7 +138,7 @@ describe("M4E §2: migration v5", () => {
 
     const db = new IndexerDb(p);
     expect(db.schemaVersion()).toBe(MIGRATIONS.length);
-    expect(MIGRATIONS.length).toBe(5);
+    expect(MIGRATIONS.length).toBeGreaterThanOrEqual(5); // v5 = nft_owners (later migrations append)
     const backfilled = db.nftOwners();
     expect(backfilled).toEqual([
       { agentId: 8, owner: BUYER.toLowerCase(), since: 3000, txHash: "0xb" },
@@ -200,25 +200,27 @@ describe("M4E §2: API", () => {
     }
   });
 
-  it("M4E §2: GET /api/contracts — chainId + every address the committed deployments manifest carries (checksummed; non-address keys omitted); explicit-contracts configs expose theirs", () => {
-    const cfg = loadConfig(resolve(here, "../e2e/testnet.json"));
+  it("M4E §2 / M4G §3: GET /api/contracts — chainId + every address the PRIMARY manifest carries (checksummed; non-address keys omitted) + stacks; explicit-contracts configs expose theirs", () => {
+    const cfg = buildConfig({ chain: { rpc: "https://a.example", chainId: 31337 }, deploymentManifest: "v2.json", legacyManifests: ["v1.json"], dbPath: "x" }, resolve(here, "fixtures/manifests"));
+    const stackViews = [
+      { version: 2, legacy: false, factory: ADDR2.factory, registry: ADDR2.registry, hook: ADDR2.hook, distributor: ADDR2.distributor, nft: ADDR2.nft, startBlock: 500, firstAgentId: 101 },
+      { version: 1, legacy: true, factory: ADDR.factory, registry: ADDR.registry, hook: ADDR.hook, distributor: ADDR.distributor, nft: ADDR.nft, startBlock: 100, firstAgentId: 1 },
+    ];
     expect(cfg.contractsView).toEqual({
-      chainId: 46630,
-      deployer: "0x6930FD5C95a2D9d80F3d165597d55843e8A00154",
-      distributor: "0x25138BDF01F7b7E0e7ea6761ef54Ac8e8250d53B",
-      factory: "0x7b257abd9BDf3377Af03DD67e2D67a8D5717b118",
-      genesisGasRecipient: "0x4f91481Fd31Afc8c2018438F796F92Cc6694D1fA",
-      hook: "0x40053E41fa0Bcdcd2EB127954Ce624323e9aa044",
-      hookDeployer: "0xD2444Ad60697fe0df6eC0a55d5ad2411442C1F2F",
-      locker: "0x6213D1fb7DDf2F46E65F99b11a48a9b301487a68",
-      nft: "0x08024EDD43dcc639d2b99f17f85b4E527301B1A5",
-      poolManager: "0x8366a39CC670B4001A1121B8F6A443A643e40951",
-      registry: "0xDBA9680C0F1958Af7Bc34a225863D93df2B92f59",
-      secondOwnerEOA: "0xCFDfd411d7aB8d731271154987987c8580a60767",
-      swapRouter: "0xb37851154a9645719B7F83E469918347D7C736A7",
-      treasuryBuyback: "0xD10097D4692bF94f123Df5892CaCf9DbacaEA67D",
-      treasuryEOA: "0xDc4329B95325096C888f18eFBACBBe7A8e45e46d",
-      usdg: "0xe6f7E5832991f5af335C2A21d4F35cea3d47ccAb",
+      chainId: 31337,
+      deployer: "0x1000000000000000000000000000000000000099",
+      distributor: ADDR2.distributor,
+      factory: ADDR2.factory,
+      floorVault: ADDR2.floorVault,
+      hook: ADDR2.hook,
+      hookDeployer: getAddress("0x200000000000000000000000000000000000000a"),
+      locker: getAddress("0x200000000000000000000000000000000000000b"),
+      nft: ADDR2.nft,
+      platformToken: ADDR2.platformToken,
+      poolManager: ADDR.poolManager,
+      registry: ADDR2.registry,
+      usdg: ADDR.usdg,
+      stacks: stackViews,
     });
     const db = new IndexerDb(":memory:");
     const api = new IndexerApi(db, { now: () => BigInt(NOW) }, { staleAfterSec: 1800, startBlock: 1n, gatewayUrl: "https://arweave.net", contracts: cfg.contractsView }, memoryLogger());
@@ -226,6 +228,10 @@ describe("M4E §2: API", () => {
     db.close();
 
     const explicit = buildConfig({ chain: { rpc: "https://a.example", chainId: 31337 }, contracts: { ...ADDR, startBlock: 1 }, dbPath: "x" }, "/base");
-    expect(explicit.contractsView).toEqual({ chainId: 31337, ...Object.fromEntries(Object.entries(ADDR).map(([k, v]) => [k, getAddress(v)])) });
+    expect(explicit.contractsView).toEqual({
+      chainId: 31337,
+      ...Object.fromEntries(Object.entries(ADDR).map(([k, v]) => [k, getAddress(v)])),
+      stacks: [{ version: 1, legacy: false, factory: ADDR.factory, registry: ADDR.registry, hook: ADDR.hook, distributor: ADDR.distributor, nft: ADDR.nft, startBlock: 1, firstAgentId: 1 }],
+    });
   });
 });

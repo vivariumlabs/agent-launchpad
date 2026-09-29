@@ -12,22 +12,32 @@ import {AgentRegistry} from "../src/AgentRegistry.sol";
 import {AgentNFT} from "../src/AgentNFT.sol";
 import {RoyaltyDistributor} from "../src/RoyaltyDistributor.sol";
 import {LiquidityLocker} from "../src/LiquidityLocker.sol";
-import {TreasuryBuyback} from "../src/TreasuryBuyback.sol";
+import {FloorVault} from "../src/FloorVault.sol";
 import {FeeSplitHook} from "../src/FeeSplitHook.sol";
 import {AgentFactory} from "../src/AgentFactory.sol";
 
 import {LaunchpadScript} from "./support/LaunchpadScript.sol";
 import {MockUSDG} from "./support/MockUSDG.sol";
+import {MockPlatformToken} from "./support/MockPlatformToken.sol";
 import {HookDeployer} from "./support/HookDeployer.sol";
 
-/// @notice Deploys the whole M1 stack to Robinhood Chain testnet (46630), wires it, asserts the
+/// @notice Deploys the whole launchpad stack (v2, SPEC-M4G) to Robinhood Chain testnet (46630), wires it, asserts the
 ///         complete wiring graph, and writes `deployments/testnet-46630.json`.
 ///
 /// @dev Two deployment-shape notes that do not exist in the unit tests:
 ///
 ///      * **USDG is mocked.** The live USDG on this testnet is supply-controlled and
 ///        unobtainable, so a 6-decimal `MockUSDG` stands in. Mainnet passes the canonical
-///        token address instead; nothing in `src/` changes.
+///        token address instead; nothing in `src/` changes. Env `USDG` (optional) reuses an
+///        existing MockUSDG (must have code and `decimals() == 6`), so a second stack shares
+///        every wallet/treasury balance with the first (SPEC-M4G R1).
+///
+///      * **The platform token is mocked.** `MockPlatformToken` (fixed 1e27 supply to the
+///        deployer) stands in for `$TOKEN` until the PONS launch (M6); the `FloorVault` (D18)
+///        is deployed against it and receives every platform fee leg.
+///
+///      * **Agent id space.** Env `FIRST_AGENT_ID` (optional, default 1) sets the factory's
+///        `firstAgentId` (SPEC-M4G R2: the v2 testnet stack issues ids from 101).
 ///
 ///      * **The hook is CREATE2-deployed through `HookDeployer`, not the canonical
 ///        `0x4e59b448…` singleton.** `FeeSplitHook` pins `deployer = msg.sender` at
@@ -37,6 +47,7 @@ import {HookDeployer} from "./support/HookDeployer.sol";
 ///
 /// Usage:
 ///   FOUNDRY_OUT=out-g FOUNDRY_CACHE_PATH=cache-g \
+///   [USDG=0x…] [FIRST_AGENT_ID=101] \
 ///   forge script script/Deploy.s.sol:Deploy --rpc-url rh_testnet --broadcast --slow
 contract Deploy is LaunchpadScript {
     /// @dev Bound on the salt search: the flag match is 1-in-2^14, so this is ~30x headroom.
@@ -54,6 +65,8 @@ contract Deploy is LaunchpadScript {
         d.treasuryEOA = treasuryEOA();
         d.secondOwnerEOA = secondOwnerEOA();
         d.genesisGasRecipient = genesisGasRecipientEOA();
+        d.firstAgentId = vm.envOr("FIRST_AGENT_ID", uint256(1));
+        require(d.firstAgentId >= 1, "FIRST_AGENT_ID must be >= 1");
 
         console2.log("deployer           :", d.deployer);
         console2.log("deployer balance   :", d.deployer.balance);
@@ -70,29 +83,37 @@ contract Deploy is LaunchpadScript {
     // -----------------------------------------------------------------------
 
     function _deployBase(uint256 pk) internal {
+        address reuseUsdg = vm.envOr("USDG", address(0));
+        if (reuseUsdg != address(0)) {
+            require(reuseUsdg.code.length > 0, "USDG: no code at the given address");
+            require(MockUSDG(reuseUsdg).decimals() == 6, "USDG: decimals != 6");
+        }
+
         vm.startBroadcast(pk);
-        d.usdg = address(new MockUSDG(vm.addr(pk)));
+        d.usdg = reuseUsdg != address(0) ? reuseUsdg : address(new MockUSDG(vm.addr(pk)));
         d.registry = address(new AgentRegistry());
         d.nft = address(new AgentNFT());
         d.distributor = address(new RoyaltyDistributor(d.usdg, d.nft, d.registry));
         d.locker = address(new LiquidityLocker(IPoolManager(POOL_MANAGER)));
-        d.treasuryBuyback = address(new TreasuryBuyback(IPoolManager(POOL_MANAGER), d.usdg, vm.addr(pk), 500));
+        d.platformToken = address(new MockPlatformToken(vm.addr(pk)));
+        d.floorVault = address(new FloorVault(d.usdg, d.platformToken));
         d.hookDeployer = address(new HookDeployer());
         vm.stopBroadcast();
 
-        console2.log("MockUSDG           :", d.usdg);
+        console2.log(reuseUsdg != address(0) ? "MockUSDG (reused)  :" : "MockUSDG           :", d.usdg);
         console2.log("AgentRegistry      :", d.registry);
         console2.log("AgentNFT           :", d.nft);
         console2.log("RoyaltyDistributor :", d.distributor);
         console2.log("LiquidityLocker    :", d.locker);
-        console2.log("TreasuryBuyback    :", d.treasuryBuyback);
+        console2.log("MockPlatformToken  :", d.platformToken);
+        console2.log("FloorVault         :", d.floorVault);
         console2.log("HookDeployer       :", d.hookDeployer);
     }
 
     function _deployHookAndFactory(uint256 pk) internal {
         bytes memory initCode = abi.encodePacked(
             type(FeeSplitHook).creationCode,
-            abi.encode(IPoolManager(POOL_MANAGER), d.usdg, d.registry, d.distributor, d.treasuryBuyback)
+            abi.encode(IPoolManager(POOL_MANAGER), d.usdg, d.registry, d.distributor, d.floorVault)
         );
 
         (bytes32 salt, address mined) = _mineHookSalt(d.hookDeployer, initCode);
@@ -105,7 +126,19 @@ contract Deploy is LaunchpadScript {
         require(deployed == mined, "mined hook address mismatch");
         d.hook = deployed;
 
-        d.factory = address(
+        d.factory = _deployFactory(vm.addr(pk));
+        d.swapRouter = address(new PoolSwapTest(IPoolManager(POOL_MANAGER)));
+        vm.stopBroadcast();
+
+        console2.log("FeeSplitHook       :", d.hook);
+        console2.log("AgentFactory       :", d.factory);
+        console2.log("PoolSwapTest       :", d.swapRouter);
+    }
+
+    /// @dev Split out of `_deployHookAndFactory` only to keep the 11-argument constructor call
+    ///      clear of the legacy codegen's stack limit. Runs inside the caller's broadcast.
+    function _deployFactory(address owner_) internal returns (address) {
+        return address(
             new AgentFactory(
                 d.usdg,
                 POOL_MANAGER,
@@ -114,17 +147,12 @@ contract Deploy is LaunchpadScript {
                 d.distributor,
                 d.hook,
                 d.locker,
-                d.treasuryBuyback,
+                d.floorVault,
+                d.firstAgentId,
                 d.genesisGasRecipient,
-                vm.addr(pk)
+                owner_
             )
         );
-        d.swapRouter = address(new PoolSwapTest(IPoolManager(POOL_MANAGER)));
-        vm.stopBroadcast();
-
-        console2.log("FeeSplitHook       :", d.hook);
-        console2.log("AgentFactory       :", d.factory);
-        console2.log("PoolSwapTest       :", d.swapRouter);
     }
 
     /// @dev Brute-forces a salt whose CREATE2 address carries exactly `HOOK_FLAGS` in its low 14
@@ -201,14 +229,16 @@ contract Deploy is LaunchpadScript {
         require(h.usdg() == d.usdg, "hook.usdg");
         require(address(h.registry()) == d.registry, "hook.registry");
         require(address(h.distributor()) == d.distributor, "hook.distributor");
-        require(h.treasuryBuyback() == d.treasuryBuyback, "hook.treasuryBuyback");
+        require(h.floorVault() == d.floorVault, "hook.floorVault");
         require(h.deployer() == d.hookDeployer, "hook.deployer must be the HookDeployer");
 
         require(address(LiquidityLocker(d.locker).poolManager()) == POOL_MANAGER, "locker.poolManager");
-        require(address(TreasuryBuyback(d.treasuryBuyback).poolManager()) == POOL_MANAGER, "buyback.poolManager");
-        require(TreasuryBuyback(d.treasuryBuyback).usdg() == d.usdg, "buyback.usdg");
-        require(TreasuryBuyback(d.treasuryBuyback).maxImpactBps() == 500, "buyback.maxImpactBps");
-        require(TreasuryBuyback(d.treasuryBuyback).owner() == d.deployer, "buyback.owner");
+        require(FloorVault(d.floorVault).usdg() == d.usdg, "vault.usdg");
+        require(FloorVault(d.floorVault).token() == d.platformToken, "vault.token");
+        MockPlatformToken t = MockPlatformToken(d.platformToken);
+        require(t.decimals() == 18, "platformToken.decimals");
+        require(t.totalSupply() == 1e27, "platformToken.totalSupply");
+        require(t.balanceOf(d.deployer) == 1e27, "platformToken.deployer balance");
 
         _assertFactoryEdges();
     }
@@ -222,12 +252,13 @@ contract Deploy is LaunchpadScript {
         require(address(f.distributor()) == d.distributor, "factory.distributor");
         require(address(f.hook()) == d.hook, "factory.hook");
         require(address(f.locker()) == d.locker, "factory.locker");
-        require(f.treasuryBuyback() == d.treasuryBuyback, "factory.treasuryBuyback");
+        require(f.floorVault() == d.floorVault, "factory.floorVault");
+        require(f.firstAgentId() == d.firstAgentId, "factory.firstAgentId");
         require(f.genesisGasRecipient() == d.genesisGasRecipient, "factory.genesisGasRecipient");
         require(f.owner() == d.deployer, "factory.owner");
         require(f.platformFeeRecipient() == d.deployer, "factory.platformFeeRecipient");
         require(f.curveImplementation().code.length > 0, "factory.curveImplementation");
-        require(f.agentCount() == 0, "factory.agentCount");
+        require(f.agentCount() == d.firstAgentId - 1, "factory.agentCount");
     }
 
     function _assertOneTimeWiring() internal view {
@@ -259,7 +290,10 @@ contract Deploy is LaunchpadScript {
         vm.serializeAddress(obj, "nft", d.nft);
         vm.serializeAddress(obj, "distributor", d.distributor);
         vm.serializeAddress(obj, "locker", d.locker);
-        vm.serializeAddress(obj, "treasuryBuyback", d.treasuryBuyback);
+        vm.serializeAddress(obj, "floorVault", d.floorVault);
+        vm.serializeAddress(obj, "platformToken", d.platformToken);
+        vm.serializeUint(obj, "firstAgentId", d.firstAgentId);
+        vm.serializeUint(obj, "stackVersion", 2);
         vm.serializeAddress(obj, "hookDeployer", d.hookDeployer);
         vm.serializeAddress(obj, "hook", d.hook);
         vm.serializeBytes32(obj, "hookSalt", hookSalt);

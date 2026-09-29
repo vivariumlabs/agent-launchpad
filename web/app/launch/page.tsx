@@ -1,7 +1,8 @@
 import { LaunchFlow } from "@/components/launch/LaunchFlow";
 import { ManualLaunchInstructions } from "@/components/launch/ManualLaunchInstructions";
-import { getLaunchTemplate } from "@/lib/api";
+import { getContracts, getLaunchTemplate } from "@/lib/api";
 import { LAUNCH_MODE, ORCHESTRATOR_TRUST_BOUNDARY } from "@/lib/config";
+import { contractAddress } from "@/lib/nfts";
 
 export const metadata = { title: "Launch an agent — agent-launchpad" };
 
@@ -24,6 +25,8 @@ export default async function LaunchPage({
   const publishFail = LAUNCH_MODE === "fixtures" && sp.publish === "fail";
 
   const template = LAUNCH_MODE === "manual" || previewManual ? null : await getLaunchTemplate();
+  // SPEC-M4G dual-stack: launches go to the PRIMARY (v2) factory from /api/contracts.
+  const primaryFactory = template === null ? null : contractAddress(await getContracts(), "factory");
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-6">
@@ -50,6 +53,7 @@ export default async function LaunchPage({
           template={template}
           fixtures={LAUNCH_MODE === "fixtures"}
           fixtureFailFirstPublish={publishFail}
+          primaryFactory={primaryFactory}
         />
       )}
 

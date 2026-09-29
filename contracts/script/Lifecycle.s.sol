@@ -136,7 +136,7 @@ contract Lifecycle is LaunchpadScript {
     function _currentAgentId() internal view returns (uint256 id) {
         id = vm.envOr("AGENT_ID", uint256(0));
         if (id == 0) id = AgentFactory(dep.factory).agentCount();
-        require(id != 0, "no agent created yet - run phase1 first");
+        require(id >= AgentFactory(dep.factory).firstAgentId(), "no agent created yet - run phase1 first");
     }
 
     /// @dev Dust ETH so the two scripted EOAs can pay for their own transactions, and the USDG
@@ -232,7 +232,7 @@ contract Lifecycle is LaunchpadScript {
         console2.log("  bought (2 txs)   :", usdgStr(BUY_1 + BUY_2));
         console2.log("  real reserve     :", usdgStr(reserve1));
         console2.log("  AGENT held/1e18  :", token.balanceOf(me) / 1e18);
-        console2.log("  buyback leg      :", usdgStr(usdg.balanceOf(dep.treasuryBuyback)));
+        console2.log("  floor vault leg  :", usdgStr(usdg.balanceOf(dep.floorVault)));
         console2.log("  treasury leg     :", usdgStr(usdg.balanceOf(dep.treasuryEOA) - 0));
         console2.log("  royalty accrued  :", usdgStr(accrued1));
 
@@ -398,11 +398,11 @@ contract Lifecycle is LaunchpadScript {
         MockUSDG usdg = MockUSDG(dep.usdg);
 
         if (hook.lastDistribute(poolId) == 0) {
-            uint256 buybackBefore = usdg.balanceOf(dep.treasuryBuyback);
+            uint256 vaultBefore = usdg.balanceOf(dep.floorVault);
             uint256 treasuryBefore = usdg.balanceOf(dep.treasuryEOA);
             vm.broadcast(pk);
             hook.distribute(poolId, 0);
-            uint256 leg = usdg.balanceOf(dep.treasuryBuyback) - buybackBefore;
+            uint256 leg = usdg.balanceOf(dep.floorVault) - vaultBefore;
             console2.log("-- 10. distribute #1 (AGENT converted, split in thirds) --");
             console2.log("  leg, each of 3   :", usdgStr(leg));
             console2.log("  treasury received:", usdgStr(usdg.balanceOf(dep.treasuryEOA) - treasuryBefore));
@@ -444,13 +444,13 @@ contract Lifecycle is LaunchpadScript {
         uint256 elapsed = block.timestamp - hook.lastDistribute(poolId);
         require(elapsed >= hook.DISTRIBUTE_COOLDOWN(), "distribute cooldown has not elapsed yet");
 
-        uint256 buybackBefore = usdg.balanceOf(dep.treasuryBuyback);
+        uint256 vaultBefore = usdg.balanceOf(dep.floorVault);
         uint256 treasuryBefore = usdg.balanceOf(dep.treasuryEOA);
 
         vm.broadcast(pk);
         hook.distribute(poolId, 0);
 
-        uint256 leg = usdg.balanceOf(dep.treasuryBuyback) - buybackBefore;
+        uint256 leg = usdg.balanceOf(dep.floorVault) - vaultBefore;
         uint256 toTreasury = usdg.balanceOf(dep.treasuryEOA) - treasuryBefore;
         require(toTreasury == leg * 2, "royalty leg was not re-routed to the treasury");
         require(dist.accrued(agentId) == 0, "royalties still accruing after the burn");
@@ -475,7 +475,7 @@ contract Lifecycle is LaunchpadScript {
     function _report() internal view {
         MockUSDG usdg = MockUSDG(dep.usdg);
         console2.log("-- ledger --");
-        console2.log("  buyback USDG     :", usdgStr(usdg.balanceOf(dep.treasuryBuyback)));
+        console2.log("  floor vault USDG :", usdgStr(usdg.balanceOf(dep.floorVault)));
         console2.log("  treasury EOA USDG:", usdgStr(usdg.balanceOf(dep.treasuryEOA)));
         console2.log("  2nd owner USDG   :", usdgStr(usdg.balanceOf(dep.secondOwnerEOA)));
         console2.log("  platform fee USDG:", usdgStr(usdg.balanceOf(AgentFactory(dep.factory).platformFeeRecipient())));

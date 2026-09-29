@@ -7,7 +7,10 @@
 //   GET /api/status                          StatusView
 //   GET /api/agents/:id/attestation          AttestationView (SPEC-M4B §1c)
 //   GET /api/attestation/summary             AttestationSummary (SPEC-M4B §1c; alert ⇔ a `live` agent has a `fail`)
-//   GET /api/contracts                       ContractsView (SPEC-M4E §2: chainId + the manifest's addresses; 404 when not configured)
+//   GET /api/contracts                       ContractsView (SPEC-M4E §2: chainId + the primary manifest's addresses
+//                                            + SPEC-M4G `stacks` [{version, legacy, factory, registry, hook, distributor,
+//                                            nft, startBlock, firstAgentId}], primary first; 404 when not configured)
+//   GET /api/floor                           FloorView (SPEC-M4G §3; {enabled:false} when no floor vault is configured)
 //   GET /api/wallets/:address/nfts           { address, nfts: WalletNft[] } (SPEC-M4E §2: owned + burned-by-this-wallet, agentId ascending)
 //
 // Units (see derive.ts): every bigint is a base-10 STRING — USDG amounts in USDG base units (6 dec),
@@ -19,13 +22,15 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Clock } from "./clock.js";
-import type { ContractsView } from "./config.js";
-import { CHECK_NAMES, type AgentRow, type CheckName, type CheckStatus, type IndexerDb } from "./db.js";
+import type { Address } from "viem";
+import { stackForAgent, type ContractsView, type FloorCfg, type StackCfg } from "./config.js";
+import { CHECK_NAMES, type AgentRow, type CheckName, type CheckStatus, type FloorFlowKind, type IndexerDb } from "./db.js";
 import {
   DAY_SEC,
   DEFAULT_REVIVAL_WINDOW,
   derivePrice,
   feeTotals,
+  floorPriceX18,
   formatFixed,
   mcapUsdg,
   PRICE_DECIMALS,
@@ -36,6 +41,7 @@ import {
   type Status,
 } from "./derive.js";
 import { isArweaveId } from "./enrich.js";
+import { FLOOR_KV } from "./floor.js";
 import { errMsg, type Logger } from "./log.js";
 import { normHex } from "./releases.js";
 import { VERIFY_LAST_RUN_KEY, worstStatus, type ReportFields, type VerifyDetail } from "./verify.js";
@@ -51,7 +57,59 @@ export interface ApiOpts {
   gatewayUrl: string;
   /** SPEC-M4E §2 GET /api/contracts body (config.contractsView). Absent ⇒ 404. */
   contracts?: ContractsView;
+  /** SPEC-M4G §3 every stack (primary first) — resolves each agent's `stack`. Absent ⇒ stack: null. */
+  stacks?: readonly StackCfg[];
+  /** SPEC-M4G §3 floor vault + token + the USDG address. Absent / null ⇒ GET /api/floor {enabled:false}. */
+  floor?: (FloorCfg & { usdg: Address }) | null;
 }
+
+/** SPEC-M4G §3 the contract stack an agent belongs to (by R2 id range). */
+export interface AgentStackView {
+  version: number;
+  legacy: boolean;
+  factory: string;
+  registry: string;
+  hook: string;
+  distributor: string;
+  nft: string;
+}
+
+/** SPEC-M4G §3 one floor_flows row. */
+export interface FloorFlowView {
+  txHash: string;
+  logIndex: number;
+  kind: FloorFlowKind;
+  account: string;
+  /** USDG base units ("0" for stray_burn). */
+  usdg: string;
+  /** Platform-token base units ("0" for inflows). */
+  tokens: string;
+  agentId: number | null;
+  ts: number;
+  blockNumber: number;
+}
+
+/**
+ * SPEC-M4G §3 GET /api/floor. Amounts are base-10 strings (USDG base units / token base units);
+ * floorPriceX18 = floor(vaultUsdg · 1e36 / totalSupply) ("0" when totalSupply = 0) = USDG base units
+ * per whole token × 1e18 (IFloorVault.floorPrice). Until the first refresh: vaultUsdg / totalSupply
+ * "0", name / symbol null, decimals 18 (FloorVault asserts it, R6), updatedAt null.
+ */
+export type FloorView =
+  | { enabled: false }
+  | {
+      enabled: true;
+      vault: string;
+      token: { address: string; name: string | null; symbol: string | null; decimals: number; totalSupply: string };
+      usdg: string;
+      vaultUsdg: string;
+      floorPriceX18: string;
+      totals: { feePool: string; feeCurve: string; donations: string; redeemedUsdg: string; burnedTokens: string; strayBurned: string; redemptions: number };
+      recent: FloorFlowView[];
+      updatedAt: number | null;
+    };
+
+export const FLOOR_RECENT_LIMIT = 50;
 
 /** SPEC-M4E §2 wallet NFT card data. tokenId == agentId (AgentNFT.sol:9). */
 export interface WalletNft {
@@ -107,7 +165,10 @@ export interface AgentView {
     actionToken: string | null;
     updatedAt: number;
   } | null;
-  fees: { buybackLeg: string; treasuryLeg: string; royaltyLeg: string; converted: string; count: number };
+  /** SPEC-M4G: platformLeg = the platform third (v2: floor vault; v1: the retired buyback). */
+  fees: { platformLeg: string; treasuryLeg: string; royaltyLeg: string; converted: string; count: number };
+  /** SPEC-M4G §3 (null only when the API has no stack config or no stack covers the id). */
+  stack: AgentStackView | null;
 }
 
 export interface ActivityItem {
@@ -179,6 +240,19 @@ export interface AttestationSummary {
   verifiedAt: number | null;
 }
 
+/**
+ * An activity row's data. SPEC-M4G: "distributed" rows written before the rename carry
+ * `buybackLeg`; the API presents every such row as `platformLeg` (one shape for old and new rows).
+ */
+function activityData(kind: string, raw: string): Record<string, unknown> {
+  const d = JSON.parse(raw) as Record<string, unknown>;
+  if (kind === "distributed" && "buybackLeg" in d && !("platformLeg" in d)) {
+    const { buybackLeg, ...rest } = d;
+    return { poolId: rest.poolId, platformLeg: buybackLeg, ...rest };
+  }
+  return d;
+}
+
 class HttpError extends Error {
   constructor(
     readonly status: number,
@@ -234,10 +308,11 @@ export class IndexerApi {
       now,
     );
     const fees = feeTotals(
-      this.db.fees(a.agentId).map((f) => ({ buybackLeg: BigInt(f.buybackLeg), treasuryLeg: BigInt(f.treasuryLeg), royaltyLeg: BigInt(f.royaltyLeg), converted: BigInt(f.converted) })),
+      this.db.fees(a.agentId).map((f) => ({ platformLeg: BigInt(f.buybackLeg), treasuryLeg: BigInt(f.treasuryLeg), royaltyLeg: BigInt(f.royaltyLeg), converted: BigInt(f.converted) })),
     );
     const bal = this.db.balances(a.agentId);
     const mcap = price !== null && a.totalSupply !== null ? mcapUsdg(price.priceE18, BigInt(a.totalSupply)) : null;
+    const st = this.opts.stacks === undefined ? undefined : stackForAgent(this.opts.stacks, a.agentId);
     return {
       agentId: a.agentId,
       name: a.name,
@@ -284,12 +359,54 @@ export class IndexerApi {
               updatedAt: bal.updatedAt,
             },
       fees: {
-        buybackLeg: fees.buybackLeg.toString(),
+        platformLeg: fees.platformLeg.toString(),
         treasuryLeg: fees.treasuryLeg.toString(),
         royaltyLeg: fees.royaltyLeg.toString(),
         converted: fees.converted.toString(),
         count: fees.count,
       },
+      stack: st === undefined ? null : { version: st.version, legacy: st.legacy, factory: st.factory, registry: st.registry, hook: st.hook, distributor: st.distributor, nft: st.nft },
+    };
+  }
+
+  /** SPEC-M4G §3 GET /api/floor. */
+  floorView(): FloorView {
+    const f = this.opts.floor;
+    if (f === undefined || f === null) return { enabled: false };
+    const kv = (k: string): string | undefined => this.db.kvGet(k);
+    const b = BigInt(kv(FLOOR_KV.vaultUsdg) ?? "0");
+    const sup = BigInt(kv(FLOOR_KV.totalSupply) ?? "0");
+    const dec = kv(FLOOR_KV.tokenDecimals);
+    const upd = kv(FLOOR_KV.updatedAt);
+    const t = this.db.floorTotals();
+    return {
+      enabled: true,
+      vault: f.vault,
+      token: { address: f.token, name: kv(FLOOR_KV.tokenName) ?? null, symbol: kv(FLOOR_KV.tokenSymbol) ?? null, decimals: dec === undefined ? TOKEN_DECIMALS : Number(dec), totalSupply: sup.toString(10) },
+      usdg: f.usdg,
+      vaultUsdg: b.toString(10),
+      floorPriceX18: floorPriceX18(b, sup).toString(10),
+      totals: {
+        feePool: t.feePool.toString(10),
+        feeCurve: t.feeCurve.toString(10),
+        donations: t.donations.toString(10),
+        redeemedUsdg: t.redeemedUsdg.toString(10),
+        burnedTokens: t.burnedTokens.toString(10),
+        strayBurned: t.strayBurned.toString(10),
+        redemptions: t.redemptions,
+      },
+      recent: this.db.floorFlows(FLOOR_RECENT_LIMIT).map((r) => ({
+        txHash: r.txHash,
+        logIndex: r.logIndex,
+        kind: r.kind,
+        account: r.account,
+        usdg: r.usdg,
+        tokens: r.tokens,
+        agentId: r.agentId,
+        ts: r.ts,
+        blockNumber: r.blockNumber,
+      })),
+      updatedAt: upd === undefined ? null : Number(upd),
     };
   }
 
@@ -310,6 +427,7 @@ export class IndexerApi {
       if (this.opts.contracts === undefined) throw new HttpError(404, "contracts not configured");
       return this.opts.contracts;
     }
+    if (parts.length === 2 && parts[1] === "floor") return this.floorView();
     if (parts[1] === "wallets") {
       if (parts.length !== 4 || parts[3] !== "nfts") throw new HttpError(404, "not found");
       const addr = parts[2]!;
@@ -331,7 +449,7 @@ export class IndexerApi {
         logIndex: e.logIndex,
         blockNumber: e.blockNumber,
         ts: e.ts,
-        data: JSON.parse(e.data) as Record<string, unknown>,
+        data: activityData(e.kind, e.data),
       }));
       return { agentId: id, events };
     }

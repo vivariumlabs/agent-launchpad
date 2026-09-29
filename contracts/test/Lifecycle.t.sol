@@ -21,7 +21,9 @@ import {AgentBondingCurve} from "../src/AgentBondingCurve.sol";
 import {RoyaltyDistributor} from "../src/RoyaltyDistributor.sol";
 import {FeeSplitHook} from "../src/FeeSplitHook.sol";
 import {LiquidityLocker} from "../src/LiquidityLocker.sol";
-import {IAgentRegistry, IFeeSplitHook, IRoyaltyDistributor} from "../src/interfaces/ILaunchpad.sol";
+import {FloorVault} from "../src/FloorVault.sol";
+import {MockPlatformToken} from "../script/support/MockPlatformToken.sol";
+import {IAgentRegistry, IFeeSplitHook, IRoyaltyDistributor, IFloorVault} from "../src/interfaces/ILaunchpad.sol";
 import {FactoryMockERC20} from "./mocks/FactoryMocks.sol";
 
 /// @notice M1 gate suite (a): the whole system, end to end, on real contracts against a local
@@ -44,6 +46,10 @@ import {FactoryMockERC20} from "./mocks/FactoryMocks.sol";
 ///        `floor(300bps x usdgSide)` for every single trade. On the pool, the hook's take is
 ///        exactly `300bps` of the unspecified-side delta of every swap, and every wei of it
 ///        later leaves as pending, as a distributed leg, or as conversion input.
+///
+///      * **The platform leg lands in the floor vault (D18).** A real `FloorVault` over a
+///        `MockPlatformToken` is the platform-leg recipient; its USDG balance equals the sum of
+///        every curve and pool platform leg, and a holder's redemption never lowers the floor.
 contract LifecycleTest is Test {
     using PoolIdLibrary for PoolKey;
 
@@ -76,8 +82,12 @@ contract LifecycleTest is Test {
     FeeSplitHook hook;
     LiquidityLocker locker;
     AgentFactory factory;
+    MockPlatformToken platformToken;
+    FloorVault vault;
 
-    address constant BUYBACK = address(0xBB1);
+    /// @dev `address(vault)`, the platform-leg recipient.
+    address floorVault;
+    address platformHolder = makeAddr("platformTokenHolder");
     address owner = makeAddr("platformMultisig");
     address gasRecipient = makeAddr("gasRecipient");
     address creator = makeAddr("creator");
@@ -117,6 +127,7 @@ contract LifecycleTest is Test {
     uint256 internal poolAgentConsumed; // AGENT spent on conversion legs
     uint256 internal poolUsdgConverted; // USDG produced by conversion legs
     uint256 internal poolUsdgDistributed; // USDG that left as the three legs
+    uint256 internal platformLegsPaid; // curve + pool platform legs (must all be in the vault)
 
     function setUp() public {
         manager = new PoolManager(address(this));
@@ -127,10 +138,14 @@ contract LifecycleTest is Test {
         nft = new AgentNFT();
         distributor = new RoyaltyDistributor(address(usdg), address(nft), address(registry));
 
+        platformToken = new MockPlatformToken(platformHolder);
+        vault = new FloorVault(address(usdg), address(platformToken));
+        floorVault = address(vault);
+
         address hookAddr = address(HOOK_FLAGS | (uint160(0xF11E) << 20));
         deployCodeTo(
             "FeeSplitHook.sol:FeeSplitHook",
-            abi.encode(manager, address(usdg), address(registry), address(distributor), BUYBACK),
+            abi.encode(manager, address(usdg), address(registry), address(distributor), floorVault),
             hookAddr
         );
         hook = FeeSplitHook(hookAddr);
@@ -145,7 +160,8 @@ contract LifecycleTest is Test {
             address(distributor),
             address(hook),
             address(locker),
-            BUYBACK,
+            floorVault,
+            1,
             gasRecipient,
             owner
         );
@@ -170,10 +186,11 @@ contract LifecycleTest is Test {
         _addOutside(bob);
         _addOutside(carol);
         _addOutside(secondOwner);
+        _addOutside(platformHolder); // only ever receives USDG (floor redemptions)
 
         // System sinks and intermediaries.
         _addAccount(owner);
-        _addAccount(BUYBACK);
+        _addAccount(floorVault);
         _addAccount(treasury);
         _addAccount(address(distributor));
         _addAccount(address(factory));
@@ -320,7 +337,7 @@ contract LifecycleTest is Test {
 
     /// @dev A curve buy with the full fee-leg identity checked on the spot.
     function _buyChecked(address who, uint256 usdgIn) internal returns (uint256 tokensOut) {
-        uint256 bbBefore = usdg.balanceOf(BUYBACK);
+        uint256 vaultBefore = usdg.balanceOf(floorVault);
         uint256 trBefore = usdg.balanceOf(treasury);
         uint256 acBefore = distributor.accrued(agentId);
         (uint256 reserveBefore,) = curve.reserves();
@@ -335,14 +352,14 @@ contract LifecycleTest is Test {
 
         uint256 fee = (usdgIn * TOTAL_FEE_BPS) / BASIS_POINTS;
         uint256 third = fee / 3;
-        uint256 bbLeg = usdg.balanceOf(BUYBACK) - bbBefore;
+        uint256 vaultLeg = usdg.balanceOf(floorVault) - vaultBefore;
         uint256 trLeg = usdg.balanceOf(treasury) - trBefore;
         uint256 royaltyLeg = distributor.accrued(agentId) - acBefore;
 
-        assertEq(bbLeg, third, "buy: buyback leg");
+        assertEq(vaultLeg, third, "buy: floor vault leg");
         assertEq(trLeg, third, "buy: treasury leg");
         assertEq(royaltyLeg, fee - third - third, "buy: royalty leg");
-        assertEq(bbLeg + trLeg + royaltyLeg, fee, "buy: legs != 300bps of usdgIn");
+        assertEq(vaultLeg + trLeg + royaltyLeg, fee, "buy: legs != 300bps of usdgIn");
 
         (uint256 reserveAfter,) = curve.reserves();
         assertEq(reserveAfter - reserveBefore, usdgIn - fee, "buy: net into reserve");
@@ -350,13 +367,14 @@ contract LifecycleTest is Test {
         curveTrades++;
         curveVolumeUsdg += usdgIn;
         curveFeesCharged += fee;
-        curveLegsPaid += bbLeg + trLeg + royaltyLeg;
+        curveLegsPaid += vaultLeg + trLeg + royaltyLeg;
+        platformLegsPaid += vaultLeg;
         _assertConservation("curve buy");
         _assertAgentConservation("curve buy");
     }
 
     function _sellChecked(address who, uint256 tokensIn) internal returns (uint256 usdgOut) {
-        uint256 bbBefore = usdg.balanceOf(BUYBACK);
+        uint256 vaultBefore = usdg.balanceOf(floorVault);
         uint256 trBefore = usdg.balanceOf(treasury);
         uint256 acBefore = distributor.accrued(agentId);
         (uint256 reserveBefore,) = curve.reserves();
@@ -372,7 +390,8 @@ contract LifecycleTest is Test {
         uint256 third = fee / 3;
 
         assertEq(usdgOut, gross - fee, "sell: payout != gross - fee");
-        assertEq(usdg.balanceOf(BUYBACK) - bbBefore, third, "sell: buyback leg");
+        assertEq(usdg.balanceOf(floorVault) - vaultBefore, third, "sell: floor vault leg");
+        platformLegsPaid += third;
         assertEq(usdg.balanceOf(treasury) - trBefore, third, "sell: treasury leg");
         assertEq(distributor.accrued(agentId) - acBefore, fee - third - third, "sell: royalty leg");
 
@@ -529,7 +548,7 @@ contract LifecycleTest is Test {
     function _distributeChecked(bool emancipatedNow) internal returns (DistributeResult memory r) {
         uint256 pendAgentBefore = hook.pendingFees(poolId, address(token));
         uint256 pendUsdgBefore = hook.pendingFees(poolId, address(usdg));
-        uint256 bbBefore = usdg.balanceOf(BUYBACK);
+        uint256 vaultBefore = usdg.balanceOf(floorVault);
         uint256 trBefore = usdg.balanceOf(treasury);
         uint256 acBefore = distributor.accrued(agentId);
 
@@ -538,12 +557,12 @@ contract LifecycleTest is Test {
         hook.distribute(poolId, 0);
         r.converted = _readConverted();
 
-        r.leg = usdg.balanceOf(BUYBACK) - bbBefore;
+        r.leg = usdg.balanceOf(floorVault) - vaultBefore;
         assertGt(r.leg, 0, "distribute moved nothing");
         r.consumed = pendAgentBefore - hook.pendingFees(poolId, address(token));
 
         if (emancipatedNow) {
-            // Buyback leg + treasury leg + the royalty leg forwarded straight through.
+            // Floor vault leg + treasury leg + the royalty leg forwarded straight through.
             assertEq(usdg.balanceOf(treasury) - trBefore, r.leg * 2, "emancipated: royalty leg not re-routed");
             assertEq(distributor.accrued(agentId), acBefore, "emancipated: royalty still accrued");
         } else {
@@ -560,6 +579,7 @@ contract LifecycleTest is Test {
         poolAgentConsumed += r.consumed;
         poolUsdgConverted += r.converted;
         poolUsdgDistributed += r.leg * 3;
+        platformLegsPaid += r.leg;
         _assertConservation("distribute");
         _assertAgentConservation("distribute");
     }
@@ -735,6 +755,8 @@ contract LifecycleTest is Test {
         );
         // Curve phase: legs paid == fees charged == 300bps of volume (mod floor dust).
         assertEq(curveLegsPaid, curveFeesCharged, "curve legs != fees");
+        // D18: every platform leg, curve and pool phase, sits in the floor vault.
+        assertEq(usdg.balanceOf(floorVault), platformLegsPaid, "floor vault != sum of platform legs");
 
         _assertConservation("final");
         _assertAgentConservation("final");
@@ -744,7 +766,7 @@ contract LifecycleTest is Test {
         console2.log("  pool USDG fees     :", poolFeesTakenUsdg);
         console2.log("  pool AGENT fees    :", poolFeesTakenAgent);
         console2.log("  converted to USDG  :", poolUsdgConverted);
-        console2.log("  buyback holds      :", usdg.balanceOf(BUYBACK));
+        console2.log("  floor vault holds  :", usdg.balanceOf(floorVault));
         console2.log("  treasury holds     :", usdg.balanceOf(treasury));
         console2.log("  platform holds     :", usdg.balanceOf(owner));
     }
@@ -774,7 +796,7 @@ contract LifecycleTest is Test {
 
         // (b) of 02 §8: no wei of fee money reached anything but the three recipients.
         assertEq(
-            usdg.balanceOf(BUYBACK) + usdg.balanceOf(treasury) + distributor.accrued(agentId),
+            usdg.balanceOf(floorVault) + usdg.balanceOf(treasury) + distributor.accrued(agentId),
             curveFeesCharged,
             "fee money outside the three recipients"
         );
@@ -802,6 +824,66 @@ contract LifecycleTest is Test {
         );
         _assertConservation("pool identity");
         _assertAgentConservation("pool identity");
+    }
+
+    /// @notice D18 end to end: curve buys + graduation + pool swaps + `distribute` put exactly the
+    ///         sum of the platform legs into the floor vault; a holder then redeems pro rata and
+    ///         the floor for everyone left behind is no lower than before.
+    function test_floorVault_feesToVaultToRedeem() public {
+        _createRegisterFinalize();
+        _tradeCurveToThreshold();
+        uint256 curvePhaseLegs = platformLegsPaid;
+        assertGt(curvePhaseLegs, 0, "curve phase paid no platform leg");
+        assertEq(usdg.balanceOf(floorVault), curvePhaseLegs, "curve phase: vault != platform legs");
+
+        _graduate();
+        _approvePoolRouter(alice);
+        _approvePoolRouter(bob);
+        _swapExactInChecked(bob, true, 2_000e6);
+        _swapExactInChecked(alice, false, token.balanceOf(alice) / 50);
+        _distributeChecked(false);
+        _swapExactInChecked(bob, true, 1_000e6);
+        vm.warp(block.timestamp + DISTRIBUTE_COOLDOWN);
+        _distributeChecked(false);
+
+        assertGt(platformLegsPaid, curvePhaseLegs, "pool phase paid no platform leg");
+        uint256 b0 = usdg.balanceOf(floorVault);
+        uint256 s0 = platformToken.totalSupply();
+        assertEq(b0, platformLegsPaid, "vault USDG != sum of platform legs (curve + pool)");
+        assertEq(s0, 1_000_000_000e18, "platform token supply");
+
+        // A holder redeems a tenth of the supply.
+        uint256 amount = s0 / 10;
+        uint256 expected = (amount * b0) / s0;
+        assertEq(vault.quoteRedeem(amount), expected, "quote");
+        vm.startPrank(platformHolder);
+        platformToken.approve(floorVault, amount);
+        vm.expectEmit(true, false, false, true, floorVault);
+        emit IFloorVault.Redeemed(platformHolder, amount, expected);
+        uint256 paid = vault.redeem(amount);
+        vm.stopPrank();
+
+        uint256 b1 = usdg.balanceOf(floorVault);
+        uint256 s1 = platformToken.totalSupply();
+        assertEq(paid, expected, "payout != pro rata");
+        assertEq(usdg.balanceOf(platformHolder), paid, "holder not paid");
+        assertEq(s1, s0 - amount, "tokens not burned");
+        assertEq(b1, b0 - paid, "vault balance");
+        assertGe(b1 * s0, b0 * s1, "floor fell after a redemption");
+        _assertConservation("floor redeem");
+
+        // Further fee flow only raises it.
+        _swapExactInChecked(bob, true, 1_000e6);
+        vm.warp(block.timestamp + DISTRIBUTE_COOLDOWN);
+        _distributeChecked(false);
+        uint256 b2 = usdg.balanceOf(floorVault);
+        assertGt(b2 * s1, b1 * s1, "fee inflow did not raise the floor");
+        assertEq(b2 + vault.totalRedeemedUsdg(), platformLegsPaid, "vault + redeemed != platform legs");
+
+        console2.log("== floor vault ==");
+        console2.log("  platform legs USDG :", platformLegsPaid);
+        console2.log("  redeemed USDG      :", paid);
+        console2.log("  floorPrice (x1e18) :", vault.floorPrice());
     }
 
     /// @notice The refund path is part of the money ledger too: a cancelled agent returns the

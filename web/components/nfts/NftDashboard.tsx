@@ -8,14 +8,14 @@ import { ConnectButton } from "../ConnectButton";
 import { FixtureNftCard, LiveNftCard } from "./NftCard";
 import { DEMO_WALLET } from "@/lib/chatFixtures";
 import { truncateAddress } from "@/lib/format";
-import { nftContracts, normalizeWalletNfts } from "@/lib/nfts";
+import { contractsForNft, normalizeWalletNfts } from "@/lib/nfts";
 import { rhTestnet } from "@/lib/wagmi";
 import type { ContractsResponse, WalletNft } from "@/lib/types";
 
 type FixtureScenario = "happy" | "empty";
 
 const FIXTURE_SCENARIOS: { id: FixtureScenario; label: string }[] = [
-  { id: "happy", label: "2 NFTs (one emancipated)" },
+  { id: "happy", label: "3 NFTs (legacy + v2, one emancipated)" },
   { id: "empty", label: "Empty wallet" },
 ];
 
@@ -46,9 +46,9 @@ export function NftDashboard({
   const [list, setList] = useState<ListState>({ kind: "idle" });
   const gen = useRef(0);
 
-  const nftC = nftContracts(contracts);
-  const chainMismatch = nftC !== null && nftC.chainId !== rhTestnet.id;
-  const usable = nftC !== null && !chainMismatch ? nftC : null;
+  // SPEC-M4G dual-stack: each card resolves ITS agent's stack addresses (contractsForNft).
+  const chainMismatch = contracts !== null && contracts.chainId !== rhTestnet.id;
+  const usable = contracts !== null && !chainMismatch ? contracts : null;
 
   const wallet: `0x${string}` | null =
     fixtures && simulate ? (DEMO_WALLET as `0x${string}`) : isConnected && address ? address : null;
@@ -89,7 +89,7 @@ export function NftDashboard({
   const writeBlocked =
     usable === null
       ? chainMismatch
-        ? `The indexer reports chain ${nftC?.chainId ?? "unknown"}, but this site is configured for ${rhTestnet.name} (${rhTestnet.id}) — claim/burn disabled.`
+        ? `The indexer reports chain ${contracts?.chainId ?? "unknown"}, but this site is configured for ${rhTestnet.name} (${rhTestnet.id}) — claim/burn disabled.`
         : "Contract addresses are unavailable (indexer unreachable) — claim/burn disabled."
       : wrongChain
         ? `Switch your wallet to ${rhTestnet.name} to claim or burn.`
@@ -202,7 +202,13 @@ export function NftDashboard({
                 fixtures && fixtureChain ? (
                   <FixtureNftCard key={`${scenario}-${nft.agentId}`} nft={nft} wallet={wallet} chain={fixtureChain} />
                 ) : (
-                  <LiveNftCard key={nft.agentId} nft={nft} contracts={usable} wallet={wallet} writeBlocked={writeBlocked} />
+                  <LiveNftCard
+                    key={nft.agentId}
+                    nft={nft}
+                    resolved={usable === null ? { contracts: null, reason: writeBlocked } : contractsForNft(nft, usable)}
+                    wallet={wallet}
+                    writeBlocked={writeBlocked}
+                  />
                 ),
               )}
             </div>

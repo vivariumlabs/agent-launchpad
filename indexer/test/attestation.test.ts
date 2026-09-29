@@ -6,7 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { IndexerApi } from "../src/api.js";
-import { buildConfig, loadConfig } from "../src/config.js";
+import { buildConfig } from "../src/config.js";
 import { CHECK_NAMES, IndexerDb } from "../src/db.js";
 import { HttpArweaveClient } from "../src/enrich.js";
 import { memoryLogger, type MemoryLogger } from "../src/log.js";
@@ -462,10 +462,13 @@ describe("M4B §1: attestation API", () => {
 
 describe("M4B §1: config", () => {
   it("M4B §1: releasesDir resolves relative to the config file (testnet e2e ⇒ runtime/releases); verifySec DEFAULT 300; unset ⇒ undefined", () => {
-    const cfg = loadConfig(resolve(here, "../e2e/testnet.json"));
+    // The committed e2e config's releasesDir, resolved against the config's own directory (the
+    // manifests it names are exercised in config.test.ts; SPEC-M4G: the v1 archive lands with the v2 deploy).
+    const manifest = resolve(here, "../../contracts/deployments/testnet-46630.json");
+    const e2e = JSON.parse(readFileSync(resolve(here, "../e2e/testnet.json"), "utf8")) as { releasesDir: string };
+    const cfg = buildConfig({ chain: { rpc: "https://a.example", chainId: 46630 }, deploymentManifest: manifest, dbPath: "x", releasesDir: e2e.releasesDir }, resolve(here, "../e2e"));
     expect(cfg.releasesDir).toBe(RELEASES);
     expect(cfg.verifySec).toBe(300);
-    const manifest = resolve(here, "../../contracts/deployments/testnet-46630.json");
     const c = buildConfig({ chain: { rpc: "https://a.example", chainId: 46630 }, deploymentManifest: manifest, dbPath: "x.sqlite" }, "/base");
     expect(c.releasesDir).toBeUndefined();
     expect(c.verifySec).toBe(300);

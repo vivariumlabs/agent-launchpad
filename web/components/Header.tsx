@@ -28,6 +28,12 @@ export function Header() {
           >
             Your NFTs
           </Link>
+          <Link
+            href="/token"
+            className="text-sm font-medium text-slate-300 transition hover:text-white"
+          >
+            $TOKEN
+          </Link>
           <ConnectButton />
         </div>
       </div>

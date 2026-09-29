@@ -4,6 +4,7 @@ import { ActivityFeed } from "@/components/ActivityFeed";
 import { JournalFeed } from "@/components/JournalFeed";
 import { getActivity, getAgent, getJournal } from "@/lib/api";
 import { formatCompactUsd, formatEth, formatOrDash, formatUsdg } from "@/lib/format";
+import { agentStack, platformLegLabel, platformLegOf } from "@/lib/stack";
 
 export const revalidate = 30;
 
@@ -24,6 +25,7 @@ export default async function AgentProfilePage({
   ]);
 
   const { market, balances, fees } = agent;
+  const stack = agentStack(agent);
 
   return (
     <>
@@ -47,12 +49,13 @@ export default async function AgentProfilePage({
           label="Action token balance"
           value={formatOrDash(balances?.actionToken ?? null, formatEth)}
         />
+        {/* SPEC-M4G §4: platform-leg label per stack — "Floor vault" (v2) / "Platform leg (legacy buyback)" (v1). */}
         <StatCard
-          label="Fees (buyback / treasury / royalty)"
-          value={`${formatUsdg(fees.buybackLeg)} / ${formatUsdg(fees.treasuryLeg)} / ${formatUsdg(
-            fees.royaltyLeg,
-          )}`}
+          label={`Fees: ${platformLegLabel(stack)}`}
+          value={formatOrDash(platformLegOf(fees), (v) => `${formatUsdg(v)} USDG`)}
         />
+        <StatCard label="Fees: treasury leg" value={`${formatUsdg(fees.treasuryLeg)} USDG`} />
+        <StatCard label="Fees: royalty leg" value={`${formatUsdg(fees.royaltyLeg)} USDG`} />
       </section>
 
       {/* Journal feed — the page's centerpiece (D17) */}

@@ -216,15 +216,16 @@ export const feeSplitHookAbi = [
     ],
   },
   // contracts/src/interfaces/ILaunchpad.sol:99-101
-  //   event Distributed(bytes32 indexed poolId, uint256 buybackLeg, uint256 treasuryLeg,
+  //   event Distributed(bytes32 indexed poolId, uint256 floorLeg, uint256 treasuryLeg,
   //                     uint256 royaltyLeg, uint256 converted);
+  //   (SPEC-M4G: v1's `buybackLeg` renamed only — same topic0, so v1 logs decode with this ABI.)
   {
     type: "event",
     name: "Distributed",
     anonymous: false,
     inputs: [
       { name: "poolId", type: "bytes32", indexed: true },
-      { name: "buybackLeg", type: "uint256", indexed: false },
+      { name: "floorLeg", type: "uint256", indexed: false },
       { name: "treasuryLeg", type: "uint256", indexed: false },
       { name: "royaltyLeg", type: "uint256", indexed: false },
       { name: "converted", type: "uint256", indexed: false },
@@ -319,22 +320,32 @@ export const bondingCurveAbi = [
 ] as const;
 
 // ---------------------------------------------------------------------------
-// TreasuryBuyback (platform-wide, no agentId) — contracts/src/TreasuryBuyback.sol,
-// interface ILaunchpad.sol ITreasuryBuyback
+// FloorVault (platform-wide, D18, no agentId) — contracts/src/FloorVault.sol,
+// interface ILaunchpad.sol IFloorVault. (SPEC-M4G R7: the v1 TreasuryBuyback is no longer indexed.)
 // ---------------------------------------------------------------------------
 
-export const treasuryBuybackAbi = [
+export const floorVaultAbi = [
   // contracts/src/interfaces/ILaunchpad.sol:126
-  //   event Poked(address indexed caller, uint256 usdgIn, uint256 tokensBurned, uint256 callerReward);
+  //   event Redeemed(address indexed redeemer, uint256 tokensBurned, uint256 usdgPaid);
   {
     type: "event",
-    name: "Poked",
+    name: "Redeemed",
+    anonymous: false,
+    inputs: [
+      { name: "redeemer", type: "address", indexed: true },
+      { name: "tokensBurned", type: "uint256", indexed: false },
+      { name: "usdgPaid", type: "uint256", indexed: false },
+    ],
+  },
+  // contracts/src/interfaces/ILaunchpad.sol:127
+  //   event StrayBurned(address indexed caller, uint256 amount);
+  {
+    type: "event",
+    name: "StrayBurned",
     anonymous: false,
     inputs: [
       { name: "caller", type: "address", indexed: true },
-      { name: "usdgIn", type: "uint256", indexed: false },
-      { name: "tokensBurned", type: "uint256", indexed: false },
-      { name: "callerReward", type: "uint256", indexed: false },
+      { name: "amount", type: "uint256", indexed: false },
     ],
   },
 ] as const;
@@ -398,6 +409,17 @@ export const agentNftAbi = [
 // ---------------------------------------------------------------------------
 
 export const erc20Abi = [
+  // IERC20.sol:16  event Transfer(address indexed from, address indexed to, uint256 value);
+  {
+    type: "event",
+    name: "Transfer",
+    anonymous: false,
+    inputs: [
+      { name: "from", type: "address", indexed: true },
+      { name: "to", type: "address", indexed: true },
+      { name: "value", type: "uint256", indexed: false },
+    ],
+  },
   // IERC20.sol:27  function totalSupply() external view returns (uint256);
   {
     type: "function",
@@ -429,5 +451,13 @@ export const erc20Abi = [
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "string" }],
+  },
+  // extensions/IERC20Metadata.sol:25  function decimals() external view returns (uint8);
+  {
+    type: "function",
+    name: "decimals",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint8" }],
   },
 ] as const;

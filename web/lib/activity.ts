@@ -108,11 +108,13 @@ export function humanizeActivity(event: ActivityItem): string {
       return amount ? `Fee collected: ${formatUsdg(amount)} USDG` : "Fee collected";
     }
     case "distributed": {
-      const buyback = str(data, "buybackLeg");
+      // SPEC-M4G: the indexer presents this leg as `platformLeg` (ABI field `floorLeg`; pre-M4G rows `buybackLeg`).
+      // The agent's stack is not known here, so the leg gets the stack-neutral name "platform".
+      const platform = str(data, "floorLeg") ?? str(data, "platformLeg") ?? str(data, "buybackLeg");
       const treasury = str(data, "treasuryLeg");
       const royalty = str(data, "royaltyLeg");
       const parts: string[] = [];
-      if (buyback) parts.push(`buyback ${formatUsdg(buyback)}`);
+      if (platform) parts.push(`platform ${formatUsdg(platform)}`);
       if (treasury) parts.push(`treasury ${formatUsdg(treasury)}`);
       if (royalty) parts.push(`royalty ${formatUsdg(royalty)}`);
       return parts.length > 0

@@ -25,7 +25,7 @@ import {IFeeSplitHook, IAgentRegistry, IRoyaltyDistributor} from "./interfaces/I
 /// @title FeeSplitHook
 /// @notice Singleton Uniswap v4 hook for every graduated agent pool. Takes a flat
 ///         `TOTAL_FEE_BPS` cut of each swap's unspecified currency, accrues it per pool,
-///         and splits it in equal thirds between the treasury buyback, the agent's own
+///         and splits it in equal thirds between the floor vault (D18), the agent's own
 ///         treasury and the royalty distributor when `distribute` is called.
 ///
 /// @dev Design notes that matter for review:
@@ -99,7 +99,8 @@ contract FeeSplitHook is IHooks, IFeeSplitHook, IUnlockCallback {
     address public immutable usdg;
     IAgentRegistry public immutable registry;
     IRoyaltyDistributor public immutable distributor;
-    address public immutable treasuryBuyback;
+    /// @notice The floor vault (D18): recipient of the platform fee leg.
+    address public immutable floorVault;
     /// @notice Only address permitted to call `setFactory`, fixed at construction.
     address public immutable deployer;
 
@@ -187,18 +188,18 @@ contract FeeSplitHook is IHooks, IFeeSplitHook, IUnlockCallback {
         address _usdg,
         address _registry,
         address _distributor,
-        address _treasuryBuyback
+        address _floorVault
     ) {
         if (
             address(_poolManager) == address(0) || _usdg == address(0) || _registry == address(0)
-                || _distributor == address(0) || _treasuryBuyback == address(0)
+                || _distributor == address(0) || _floorVault == address(0)
         ) revert ZeroAddress();
 
         poolManager = _poolManager;
         usdg = _usdg;
         registry = IAgentRegistry(_registry);
         distributor = IRoyaltyDistributor(_distributor);
-        treasuryBuyback = _treasuryBuyback;
+        floorVault = _floorVault;
         deployer = msg.sender;
 
         Hooks.validateHookPermissions(IHooks(address(this)), getHookPermissions());
@@ -331,7 +332,7 @@ contract FeeSplitHook is IHooks, IFeeSplitHook, IUnlockCallback {
     // -----------------------------------------------------------------------
 
     /// @notice Converts pending AGENT fees to USDG and splits all pending USDG into three
-    ///         equal legs: treasury buyback, the agent's live treasury, royalty distributor.
+    ///         equal legs: floor vault (D18), the agent's live treasury, royalty distributor.
     /// @param poolId The registered pool whose pending fees are being distributed.
     /// @param minConversionOut Caller-supplied floor on the USDG produced by the AGENT->USDG
     ///        conversion leg. Ignored when there is no AGENT-side pending balance.
@@ -370,7 +371,7 @@ contract FeeSplitHook is IHooks, IFeeSplitHook, IUnlockCallback {
             // Live lookup, never cached: a revived agent's new treasury must be paid.
             address treasury = registry.treasuryOf(info.agentId);
 
-            usdgCurrency.transfer(treasuryBuyback, leg);
+            usdgCurrency.transfer(floorVault, leg);
             usdgCurrency.transfer(treasury, leg);
             usdgCurrency.transfer(address(distributor), leg);
             distributor.credit(info.agentId, leg);

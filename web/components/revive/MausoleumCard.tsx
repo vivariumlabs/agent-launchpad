@@ -6,6 +6,7 @@ import { EvictionCountdown } from "./EvictionCountdown";
 import { RevivePanel } from "./RevivePanel";
 import { formatAbsoluteTime, formatRelativeTime, formatUsdg, truncateAddress } from "@/lib/format";
 import { formatDuration, refusalText, uintString } from "@/lib/revive";
+import { platformLegOf } from "@/lib/stack";
 import type { AgentView, JournalEntry, ReviveQuoteResult, RevivalHistoryItem } from "@/lib/types";
 
 export interface CardJournal {
@@ -17,7 +18,7 @@ export interface CardJournal {
 }
 
 function sumFees(agent: AgentView): string | null {
-  const legs = [agent.fees.buybackLeg, agent.fees.treasuryLeg, agent.fees.royaltyLeg].map(uintString);
+  const legs = [platformLegOf(agent.fees), agent.fees.treasuryLeg, agent.fees.royaltyLeg].map(uintString);
   if (legs.some((l) => l === null)) return null;
   return legs.reduce((acc, l) => acc + BigInt(l as string), 0n).toString();
 }

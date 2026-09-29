@@ -56,7 +56,7 @@ contract FeeSplitHookTest is Test {
     HookMockERC20 agent;
     HookMockRegistry registry;
     HookMockDistributor distributor;
-    address constant TREASURY_BUYBACK = address(0xBB1);
+    address constant FLOOR_VAULT = address(0xBB1);
     address constant AGENT_TREASURY = address(0x7EA);
 
     FeeSplitHook hook;
@@ -126,7 +126,7 @@ contract FeeSplitHookTest is Test {
         address addr = address(HOOK_FLAGS | (hookNonce++ << 20));
         deployCodeTo(
             "FeeSplitHook.sol:FeeSplitHook",
-            abi.encode(manager, address(usdg), address(registry), address(distributor), TREASURY_BUYBACK),
+            abi.encode(manager, address(usdg), address(registry), address(distributor), FLOOR_VAULT),
             addr
         );
         return FeeSplitHook(addr);
@@ -503,7 +503,7 @@ contract FeeSplitHookTest is Test {
         emit IFeeSplitHook.Distributed(poolId, leg, leg, leg, 0);
         hook.distribute(poolId, 0);
 
-        assertEq(usdg.balanceOf(TREASURY_BUYBACK), leg, "buyback leg");
+        assertEq(usdg.balanceOf(FLOOR_VAULT), leg, "floor vault leg");
         assertEq(usdg.balanceOf(AGENT_TREASURY), leg, "treasury leg");
         assertEq(usdg.balanceOf(address(distributor)), leg, "royalty leg");
         assertEq(distributor.credited(AGENT_ID), leg, "credited");
@@ -522,8 +522,8 @@ contract FeeSplitHookTest is Test {
             hook.distribute(poolId, 0);
 
             uint256 leg = amount / 3;
-            uint256 paid = usdg.balanceOf(TREASURY_BUYBACK) + usdg.balanceOf(AGENT_TREASURY)
-                + usdg.balanceOf(address(distributor));
+            uint256 paid =
+                usdg.balanceOf(FLOOR_VAULT) + usdg.balanceOf(AGENT_TREASURY) + usdg.balanceOf(address(distributor));
             assertEq(paid, leg * 3, "legs sum");
             assertEq(hook.pendingFees(poolId, address(usdg)), amount - leg * 3, "remainder retained");
             assertLt(amount - leg * 3, 3);
@@ -542,7 +542,7 @@ contract FeeSplitHookTest is Test {
         assertEq(hook.pendingFees(poolId, address(agent)), 0, "agent not fully converted");
         assertEq(agent.balanceOf(address(hook)), 0, "stranded agent");
 
-        uint256 leg = usdg.balanceOf(TREASURY_BUYBACK);
+        uint256 leg = usdg.balanceOf(FLOOR_VAULT);
         assertGt(leg, 0);
         assertEq(usdg.balanceOf(AGENT_TREASURY), leg);
         assertEq(usdg.balanceOf(address(distributor)), leg);
@@ -595,7 +595,7 @@ contract FeeSplitHookTest is Test {
         assertEq(agent.balanceOf(address(hook)), leftover, "leftover not backed by balance");
 
         // the slice actually paid out, inside the impact bound
-        uint256 leg = usdg.balanceOf(TREASURY_BUYBACK);
+        uint256 leg = usdg.balanceOf(FLOOR_VAULT);
         assertGt(leg, 0, "nothing distributed");
         uint256 converted = leg * 3 + hook.pendingFees(poolId, address(usdg));
         assertGe(converted, (spotOfSlice * 9_900) / 10_000, "slice below impact floor");
@@ -620,7 +620,7 @@ contract FeeSplitHookTest is Test {
 
         assertGt(calls, 1, "test sizing: should take more than one call");
         assertEq(agent.balanceOf(address(hook)), 0, "stranded agent after drain");
-        assertGt(usdg.balanceOf(TREASURY_BUYBACK), 0, "nothing ever paid out");
+        assertGt(usdg.balanceOf(FLOOR_VAULT), 0, "nothing ever paid out");
         assertGt(pendingAgent, 0);
     }
 
@@ -644,7 +644,7 @@ contract FeeSplitHookTest is Test {
         assertEq(consumed, cap, "did not convert exactly the impact cap");
 
         // ~1% of the virtual AGENT reserve, and the realized output inside MAX_IMPACT_BPS
-        uint256 converted = usdg.balanceOf(TREASURY_BUYBACK) * 3 + hook.pendingFees(poolId, address(usdg));
+        uint256 converted = usdg.balanceOf(FLOOR_VAULT) * 3 + hook.pendingFees(poolId, address(usdg));
         assertGe(converted, (spotOfSlice * 9_900) / 10_000, "realized output below the bound");
         assertLe(converted, spotOfSlice, "realized output beat spot");
     }
@@ -678,7 +678,7 @@ contract FeeSplitHookTest is Test {
         hook.distribute(poolId, 0);
 
         // nothing moved
-        assertEq(usdg.balanceOf(TREASURY_BUYBACK), 0);
+        assertEq(usdg.balanceOf(FLOOR_VAULT), 0);
         assertEq(hook.pendingFees(poolId, address(agent)), cap * 2);
     }
 
@@ -703,7 +703,7 @@ contract FeeSplitHookTest is Test {
 
         vm.warp(vm.getBlockTimestamp() + 1);
         hook.distribute(poolId, 0);
-        assertEq(usdg.balanceOf(TREASURY_BUYBACK), 2_000e6);
+        assertEq(usdg.balanceOf(FLOOR_VAULT), 2_000e6);
     }
 
     function test_distribute_usesLiveRegistryTreasury() public {
@@ -727,7 +727,7 @@ contract FeeSplitHookTest is Test {
         _setPendingUsdg(3_000e6);
         vm.prank(address(0xCAFE));
         hook.distribute(poolId, 0);
-        assertEq(usdg.balanceOf(TREASURY_BUYBACK), 1_000e6);
+        assertEq(usdg.balanceOf(FLOOR_VAULT), 1_000e6);
     }
 
     /// @dev The conversion swap runs against the taxed pool; if it were taxed again a 300bps
@@ -741,7 +741,7 @@ contract FeeSplitHookTest is Test {
         uint256 remainder = hook.pendingFees(poolId, address(usdg));
         assertLt(remainder, 3, "conversion was re-taxed");
         assertEq(usdg.balanceOf(address(hook)), remainder);
-        assertGt(usdg.balanceOf(TREASURY_BUYBACK), 0);
+        assertGt(usdg.balanceOf(FLOOR_VAULT), 0);
     }
 
     // -----------------------------------------------------------------------
@@ -759,7 +759,7 @@ contract FeeSplitHookTest is Test {
         h.distribute(pid, 0);
         assertTrue(bad.attempted(), "reentry not attempted");
         assertTrue(bad.reentryReverted(), "reentry was not blocked");
-        assertEq(usdg.balanceOf(TREASURY_BUYBACK), 1_000e6, "outer distribution incomplete");
+        assertEq(usdg.balanceOf(FLOOR_VAULT), 1_000e6, "outer distribution incomplete");
     }
 
     function test_distribute_registryStaticcallCannotReenter() public {

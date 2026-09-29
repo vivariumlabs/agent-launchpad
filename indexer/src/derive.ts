@@ -115,23 +115,40 @@ export function mcapUsdg(priceE18: bigint, totalSupply: bigint): bigint {
   return (priceE18 * totalSupply) / RAW_TO_E18;
 }
 
+/**
+ * SPEC-M4G: `platformLeg` = the hook's platform third (v2: the floor vault, D18; v1: the retired
+ * buyback). The fees.buybackLeg db column keeps its name.
+ */
 export interface FeeTotals {
-  buybackLeg: bigint;
+  platformLeg: bigint;
   treasuryLeg: bigint;
   royaltyLeg: bigint;
   converted: bigint;
   count: number;
 }
 
-export function feeTotals(rows: ReadonlyArray<{ buybackLeg: bigint; treasuryLeg: bigint; royaltyLeg: bigint; converted: bigint }>): FeeTotals {
-  const t: FeeTotals = { buybackLeg: 0n, treasuryLeg: 0n, royaltyLeg: 0n, converted: 0n, count: rows.length };
+export function feeTotals(rows: ReadonlyArray<{ platformLeg: bigint; treasuryLeg: bigint; royaltyLeg: bigint; converted: bigint }>): FeeTotals {
+  const t: FeeTotals = { platformLeg: 0n, treasuryLeg: 0n, royaltyLeg: 0n, converted: 0n, count: rows.length };
   for (const r of rows) {
-    t.buybackLeg += r.buybackLeg;
+    t.platformLeg += r.platformLeg;
     t.treasuryLeg += r.treasuryLeg;
     t.royaltyLeg += r.royaltyLeg;
     t.converted += r.converted;
   }
   return t;
+}
+
+/** 1e36 — floorPriceX18 = B · 1e36 / S (USDG base units per whole 1e18-unit token, × 1e18; IFloorVault.floorPrice). */
+export const FLOOR_PRICE_SCALE = 10n ** 36n;
+
+/**
+ * SPEC-M4G §3 / R3 floor price: floor(B · 1e36 / S) with B = vault USDG (base units) and S = the
+ * platform token's totalSupply (base units) — the same value IFloorVault.floorPrice() returns.
+ * 0 when S = 0 (floor undefined).
+ */
+export function floorPriceX18(vaultUsdg: bigint, totalSupply: bigint): bigint {
+  if (totalSupply <= 0n) return 0n;
+  return (vaultUsdg * FLOOR_PRICE_SCALE) / totalSupply;
 }
 
 /** Fixed-point integer → decimal string, trailing zeros trimmed ("1500000", 6 → "1.5"). */
