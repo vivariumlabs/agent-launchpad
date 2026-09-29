@@ -2,7 +2,7 @@
 // timestamps, the handful of view calls the indexer needs) + its viem implementation. Tests
 // implement IndexerChain in memory (test/helpers/mockChain.ts); no network in tests.
 
-import { createPublicClient, fallback, http, type Address, type Hex, type PublicClient } from "viem";
+import { createPublicClient, fallback, http, TransactionNotFoundError, type Address, type Hex, type PublicClient } from "viem";
 import { agentFactoryAbi, agentNftAbi, agentRegistryAbi, erc20Abi } from "./abi.js";
 
 export interface RawLog {
@@ -56,6 +56,8 @@ export interface IndexerChain {
   nftTokenURI(agentId: bigint): Promise<string>;
   erc20Balance(token: Address, who: Address): Promise<bigint>;
   nativeBalance(who: Address): Promise<bigint>;
+  /** eth_getTransactionByHash → `from`, lowercased; null when the node does not know the tx. */
+  txFrom(txHash: Hex): Promise<string | null>;
 }
 
 export const ZERO_ADDRESS: Address = "0x0000000000000000000000000000000000000000";
@@ -142,5 +144,14 @@ export class ViemIndexerChain implements IndexerChain {
 
   nativeBalance(who: Address): Promise<bigint> {
     return this.client.getBalance({ address: who });
+  }
+
+  async txFrom(txHash: Hex): Promise<string | null> {
+    try {
+      return (await this.client.getTransaction({ hash: txHash })).from.toLowerCase();
+    } catch (e) {
+      if (e instanceof TransactionNotFoundError) return null;
+      throw e;
+    }
   }
 }

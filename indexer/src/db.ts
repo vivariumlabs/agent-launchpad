@@ -3,7 +3,8 @@
 //
 // Money / on-chain integers are stored as base-10 TEXT (bigint end-to-end; int128 swap deltas do
 // not fit SQLite's 64-bit INTEGER). Block numbers, log indexes and unix-second timestamps are
-// INTEGER. Every chain-derived row is keyed by (txHash, logIndex) and written INSERT OR IGNORE, so a
+// INTEGER. Every chain-derived row is keyed by (txHash, logIndex) — events by (txHash, logIndex,
+// kind) since schema v3 — and written INSERT OR IGNORE, so a
 // re-scan (reorg window, crash replay) is idempotent. The db seam is deliberately narrow (plain
 // methods, no SQL outside this file) so a Postgres adapter is a deploy-time task (SPEC-M4A §0).
 
@@ -220,7 +221,38 @@ export const MIGRATIONS: readonly string[] = [
     releaseVersion TEXT, detail TEXT NOT NULL
   );
   `,
+  // M4A debt (a) — action-swap attribution: swaps carry the resolved tx sender; events become unique
+  // per (txHash, logIndex, kind) so one Swap log can yield the pool agent's "swap" AND the acting
+  // agent's "actionSwap" row (rebuild + copy + rename; ids and the events_agent index preserved).
+  `
+  ALTER TABLE swaps ADD COLUMN senderFrom TEXT;
+  ALTER TABLE swaps ADD COLUMN senderAgentId INTEGER;
+  ALTER TABLE swaps ADD COLUMN senderWallet TEXT;
+  ALTER TABLE swaps ADD COLUMN senderResolved INTEGER NOT NULL DEFAULT 0;
+  CREATE INDEX swaps_unresolved ON swaps (senderResolved, blockNumber, logIndex);
+  CREATE TABLE events_v3 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agentId INTEGER, kind TEXT NOT NULL, txHash TEXT NOT NULL, logIndex INTEGER NOT NULL,
+    blockNumber INTEGER NOT NULL, ts INTEGER NOT NULL, data TEXT NOT NULL,
+    UNIQUE (txHash, logIndex, kind)
+  );
+  INSERT INTO events_v3 (id, agentId, kind, txHash, logIndex, blockNumber, ts, data)
+    SELECT id, agentId, kind, txHash, logIndex, blockNumber, ts, data FROM events ORDER BY id;
+  DELETE FROM sqlite_sequence WHERE name = 'events_v3';
+  INSERT INTO sqlite_sequence (name, seq) SELECT 'events_v3', seq FROM sqlite_sequence WHERE name = 'events';
+  DROP TABLE events;
+  ALTER TABLE events_v3 RENAME TO events;
+  CREATE INDEX events_agent ON events (agentId, blockNumber, logIndex);
+  `,
 ];
+
+/** "action" ⇔ the tx sender is an agent's actionEOA; "treasury" ⇔ its treasuryEOA. */
+export type SenderWallet = "action" | "treasury";
+
+/** A swap row whose tx sender is not yet resolved (backfill queue), with its pool's orientation. */
+export interface UnresolvedSwap extends SwapRow {
+  agentIsCurrency0: number;
+}
 
 type Raw = Record<string, unknown>;
 
@@ -505,6 +537,60 @@ export class IndexerDb {
         )
         .run(r).changes === 1
     );
+  }
+
+  // ---- swap sender attribution (M4A debt (a)) ----
+
+  /** True iff the swap row exists and its tx sender is already resolved. */
+  swapSenderResolved(txHash: string, logIndex: number): boolean {
+    const r = this.db.prepare(`SELECT senderResolved FROM swaps WHERE txHash = ? AND logIndex = ?`).get(txHash, logIndex) as { senderResolved: number } | undefined;
+    return r !== undefined && Number(r.senderResolved) === 1;
+  }
+
+  /** Resolve a swap's tx sender once (no-op when already resolved). Returns true iff the row changed. */
+  setSwapSender(txHash: string, logIndex: number, from: string, agentId: number | null, wallet: SenderWallet | null): boolean {
+    return (
+      this.db
+        .prepare(
+          `UPDATE swaps SET senderFrom = ?, senderAgentId = ?, senderWallet = ?, senderResolved = 1
+           WHERE txHash = ? AND logIndex = ? AND senderResolved = 0`,
+        )
+        .run(from.toLowerCase(), agentId, wallet, txHash, logIndex).changes === 1
+    );
+  }
+
+  swapSender(txHash: string, logIndex: number): { senderFrom: string | null; senderAgentId: number | null; senderWallet: SenderWallet | null; senderResolved: number } | undefined {
+    const r = this.db.prepare(`SELECT senderFrom, senderAgentId, senderWallet, senderResolved FROM swaps WHERE txHash = ? AND logIndex = ?`).get(txHash, logIndex) as Raw | undefined;
+    if (r === undefined) return undefined;
+    return { senderFrom: s(r.senderFrom), senderAgentId: n(r.senderAgentId), senderWallet: s(r.senderWallet) as SenderWallet | null, senderResolved: Number(r.senderResolved) };
+  }
+
+  /** Oldest-first swaps whose tx sender is unresolved (the backfill queue). */
+  unresolvedSwaps(limit: number): UnresolvedSwap[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT s.*, COALESCE(p.agentIsCurrency0, 0) AS agentIsCurrency0 FROM swaps s LEFT JOIN pools p ON p.poolId = s.poolId
+           WHERE s.senderResolved = 0 ORDER BY s.blockNumber, s.logIndex LIMIT ?`,
+        )
+        .all(limit) as Raw[]
+    ).map((r) => ({ ...this.toSwap(r), agentIsCurrency0: Number(r.agentIsCurrency0) }));
+  }
+
+  /**
+   * The agent whose CURRENT instance wallet is `addr` (case-insensitive): actionEOA ⇒ "action",
+   * treasuryEOA ⇒ "treasury". An action match wins over a treasury match; ties by lowest agentId.
+   */
+  agentByWallet(addr: string): { agentId: number; wallet: SenderWallet } | null {
+    const a = addr.toLowerCase();
+    const r = this.db
+      .prepare(
+        `SELECT agentId, CASE WHEN lower(actionEOA) = @a THEN 'action' ELSE 'treasury' END AS wallet FROM instances
+         WHERE lower(actionEOA) = @a OR lower(treasuryEOA) = @a
+         ORDER BY CASE WHEN lower(actionEOA) = @a THEN 0 ELSE 1 END, agentId LIMIT 1`,
+      )
+      .get({ a }) as { agentId: number; wallet: SenderWallet } | undefined;
+    return r === undefined ? null : { agentId: Number(r.agentId), wallet: r.wallet };
   }
 
   insertCurveTrade(r: CurveTradeRow): boolean {

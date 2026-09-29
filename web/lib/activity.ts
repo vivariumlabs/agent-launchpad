@@ -29,20 +29,34 @@ function prettifyRawKind(kind: string): string {
  * a narrow union — every known kind is handled below; anything else falls
  * back to a lightly-prettified version of the raw kind label.
  */
+/**
+ * Raw Uniswap v4 pool swap: amount0/amount1 are signed deltas: pick the
+ * USDG-side leg via agentIsCurrency0 and return its magnitude (direction
+ * isn't reliably inferable from the raw deltas alone). Null when absent.
+ */
+function swapUsdgMagnitude(data: Record<string, unknown>): string | null {
+  const agentIsCurrency0 = bool(data, "agentIsCurrency0");
+  const usdgSide = agentIsCurrency0 === true ? str(data, "amount1") : str(data, "amount0");
+  if (!usdgSide) return null;
+  return usdgSide.startsWith("-") ? usdgSide.slice(1) : usdgSide;
+}
+
 export function humanizeActivity(event: ActivityItem): string {
   const { kind, data } = event;
   switch (kind) {
     case "swap": {
-      // Raw Uniswap v4 pool swap: amount0/amount1 are signed deltas: pick the
-      // USDG-side leg via agentIsCurrency0 and report magnitude (direction
-      // isn't reliably inferable from the raw deltas alone).
-      const agentIsCurrency0 = bool(data, "agentIsCurrency0");
-      const usdgSide = agentIsCurrency0 === true ? str(data, "amount1") : str(data, "amount0");
-      if (usdgSide) {
-        const magnitude = usdgSide.startsWith("-") ? usdgSide.slice(1) : usdgSide;
-        return `Pool swap: ${formatUsdg(magnitude)} USDG`;
-      }
-      return "Pool swap";
+      const magnitude = swapUsdgMagnitude(data);
+      return magnitude !== null ? `Pool swap: ${formatUsdg(magnitude)} USDG` : "Pool swap";
+    }
+    case "actionSwap": {
+      // This agent's own wallet (tx sender = its action or treasury EOA)
+      // traded on a pool — possibly another agent's (data.poolAgentId).
+      const poolAgentId = num(data, "poolAgentId");
+      const wallet = str(data, "wallet");
+      const where = poolAgentId !== null ? `Traded on agent #${poolAgentId}'s pool` : "Traded on a pool";
+      const via = wallet ? ` (${wallet} wallet)` : "";
+      const magnitude = swapUsdgMagnitude(data);
+      return magnitude !== null ? `${where}${via}: ${formatUsdg(magnitude)} USDG` : `${where}${via}`;
     }
     case "curve_buy":
     case "curve_sell": {

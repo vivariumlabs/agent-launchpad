@@ -118,6 +118,21 @@ export class MockChain implements IndexerChain {
   async nativeBalance(who: Address): Promise<bigint> {
     return this.native.get(who.toLowerCase()) ?? 0n;
   }
+
+  /** txHash (lowercase) → tx sender. Unknown tx ⇒ null (the node does not know it). */
+  txSenders = new Map<string, string>();
+  /** Throw on txFrom while > 0 (decremented per call); `Infinity` ⇒ always. */
+  failTxFrom = 0;
+  txFromCalls: string[] = [];
+
+  async txFrom(txHash: Hex): Promise<string | null> {
+    this.txFromCalls.push(txHash.toLowerCase());
+    if (this.failTxFrom > 0) {
+      this.failTxFrom--;
+      throw new Error("mock txFrom failure");
+    }
+    return this.txSenders.get(txHash.toLowerCase())?.toLowerCase() ?? null;
+  }
 }
 
 export function fixedClock(now: bigint): { now: () => bigint; set: (v: bigint) => void } {

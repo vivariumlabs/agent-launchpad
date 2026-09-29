@@ -14,6 +14,11 @@
 // Curve discovery mid-chunk: an AgentLive in a chunk names a curve the chunk's getLogs did not
 // include, so the chunk is re-queried for the new curve addresses and merged (dedup by tx+logIndex).
 // Swap ingestion: only poolIds registered by the hook (pools table or earlier in the same chunk).
+// Action-swap attribution (M4A debt (a)): the v4 Swap `sender` is the shared router, so each swap's
+// TRANSACTION sender (chain.txFrom, per-chunk cache) is matched against every instance's action /
+// treasury EOA; a match adds an "actionSwap" event for the ACTING agent on the same (txHash,
+// logIndex). Best-effort: a txFrom failure leaves the swap senderResolved = 0 for the per-poll
+// backfill (backfillSenders, oldest first, senderBackfillPerPoll DEFAULT 25), never blocks ingest.
 //
 // The loop (run) never throws: per-poll try/catch, LOUD warn, exponential backoff (cap 60 s).
 
@@ -43,7 +48,11 @@ export interface WatcherOpts {
   contracts: ContractsCfg;
   reorgWindowBlocks: number;
   maxBlockRange: number;
+  /** Unresolved swap senders resolved per poll (M4A debt (a) backfill) DEFAULT 25. */
+  senderBackfillPerPoll?: number;
 }
+
+export const DEFAULT_SENDER_BACKFILL_PER_POLL = 25;
 
 const SWAP_TOPIC = encodeEventTopics({ abi: poolManagerAbi, eventName: "Swap" })[0] as Hex;
 
@@ -165,6 +174,7 @@ export class Watcher {
       chunks++;
       from = to + 1n;
     }
+    await this.backfillSenders();
     this.db.kvSet(LAST_POLL_KEY, this.clock.now().toString());
     return { from: firstFrom, to: head, chunks };
   }
@@ -181,6 +191,69 @@ export class Watcher {
       this.log.warn(`WATCHER POLL FAILED (#${this.failures} in a row, cursor ${this.cursor()}), retrying in ${delay} ms: ${errMsg(e)}`);
       return delay;
     }
+  }
+
+  /**
+   * A txHash → tx sender lookup with its own in-memory cache (one per chunk / backfill pass). A
+   * failure (RPC error, or the node not knowing the tx) is warned LOUDLY and yields null — the swap
+   * stays senderResolved = 0 and the backfill retries it on a later poll.
+   */
+  private txFromResolver(): (txHash: string, logIndex: number) => Promise<string | null> {
+    const cache = new Map<string, string | null>();
+    return async (txHash, logIndex) => {
+      if (cache.has(txHash)) return cache.get(txHash)!;
+      let from: string | null;
+      try {
+        from = await this.chain.txFrom(txHash as Hex);
+        if (from === null) this.log.warn(`SWAP SENDER UNRESOLVED (tx ${txHash}, log ${logIndex}): node does not know the tx — backfill will retry`);
+      } catch (e) {
+        from = null;
+        this.log.warn(`SWAP SENDER UNRESOLVED (tx ${txHash}, log ${logIndex}): txFrom failed — backfill will retry: ${errMsg(e)}`);
+      }
+      from = from === null ? null : from.toLowerCase();
+      cache.set(txHash, from);
+      return from;
+    };
+  }
+
+  /**
+   * M4A debt (a) rule, applied once per swap (sync; call inside a db transaction): match the tx
+   * sender against every instance's actionEOA / treasuryEOA; store the sender columns; on a match
+   * insert the ACTING agent's "actionSwap" event on the same (txHash, logIndex). No-op when the
+   * swap is already resolved (or unknown).
+   */
+  private attributeSwap(s: { txHash: string; logIndex: number; blockNumber: number; ts: number; poolId: string; agentId: number; amount0: string; amount1: string; agentIsCurrency0: number }, from: string): void {
+    const m = this.db.agentByWallet(from);
+    if (!this.db.setSwapSender(s.txHash, s.logIndex, from, m?.agentId ?? null, m?.wallet ?? null)) return;
+    if (m === null) return;
+    this.db.insertEvent({
+      agentId: m.agentId,
+      kind: "actionSwap",
+      txHash: s.txHash,
+      logIndex: s.logIndex,
+      blockNumber: s.blockNumber,
+      ts: s.ts,
+      data: jsonData({ poolId: s.poolId, poolAgentId: s.agentId, wallet: m.wallet, amount0: s.amount0, amount1: s.amount1, agentIsCurrency0: s.agentIsCurrency0 === 1 }),
+    });
+  }
+
+  /**
+   * Backfill: resolve up to `senderBackfillPerPoll` (DEFAULT 25) unresolved swaps, oldest first,
+   * with the same rule as ingest. Covers pre-migration rows and transient txFrom failures.
+   * Returns the number resolved.
+   */
+  async backfillSenders(): Promise<number> {
+    const rows = this.db.unresolvedSwaps(this.opts.senderBackfillPerPoll ?? DEFAULT_SENDER_BACKFILL_PER_POLL);
+    if (rows.length === 0) return 0;
+    const txFromOf = this.txFromResolver();
+    let resolved = 0;
+    for (const r of rows) {
+      const from = await txFromOf(r.txHash, r.logIndex);
+      if (from === null) continue;
+      this.db.tx(() => this.attributeSwap(r, from));
+      resolved++;
+    }
+    return resolved;
   }
 
   /** Scan [from, to] and commit it (rows + cursor = max(cursor, to + 1)) in one transaction. */
@@ -243,6 +316,7 @@ export class Watcher {
     const poolOf = (poolId: string): PoolRow | undefined => batchPools.get(poolId) ?? this.db.pool(poolId);
     const usdg = this.opts.contracts.usdg.toLowerCase();
     const poolManager = this.opts.contracts.poolManager.toLowerCase();
+    const txFromOf = this.txFromResolver();
 
     for (const l of logs) {
       const addr = l.address.toLowerCase();
@@ -273,7 +347,14 @@ export class Watcher {
           amount1: a.amount1.toString(),
           sqrtPriceX96: a.sqrtPriceX96.toString(),
         };
-        ops.push(() => void this.db.insertSwap(swap));
+        // Action-swap attribution (M4A debt (a)): best-effort, never blocks the swap row. Matching
+        // runs at apply time, so an InstanceRegistered earlier in this chunk is already visible.
+        const from = this.db.swapSenderResolved(txHash, l.logIndex) ? null : await txFromOf(txHash, l.logIndex);
+        const agentIsCurrency0 = pool.agentIsCurrency0;
+        ops.push(() => {
+          this.db.insertSwap(swap);
+          if (from !== null) this.attributeSwap({ ...swap, agentIsCurrency0 }, from);
+        });
         ops.push(event(pool.agentId, "swap", t, { poolId, sender: a.sender, amount0: a.amount0, amount1: a.amount1, sqrtPriceX96: a.sqrtPriceX96, liquidity: a.liquidity, tick: a.tick, fee: a.fee, agentIsCurrency0: pool.agentIsCurrency0 === 1 }));
         continue;
       }

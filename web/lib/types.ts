@@ -107,8 +107,14 @@ export interface AgentView {
  * curve_sell, curve_graduated, requested, live, cancelled, graduated,
  * genesis_opened, registered, heartbeat, pool_registered, fee_collected,
  * distributed, royalty_credited, royalty_claimed, emancipated, buyback_poked,
- * nft_transfer, and any future kind) — NOT a narrow union. Humanize known
- * kinds; fall back to the raw kind label for anything else.
+ * nft_transfer, actionSwap, and any future kind) — NOT a narrow union.
+ * Humanize known kinds; fall back to the raw kind label for anything else.
+ *
+ * "actionSwap" (M4A debt (a)): lands on the ACTING agent's feed when its
+ * action or treasury EOA sent a tx that swapped on an indexed pool (same
+ * txHash/logIndex as the pool agent's "swap" row). data: { poolId: string,
+ * poolAgentId: number, wallet: "action" | "treasury", amount0: string,
+ * amount1: string, agentIsCurrency0: boolean }.
  */
 export interface ActivityItem {
   id: number;
@@ -118,6 +124,17 @@ export interface ActivityItem {
   blockNumber: number;
   ts: number;
   data: Record<string, unknown>;
+}
+
+/** `data` of an ActivityItem with kind "actionSwap" (see ActivityItem). */
+export interface ActionSwapData {
+  poolId: string;
+  poolAgentId: number;
+  wallet: "action" | "treasury";
+  /** Signed int128 pool deltas, base-10 strings. */
+  amount0: string;
+  amount1: string;
+  agentIsCurrency0: boolean;
 }
 
 export interface JournalEntry {

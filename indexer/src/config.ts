@@ -64,6 +64,8 @@ export const IndexerConfigFileSchema = z
     reorgWindowBlocks: z.number().int().nonnegative().default(30),
     /** getLogs chunk (backfill + catch-up) DEFAULT 10k blocks; halved per retry on RPC range errors (floor 100). */
     maxBlockRange: z.number().int().positive().default(10_000),
+    /** M4A debt (a): unresolved swap tx senders resolved per watcher poll DEFAULT 25. */
+    senderBackfillPerPoll: z.number().int().positive().default(25),
     arweave: z
       .object({
         graphqlUrl: z.string().url().default("https://arweave.net/graphql"),

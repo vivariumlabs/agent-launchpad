@@ -6,6 +6,7 @@ import type { ActivityItem } from "@/lib/types";
 /** `kind` is a free-form string (see lib/activity.ts) — unrecognized kinds fall back to bg-slate-400. */
 const KIND_DOT: Record<string, string> = {
   swap: "bg-sky-400",
+  actionSwap: "bg-sky-400",
   curve_buy: "bg-violet-400",
   curve_sell: "bg-violet-400",
   curve_graduated: "bg-violet-400",

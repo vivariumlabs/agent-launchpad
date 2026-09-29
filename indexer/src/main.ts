@@ -48,7 +48,7 @@ async function main(): Promise<void> {
   if (cfg.dbPath !== ":memory:") mkdirSync(dirname(cfg.dbPath), { recursive: true });
   const db = new IndexerDb(cfg.dbPath);
   const chain = new ViemIndexerChain({ rpc: cfg.chain.rpc, factory: cfg.contracts.factory, registry: cfg.contracts.registry, nft: cfg.contracts.nft });
-  const watcher = new Watcher(db, chain, { contracts: cfg.contracts, reorgWindowBlocks: cfg.reorgWindowBlocks, maxBlockRange: cfg.maxBlockRange }, systemClock, log);
+  const watcher = new Watcher(db, chain, { contracts: cfg.contracts, reorgWindowBlocks: cfg.reorgWindowBlocks, maxBlockRange: cfg.maxBlockRange, senderBackfillPerPoll: cfg.senderBackfillPerPoll }, systemClock, log);
   const balances = new BalanceRefresher(db, chain, cfg.contracts.usdg, systemClock, log);
   const arweave = cfg.arweave.enabled ? new HttpArweaveClient({ graphqlUrl: cfg.arweave.graphqlUrl, gatewayUrl: cfg.arweave.gatewayUrl }) : null;
   const enricher = arweave === null ? null : new Enricher(db, arweave, systemClock, log);
