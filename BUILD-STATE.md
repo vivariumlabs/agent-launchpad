@@ -1,6 +1,24 @@
-# BUILD STATE — updated 2026-09-29 (session 13)
+# BUILD STATE — updated 2026-09-29 (session 14)
 
-## Milestone: **M4 IN PROGRESS — NSM QUOTE RE-VERIFICATION SHIPPED (SPEC-M4D): the attestation tab now proves measurements, not just consistency (2026-09-29)**
+## Milestone: **M4 IN PROGRESS — SELF-SERVE LAUNCH COMPLETE (config→Arweave) + NFT claim/burn UI (SPEC-M4E); remaining exit-gate gap: REVIVE flow (2026-09-29)**
+
+## Session 14 (2026-09-29, same day) — SPEC-M4E: config→Arweave + NFT dashboard
+
+**SPEC-M4E shipped (`docs/specs/SPEC-M4E.md`, Fable; Opus×2 parallel, Fable-reviewed + two Fable follow-up fixes; commits `b281d24` + `e0cba70`).** Kills the biggest M4 exit-gate blocker: the launch flow's config now reaches the orchestrator with NO operator (the inbox folder is an override, not the path), via the design 02 §1/04 §1 always intended — **the frozen agent.json goes to Arweave; trust is the on-chain configHash, transport is untrusted.**
+
+- **genesis:** `publishFrozenConfig` (ANS-104 signed by an EPHEMERAL key — launch-helper stays secret-free; <100 KiB free-tier enforced; tags App/Kind=config/ConfigHash), launch-helper `POST /api/launch/publish` (prepare now returns `agentJsonText` — exact bytes round-trip, never re-serialize), `ArweaveTagConfigSource` (GraphQL by ConfigHash tag, ≤5 newest candidates, each hash-pre-checked — tag spoofing is a bounded DoS; null = retry, GraphQL lag observed ~8 min live, absorbed by the 24 h window), wired inbox → tag-discovery → ar://ref. **Fable follow-up fix: the pre-existing `ArweaveConfigSource` (ar:// ref loads — THE path revival uses) used a redirect-refusing GET and would have failed on every live fetch; now shares the one-redirect reader.** genesis 165/165.
+- **indexer:** schema v5 `nft_owners` (derived from NFT Transfer events, backfilled at migration — live db migrated clean, 5 owners), `/api/contracts` (manifest addresses — web carries no hardcoded addresses), `/api/wallets/:address/nfts` (owned + burned-by-this-wallet, emancipated flag, lifetimeClaimed = Σ Claimed, **+ sweptToTreasury (Fable follow-up)**). 115/115.
+- **web:** `/nfts` dashboard — live `accrued()` reads, one-click permissionless `claim(agentId)`, **burn = 3-step grave confirm (explain forever-redirect + sweep-now + no-remint → type the symbol to arm → send)** per D7/R6, Emancipated receipt reaction with swept amount, emancipated badge; launch flow publish step (after prepare, BEFORE the tx; launch blocked until publish succeeds — losing the exact bytes would strand the launch; ar:// permanent link on review). Build+tsc green, fixtures walk everything walletless.
+- **LIVE §4.2 acceptance:** agent-8's exact config text published for real (item `_zoGoVuvvlSSjO34YeKj3M3x2hC9PFwIcIpczFVCOc8`, winc 0, ephemeral key) → discovered by ConfigHash tag → **byte-exact round trip → verifyFrozen OK.** The revival prerequisite (D10's "Arweave-published original") now exists as a working pipeline.
+- Notes: wallets endpoint returns burned agents to the wallet that burned them (burner keeps seeing its emancipated agent — Fable ruling); `/api/contracts` exposes every manifest address incl. deployer keys (public data, fine); publish body is `{agentJsonText, configHash?}` exact-text-only.
+
+**M4 exit-gate scorecard (07: "stranger with a wallet could launch, chat, claim, burn, revive"):** launch ✓ (self-serve end-to-end, needs a live full-genesis rehearsal), chat ✓ (s12), claim ✓ / burn ✓ (UI shipped, needs a live claim/burn drill — agent 2/3/4/6/7 NFTs are all drill-wallet-owned, accrued likely 0 until fees flow), **revive ✗ (M4F — the one remaining gate item)**, attestation beyond-gate ✓ (M4D).
+
+**Wallet: unchanged** (session cost: zero — uploads free). arb ETH 0.000725 still thin — **top up ~0.001-0.002 arb ETH before M4F**, since the revive drill + full-launch rehearsal are deploy-heavy (2-3 rentals + genesis seeds; arb USDC 1.68 is enough for rentals).
+
+**NEXT (M4F):** revive flow — mausoleum page (evicted gallery, last words from the journal feed), revival funding path (who pays what: check 02's revival contract surface + genesis/src/revival.ts), orchestrator revival drive against a dead agent (agent 8 goes stale-then-evicted after REVIVAL_WINDOW 7d — 2026-10-06; agents 2/3/4 already long-stale = mausoleum candidates NOW), full stranger-launch rehearsal (launch flow UI → publish → createAgent → orchestrator service → LIVE), then M4 exit-gate review. Holders table + LLM moderation + proof-card = M4G/nice-to-have.
+
+## Previous: **NSM QUOTE RE-VERIFICATION SHIPPED (SPEC-M4D) (2026-09-29, session 13)**
 
 ## Session 13 (2026-09-29, same day) — SPEC-M4D: quote re-verification + launch-tooling hardening
 
