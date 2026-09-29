@@ -6,8 +6,9 @@ import { usePathname } from "next/navigation";
 import { TabStub } from "./TabStub";
 
 /**
- * Profile tab bar. Overview + Attestation are real routes (SPEC-M4B §3a
- * replaces the Attestation stub); Chat / Holders stay honest "soon" stubs.
+ * Profile tab bar. Overview + Attestation + Chat are real routes (SPEC-M4B §3a
+ * replaces the Attestation stub, SPEC-M4C §2 the Chat stub); Holders stays an
+ * honest "soon" stub.
  */
 export function AgentTabs({ agentId }: { agentId: number }) {
   const pathname = usePathname();
@@ -15,6 +16,7 @@ export function AgentTabs({ agentId }: { agentId: number }) {
   const tabs = [
     { href: base, label: "Overview" },
     { href: `${base}/attestation`, label: "Attestation" },
+    { href: `${base}/chat`, label: "Chat" },
   ];
 
   return (
@@ -36,7 +38,6 @@ export function AgentTabs({ agentId }: { agentId: number }) {
           </Link>
         );
       })}
-      <TabStub label="Chat" />
       <TabStub label="Holders" />
     </nav>
   );

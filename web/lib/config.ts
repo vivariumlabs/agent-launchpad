@@ -56,3 +56,30 @@ export const ORCHESTRATOR_TRUST_BOUNDARY =
 
 /** Launch progress: soft timeout before the "taking longer than expected" message (SPEC-M4B §3b DEFAULT). */
 export const LAUNCH_TIMEOUT_SECONDS = 15 * 60;
+
+// ---------------------------------------------------------------------------
+// SPEC-M4C §2 — chat tab (client-safe constants: no secrets, NEXT_PUBLIC_ only).
+// ---------------------------------------------------------------------------
+
+/**
+ * Agent DNS root (D14, SPEC-M4C R3 DEFAULT "vivarium.systems"). The default chat
+ * endpoint is `https://a<agentId>.<AGENT_DNS_ROOT>`. NEXT_PUBLIC_ so the
+ * browser bundle sees the same value (chat is browser → enclave only, R2).
+ */
+export const AGENT_DNS_ROOT =
+  (process.env.NEXT_PUBLIC_AGENT_DNS_ROOT || "vivarium.systems").trim().replace(/^\.+|\.+$/g, "") ||
+  "vivarium.systems";
+
+/** Robinhood testnet chain id — the SIWE `Chain ID` the runtime checks (cfg.chainIds.rh). */
+export const RH_CHAIN_ID = 46630;
+
+/** Client-side input cap = runtime cfg.chatMaxChars DEFAULT (2000). */
+export const CHAT_MAX_CHARS = 2000;
+
+/** Runtime chat rate caps — DEFAULTs (cfg.chatPerHour / cfg.chatPerDay), labeled as such, never as readings. */
+export const CHAT_PER_HOUR_DEFAULT = 20;
+export const CHAT_PER_DAY_DEFAULT = 100;
+
+/** D13 notice — VERBATIM (SPEC-M4C §2). */
+export const D13_NOTICE =
+  "This agent is autonomous; social-engineering its action wallet is part of the game; its survival wallet is out of reach.";

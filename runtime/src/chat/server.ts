@@ -227,6 +227,22 @@ const ROUTES: Record<string, string> = {
   "/attestation": "GET",
 };
 
+/**
+ * SPEC-M4C §0 R1 CORS. Wildcard origin is correct: no cookies/ambient credentials exist (the session
+ * token is an explicit header, the gate is balance-based, the endpoint is public by design).
+ */
+export const CORS_HEADERS: Readonly<Record<string, string>> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "content-type, x-chat-token",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+};
+export const CORS_PREFLIGHT_MAX_AGE_SEC = 600;
+
+/** The single CORS helper: idempotent; applied at the wire (send) and on the preflight response. */
+export function withCors(r: ChatHttpResponse): ChatHttpResponse {
+  return { ...r, headers: { ...CORS_HEADERS, ...(r.headers ?? {}) } };
+}
+
 // ---------------------------------------------------------------------------
 // server
 // ---------------------------------------------------------------------------
@@ -445,6 +461,8 @@ export function createChatServer(deps: ChatServerDeps): ChatServer {
       const method = req.method.toUpperCase();
       const allowed = ROUTES[path];
       if (allowed === undefined) return json(404, { error: "not_found" });
+      // SPEC-M4C R1: preflight on a known route — no auth, no body processing.
+      if (method === "OPTIONS") return withCors(json(204, {}, { "Access-Control-Max-Age": String(CORS_PREFLIGHT_MAX_AGE_SEC) }));
       if (method !== allowed) return json(405, { error: "method_not_allowed" }, { allow: allowed });
       switch (path) {
         case "/nonce":
@@ -469,7 +487,15 @@ export function createChatServer(deps: ChatServerDeps): ChatServer {
 
   let server: ChatListenServer | undefined;
 
-  function send(res: http.ServerResponse, r: ChatHttpResponse): void {
+  // The single wire choke point: every response of both listeners (plain http and the TLS server)
+  // leaves through here, so CORS (SPEC-M4C R1) is attached once, via withCors.
+  function send(res: http.ServerResponse, resp: ChatHttpResponse): void {
+    const r = withCors(resp);
+    if (r.status === 204) {
+      res.writeHead(204, { "cache-control": "no-store", ...(r.headers ?? {}) });
+      res.end();
+      return;
+    }
     const payload = JSON.stringify(r.body);
     res.writeHead(r.status, {
       "content-type": "application/json; charset=utf-8",
