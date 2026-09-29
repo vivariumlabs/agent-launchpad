@@ -1,6 +1,26 @@
-# BUILD STATE — updated 2026-09-29 (session 14)
+# BUILD STATE — updated 2026-09-29 (session 15)
 
-## Milestone: **M4 IN PROGRESS — SELF-SERVE LAUNCH COMPLETE (config→Arweave) + NFT claim/burn UI (SPEC-M4E); remaining exit-gate gap: REVIVE flow (2026-09-29)**
+## Milestone: **M4 NEARLY CLOSED — STRANGER-LAUNCH REHEARSAL PASSED (agent 11 LIVE, zero operator input); SPEC-M4F revive flow SHIPPED; only the PAID REVIVAL DRILL remains (2026-10-01)**
+
+## Session 15 (2026-09-29, same day) — stranger-launch rehearsal + SPEC-M4F revive
+
+**1) STRANGER-LAUNCH REHEARSAL PASSED (agent 11 "Stranger Rehearsal", STRNG11):** the FULL self-serve path with zero operator input — helper prepare (predicted id/hash/treasury all exact) → config published to Arweave (`ar://IlWwm6hq…`) → createAgent from the "stranger's" wallet (`0x95cb47e1…`) → **orchestrator service discovered the config FROM ARWEAVE by tag, hash-verified, deployed (interrupted-deploy adoption fired en route), enclave self-registered (treasury == prediction, gen 1), seeded (base legs skipped-underfunded LOUDLY — testnet), reconciled, FINALIZED → LIVE** (`0x06a7e7b0…`; token `0xdd1643f8…`; NFT minted to creator; indexer/web render). ~15 min wall INCLUDING the incident below. Enclave stopped + withdrawn after.
+- **INCIDENT (mine, ~0.006 USDC):** the orchestrator adopted my MANUAL drill agents 8/9/10 as fresh launches and started redeploying agent 8 with a wrong image-id (current-release compose ≠ its registered identity) — caught in ~2 min, job killed, runtime.json restored, launches neutralized by db surgery. **Productized in M4F: EXTERNAL adoption guard (registered-on-chain ⇒ never driven), `genesis abandon` CLI, terminal-holder deploy.lock sweep.** Also fixed: e2e config was still on v0.1.5/stale oyster path; runtimeOps now enables arweave for all future launches (agent 11 ran arweave-off ⇒ local attestationRef, checks skip honestly).
+
+**2) SPEC-M4F revive flow SHIPPED (`docs/specs/SPEC-M4F.md`; Opus×2, Fable-reviewed + Fable rev 1; commits `6979ea3`+`a79f8c7`):**
+- **genesis:** `checkRevivable` dry-run (gate + config availability + compose resolution — R2: no pay button unless ALL pass); **R3 compose-identity safety** (launch compose only when its recorded imageId == registered codeHash — the subagent tightened my literal rule, accepted; else releases-table match; else refuse `config_unavailable` — NEVER current-release fallback); revive endpoints on the helper (quote/pay/status; genesis db shared WAL; manual-mode 503 with the 04 §6 orchestrator-less backstop); R6 honest rate default 51_200→240_000 µUSDC/h. **183/183.**
+- **M4F rev 1 (Fable review fix, money-path): payment binding.** The subagent's review found POST unauthenticated + payments unbound: anyone seeing a payment tx could claim it for a DIFFERENT agent, and ANY historical transfer to the funding wallet counted. Fixed: the payer SIGNS `vivarium revive: agent <id>, payment <tx>` (EIP-191, recoverMessageAddress — EOA-only v1) and payments have a 24 h max-age. Web signs after the transfer receipt; keep-in-sync mirror in web/lib/revive.ts.
+- **web:** `/mausoleum` (evicted gallery + dying-with-countdown; last words from the journal; pay flow with 7-layer cross-chain guards — first non-RH tx in the app, everything from the quote payload, zero hardcoded addresses; refund copy on 409; manual mode; tracker payment→queued→deploying→registered gen N+1→live). Build+tsc green; fixtures walk everything walletless.
+- **LIVE acceptance:** agents 2/3 quotes exact — `heartbeat_fresh`, evictable **2026-10-01 08:31/09:37 UTC**; agent 1 evictable **today 14:48 UTC** (M1 lifecycle artifact — its quote then flips to `config_unavailable`, the honest-refusal proof; capture next session). Mausoleum rendered live: Evicted 0 / Dying 6, agent-1 countdown running.
+- **Known open (recorded):** R6 makes MAINNET genesis seed-plan Fatal (30 d × 0.24 = 172.8 USDC > 75 fee) — this is the fee-sizing flag firing honestly; **Juan's end-of-project re-pricing ruling now formally gates M6**, and the seeder should validate the plan BEFORE the rental is paid (ordering item, M5). Quote doesn't cover the ~$1 revival preGas (operator absorbs, noted). EIP-1271 smart-wallet signatures unsupported v1. Refunds manual.
+
+**M4 exit-gate scorecard:** launch ✓✓ (REHEARSED live), chat ✓, claim ✓ / burn ✓ (UI shipped; live claim needs fee flow — micro-drill later), attestation ✓✓, **revive: SHIPPED, live drill 2026-10-01** (pay → queue → orchestrator redeploy of agent 2 or 3 → generation 2 → tracker). Then the M4 exit-gate review.
+
+**Wallet after session 15:** rh 0.0093 ETH + 202,229 MockUSDG; arb ~0.0019 ETH + ~1.55 USDC; base 0.0025 ETH + 0.414 USDC. Agent-11 treasury seeded (~70 USDG remainder + gas legs), registered, revivable. Costs: ~75+85 Mock (fees/seeds), ~0.07 USDC rentals net, ~0.006 incident burn.
+
+**NEXT (session 16, on/after 2026-10-01 08:32 UTC):** the paid revival drill (agent 2: USDC transfer + signed intent → POST → orchestrator revival → gen 2 → tracker + wake verification); capture agent-1 `config_unavailable` live; live claim micro-drill if any royalties accrued (agent 1 pool fees → distributor?); then **M4 EXIT-GATE REVIEW** vs 07 and open M5 (soak + adversarial). M4G leftovers: holders table, LLM moderation, proof-card, seed-plan-before-rental ordering.
+
+## Previous: **SELF-SERVE LAUNCH (config→Arweave) + NFT claim/burn UI (SPEC-M4E) (2026-09-29, session 14)**
 
 ## Session 14 (2026-09-29, same day) — SPEC-M4E: config→Arweave + NFT dashboard
 
