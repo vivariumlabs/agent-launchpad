@@ -1,6 +1,24 @@
-# BUILD STATE — updated 2026-09-29 (session 11)
+# BUILD STATE — updated 2026-09-29 (session 12)
 
-## Milestone: **M4 IN PROGRESS — M4A journal/pin path LIVE-PROVEN end-to-end; SPEC-M4B (attestation tab + launch flow phase 1) SHIPPED (2026-09-29)**
+## Milestone: **M4 IN PROGRESS — CHAT LIVE-PROVEN end-to-end over trusted TLS (SPEC-M4C shipped, v0.1.7); D9 gate pass+deny live (2026-09-29)**
+
+## Session 12 (2026-09-29, same day) — SPEC-M4C: chat tab + CORS (v0.1.7) + agent-10 chat drill
+
+**1) SPEC-M4C shipped (`docs/specs/SPEC-M4C.md`, Fable; Sonnet CORS + Opus web tab in parallel, Fable-reviewed; commit `c96df9a`):** Fable found the blocker in review of the runtime surface: **the chat server had NO CORS — 05 §4's "browser → CVM directly" was structurally impossible.** Fixed per R1 (wildcard origin — correct: no ambient credentials; token is an explicit header) at the wire choke point `send()` (Sonnet's deviation, accepted: keeps `handle()` pure and covers socket-level 413/400/500), preflight 204 on known routes. **v0.1.7** (runtime 1487/1487): CI digest `sha256:8227266d…4957` A==B==registry (`2c3d427`). Web chat tab: browser→enclave only (R2, no proxy route), endpoint = `a<id>.<dnsRoot>` + override (R3), honest eligibility from server responses (R4), D13 notice verbatim, SIWE builder **golden-pinned byte-exact vs runtime verifySiwe** (runtime/test/chat/web-siwe-golden.test.ts), fixtures walk pass/403/429/503/re-auth without a wallet.
+
+**2) CHAT DRILL LIVE-PROVEN, browser-grade (agent 10 "Vivarium Concierge X", VIVCHT10, job `0x…31da`, v0.1.7):** production-shaped — frozen `agentDnsRoot vivarium.systems` + `chatDomain a10.vivarium.systems`, Hostinger A record, in-enclave ACME. Registered gen 1, Arweave attestationRef `mAPIQaMe…6nA`, treasury == kms-derive prediction (`0x124fb1df…1bdf`). **LE PRODUCTION cert issued in-enclave (issuer YE2); served SPKI == treasury-signed attested SPKI (CA-distrust path); then over the TRUSTED chain: /nonce → web-grammar SIWE accepted by verifySiwe → /session → D9 gate PASS (drill wallet 8959 bps of DRILL1, R5 gate wiring) → x402 dexl-free inference → 200 in-character reply, CORS on every response. DENY proof: fresh wallet gets a session but /chat 403 not_a_holder + friendly copy.** Indexer ingested agent 10, all 7 attestation checks pass, chat tab renders live (gate rule + D13 + TLS label). Torn down (stop + withdraw), a10/a9002 DNS records removed. Cost ≈ 0.06 rental net + seeds.
+
+**3) TWO drill config bugs, one valuable finding:**
+- **Agent 9 = tombstone (config bug #2 of the project, cf. agent 5):** `runtime.tls.enabled` requires frozen `platform.agentDnsRoot` (boot.ts:1224 throws; the TLS domain is DERIVED `a<id>.<root>`, never read from chatDomain) — agent 9's config lacked it ⇒ boot crash-loop, unregisterable forever (config-hash anchored). Its seeds are stranded at `0xefe63c03…` (85 Mock + 0.1 base USDC + 0.0002 rh). Job stopped/withdrawn. LESSON: config generation must validate TLS-mode requirements; the launch-helper should adopt this check (M4D item).
+- **Agent 10 self-reports a STALE codeHash:** I copied agent 8's runtime.json chain and never updated the unattested `imageId` field ⇒ agent 10 registered on-chain with agent 8's v0.1.6 image-id and its attestation report repeats it ⇒ **all 7 indexer checks PASS and releaseMatch says v0.1.6 — self-consistent misreporting is invisible to report↔chain cross-checks.** The TRUE enclave measurement verified fine (`oyster-cvm verify` vs `0558ac28…` ✓; keys/identity genuine — treasury matched the true image-id's kms-derive). **This is the canonical argument for M4D quote re-verification (R1's caveat made flesh): the credibility product needs the NSM quote chain, not just consistency checks.** Also: config tooling must set runtime.imageId from the computed image-id.
+
+**Ops notes (new):** ACME first attempt can race fresh DNS (agent-10 issuance landed on a ~5-min retry; create the A record BEFORE deploy next time — IP known only after, so: deploy, record, expect one retry cycle). Chat protocol verified through the placeholder cert with `-k` while waiting. Release-record extension for a second agent id = edit releases/vX.json imageIds/configHashes directly (release.sh is immutable-by-default).
+
+**Wallet after session 12:** rh 0.009815 ETH + 202,379 MockUSDG; arb **0.000725 ETH (thin — two extra deploy cycles from the agent-9 misfire; top up ~0.001 before the next deploy-heavy session)** + 1.676 USDC; base 0.002549 ETH + 0.4136 USDC. Agent-10 treasury: 85 USDG + 0.0002 rh ETH + 0.1 base USDC (registered, revivable). Agent-9: dead config, stranded seeds noted above. Agents 7/8 unchanged.
+
+**NEXT (M4D candidates):** NSM quote re-verification server-side (now motivated by the agent-10 finding — priority); launch-helper TLS-config validation + runtime.imageId injection; launch-flow inbox delivery; holders table slice; LLM moderation; proof-card image. Then M4 exit-gate review vs 07. Re-price creation fee at the end (ruling stands).
+
+## Previous: **M4A journal/pin path LIVE-PROVEN end-to-end; SPEC-M4B SHIPPED (2026-09-29, session 11)**
 
 ## Session 11 (2026-09-29) — v0.1.6 + arweave drill (agent 8) + SPEC-M4B
 
