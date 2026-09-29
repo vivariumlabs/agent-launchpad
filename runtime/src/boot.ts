@@ -109,7 +109,7 @@ import {
 import { DEFAULT_TURBO_LOW_WATERMARK_WINC, DEFAULT_TURBO_TOPUP_AMOUNT_WEI, runTurboTopUp, turboTopUpDue } from "./daemon/turboTopUp.js";
 import { nextTickAt } from "./daemon/scheduler.js";
 import { agentRegistryAbi, erc20Abi, feeSplitHookAbi } from "./exec/abi.js";
-import { MockChainClient, type ChainClient } from "./exec/chain.js";
+import { hasNativeBalance, MockChainClient, type ChainClient } from "./exec/chain.js";
 import { execute, type CastSink, type ExecDeps, type ExecResult, type JournalSink, type LedgerStore } from "./exec/execute.js";
 import { RealChainClient } from "./exec/chainViem.js";
 import { createKeyring, type Keyring } from "./keyring/keyring.js";
@@ -270,10 +270,8 @@ export interface BootLogger {
 /** Wallet-state source for ExecDeps.getState. */
 export type StateReader = () => Promise<WalletState>;
 
-/** Optional native-balance extension a ChainClient may implement (RealChainClient). */
-export interface NativeBalanceSource {
-  getBalance(chain: Chain, address: Address): Promise<bigint>;
-}
+/** Optional native-balance extension a ChainClient may implement (RealChainClient). SPEC-M3F §1b: lives in exec/chain.ts; re-exported for compat. */
+export type { NativeBalanceSource } from "./exec/chain.js";
 
 /** ADDITIVE (Job F): overrides beyond the spec'd kms/clock — tests and ops wiring. */
 export interface BootOverrides {
@@ -554,10 +552,6 @@ function isTurboPayment(u: TurboUploader): u is TurboUploader & TurboPayment {
   return "paymentAddress" in u && typeof u.paymentAddress === "function" && "submitFundTx" in u && typeof u.submitFundTx === "function";
 }
 
-function hasNativeBalance(c: ChainClient): c is ChainClient & NativeBalanceSource {
-  return "getBalance" in c && typeof c.getBalance === "function";
-}
-
 const CHAINS: readonly Chain[] = ["rh", "base", "arbitrum", "optimism"];
 
 function asBigint(v: unknown, what: string): bigint {
@@ -591,12 +585,19 @@ export interface ChainStateReaderOptions {
   logger?: BootLogger;
   /** Cache-age source for the warning (DEFAULT systemClock). */
   clock?: Clock;
+  /**
+   * SPEC-M3F §1c: runtime.tee (DEFAULT false). true ⇒ the chain client MUST be a NativeBalanceSource or
+   * construction THROWS (wiring bug, not a runtime degradation). false ⇒ no source reads native as 0n.
+   */
+  tee?: boolean;
 }
 
 /**
  * WalletState from ChainClient reads. Treasury: native + USDC on every chain, USDG + agent token on
  * rh. Action EOA: rh only (native, USDG, agent token); other chains are 0 (never read).
- * Native balances need a ChainClient implementing NativeBalanceSource; otherwise 0.
+ * Native balances need a ChainClient implementing NativeBalanceSource; otherwise 0 — EXCEPT with
+ * `opts.tee` (SPEC-M3F §1c), where a client without one THROWS here, at construction (boot config
+ * error), instead of silently zeroing every native balance as fresh (the agent-7 finding).
  * Hosting (Oyster) comes from the runtime.hosting config stand-in.
  *
  * SPEC-M3C §4 — NEVER throws. Reads are grouped per chain; ALL of a chain's reads share ONE
@@ -605,6 +606,14 @@ export interface ChainStateReaderOptions {
  * from the cache (else zeros) and listed in `staleChains` — cached values STILL mark it stale (the
  * engine's G5 gate keeps spends touching it closed; the cache only keeps runway/tier from cratering
  * spuriously). `staleChains` is present ONLY when non-empty. Recovery is automatic on the next read.
+ * Native reads are part of their chain's group (SPEC-M3F §1d).
+ *
+ * SPEC-M3F §2: the rh agent-token balanceOf reads (treasury + action) are the ONE exception to the
+ * grouping — they share their OWN nested try/catch. Any failure there ⇒ ONE LOUD warning and the
+ * `tokens` key is OMITTED from BOTH rh slices for this read; rh freshness is decided by the remaining
+ * reads only (a deterministic revert — e.g. a bad agentTokenAddress — must not pin rh stale forever).
+ * Omitting tokens understates holdings (conservative: rules and the pulse context read a missing token
+ * as 0; runway/tier never use tokens; the chat gate reads the chatter's holdings, not WalletState).
  */
 export function chainStateReader(
   chain: ChainClient,
@@ -614,6 +623,12 @@ export function chainStateReader(
 ): StateReader {
   const logger = opts.logger ?? consoleLogger;
   const clock = opts.clock ?? systemClock;
+  if (opts.tee === true && !hasNativeBalance(chain)) {
+    throw new Error(
+      "chainStateReader: boot config error (wiring bug) — runtime.tee requires a ChainClient implementing NativeBalanceSource " +
+        "(RealChainClient must implement NativeBalanceSource in tee); refusing to serve every native balance as a fresh 0",
+    );
+  }
   const native = async (c: Chain, a: Address): Promise<bigint> => (hasNativeBalance(chain) ? chain.getBalance(c, a) : 0n);
   const erc20 = async (c: Chain, token: Address, owner: Address): Promise<bigint> =>
     asBigint(await chain.readContract(c, { address: token, abi: erc20Abi, functionName: "balanceOf", args: [owner] }), `balanceOf(${token})@${c}`);
@@ -628,10 +643,19 @@ export function chainStateReader(
     const treasury: ChainBalances = { native: await native(c, cfg.treasury), USDC: await erc20(c, cfg.usdc[c], cfg.treasury) };
     if (c !== "rh") return { treasury, action: { native: 0n } };
     treasury.USDG = await erc20("rh", cfg.usdg.rh, cfg.treasury);
-    const tt = await tokens(cfg.treasury);
-    if (tt !== undefined) treasury.tokens = tt;
     const action: ChainBalances = { native: await native("rh", cfg.action), USDG: await erc20("rh", cfg.usdg.rh, cfg.action) };
-    const at = await tokens(cfg.action);
+    // SPEC-M3F §2: both agent-token reads in their OWN try/catch (never reaches the chain group's catch).
+    let tt: Record<Address, bigint> | undefined;
+    let at: Record<Address, bigint> | undefined;
+    try {
+      tt = await tokens(cfg.treasury);
+      at = await tokens(cfg.action);
+    } catch (e) {
+      tt = undefined;
+      at = undefined;
+      logger.warn(`!!! getState: agent token read reverted — tokens omitted from state; check agentTokenAddress (${errMsg(e)}) !!!`);
+    }
+    if (tt !== undefined) treasury.tokens = tt;
     if (at !== undefined) action.tokens = at;
     return { treasury, action };
   };
@@ -1317,7 +1341,12 @@ export async function boot(opts: BootOptions): Promise<Runtime> {
   if (ov.chain === undefined && Object.keys(rpcUrls).length === 0) {
     logger.warn("no runtime.rpc configured: using MockChainClient (M2 mock chain — nothing reaches a real network)");
   }
-  const getState: StateReader = ov.state ?? chainStateReader(chain, cfg, rt.hosting, { logger, clock });
+  // SPEC-M3F §1c: the tee fail-loud guard covers the client BOOT constructs (the prod path — main.ts never
+  // injects overrides.chain): tee + a client without NativeBalanceSource (incl. the no-rpc MockChainClient
+  // fallback) ⇒ boot throws. An injected overrides.chain is the caller's (test/ops) wiring and keeps the
+  // 0n fallback, as before M3F.
+  const getState: StateReader =
+    ov.state ?? chainStateReader(chain, cfg, rt.hosting, { logger, clock, tee: rt.tee && ov.chain === undefined });
 
   let ledgerCache: BudgetLedger = loadLedger(db) ?? emptyLedger(clock());
   const ledger: LedgerStore = {

@@ -14,13 +14,15 @@
 //     (was 0 — one throttled read at boot crash-looped the drill). Applies to EVERY request,
 //     reads and eth_sendRawTransaction alike; retrying a send is safe: the same signed bytes ⇒
 //     the same tx hash (idempotent — a duplicate cannot land twice).
+//   * Native balances (SPEC-M3F §1a): implements NativeBalanceSource (eth_getBalance) — before
+//     M3F no prod client did, so every live native balance read 0n (fresh).
 //
 // No Date.now / process.env / fetch( here (hygiene test covers src/exec): viem owns
 // the transport; urls and chain ids are constructor inputs.
 
 import { createPublicClient, defineChain, http, type Abi, type Chain as ViemChain, type Hex, type PublicClient, type Transport } from "viem";
 import type { Chain } from "../policy/types.js";
-import type { ChainClient, FeeFill, ReadContractRequest, SendReceipt, TxRequest } from "./chain.js";
+import type { ChainClient, FeeFill, NativeBalanceSource, ReadContractRequest, SendReceipt, TxRequest } from "./chain.js";
 
 export interface RealChainClientOptions {
   /** RPC url per chain. Only chains present here are usable; others throw. */
@@ -44,7 +46,7 @@ export const DEFAULT_GAS_HEADROOM_BPS = 2000;
 export const DEFAULT_HTTP_RETRY_COUNT = 2;
 const BPS = 10_000n;
 
-export class RealChainClient implements ChainClient {
+export class RealChainClient implements ChainClient, NativeBalanceSource {
   private readonly clients = new Map<Chain, PublicClient<Transport, ViemChain>>();
   private readonly verified = new Set<Chain>();
   private readonly opts: RealChainClientOptions;
@@ -122,6 +124,15 @@ export class RealChainClient implements ChainClient {
       pollingInterval: this.opts.pollingIntervalMs ?? 250,
     });
     return { hash, status: receipt.status };
+  }
+
+  /**
+   * SPEC-M3F §1a: native balance (eth_getBalance, "latest") over the same client ⇒ same one-time chainId
+   * check and http timeout/retryCount (M3C §6) as every other read.
+   */
+  async getBalance(chain: Chain, address: `0x${string}`): Promise<bigint> {
+    const c = await this.client(chain);
+    return c.getBalance({ address });
   }
 
   async readContract(chain: Chain, req: ReadContractRequest): Promise<unknown> {
