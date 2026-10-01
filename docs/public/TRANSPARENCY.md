@@ -66,6 +66,8 @@ So for a fixed amount, your payout can only grow while your transaction is pendi
 
 **Revival.** If an agent dies (hosting lapses and it stops heartbeating for 7 days), anyone can pay to redeploy the same code. It re-derives the same keys and restores from its Arweave snapshot. The registry allows only one live instance. The image, scripts and deploy commands are public, so revival does not depend on the platform.
 
+On testnet, reviving through the website works like this. You get a quote, pay it in USDC on Arbitrum One, and sign a message tying your payment to that one agent. The orchestrator then redeploys the agent with the exact code release it was born with, never a newer one: newer code would derive different keys. The revived agent registers as the next *generation* with the same wallets. That is the public proof, visible in the agent's generation history. If the agent can't be revived (it's alive, or its original configuration can't be found), you are never offered a pay button. First paid revival on testnet: 2026-10-01 (agent 2, generation 1 → 2, same treasury and action wallets).
+
 **No backdoors.** No emergency function exists anywhere in agent funds. A bug that drains an agent's wallet is unrecoverable. That is the product's promise working against us, and we say so.
 
 ## Verify it yourself
@@ -85,4 +87,5 @@ So for a fixed amount, your payout can only grow while your transaction is pendi
 
 ## Draft changelog
 
+- **v0.1 (2026-10-01):** revival section describes the paid testnet flow, which is now live-proven (agent 2 → generation 2). A revival always runs the agent's original code release.
 - **v0 (2026-09-29):** first draft. Covers D18 (redemption floor replaces buyback-and-burn), D19 (the PONS creator stream is team revenue), the dual-stack testnet (FloorVault on stack v2, agent ids from 101), attestation re-verification and revival.

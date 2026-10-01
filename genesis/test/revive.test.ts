@@ -233,6 +233,44 @@ describe("M4F §1: checkRevivable", () => {
     expect(h.db.allFlows("revival")).toHaveLength(0);
   });
 
+  it("session 17: AgentRequested scan result persists in the db kv — one scan per agent per db (quote-latency fix); refusal wording names the scanned range", async () => {
+    const h = makeHarness();
+    register(h, 1, AGENT1_CODEHASH, 30n * DAY);
+    let scans = 0;
+    const lp = h.world.launchpad();
+    const counting: Launchpad = {
+      ...lp,
+      requestedLogs: async (f, t, id) => {
+        scans += 1;
+        return lp.requestedLogs(f, t, id);
+      },
+    };
+    const r1 = await checkRevivable(deps(h, { launchpad: counting, configHashCache: new Map() }), 1);
+    expect(r1).toMatchObject({ revivable: false, reason: "config_unavailable" });
+    expect(r1.revivable === false && r1.detail).toMatch(/scanned range/);
+    expect(r1.revivable === false && r1.detail).toMatch(/may predate this config's startBlock/);
+    expect(scans).toBeGreaterThan(0);
+    const sb = h.cfg.contracts.startBlock;
+    expect(h.db.kvGet(`revival.configHash.1@${sb}`)).toBe("none");
+    const after = scans;
+    // a fresh process (new L1 map, same db) must NOT rescan — the kv result is final for a registered agent
+    await checkRevivable(deps(h, { launchpad: counting, configHashCache: new Map() }), 1);
+    expect(scans).toBe(after);
+    // …but a config whose startBlock differs scans its own range (a "none" is final only for the range scanned)
+    const shifted = { ...h.cfg, contracts: { ...h.cfg.contracts, startBlock: sb + 1n } };
+    await checkRevivable(deps(h, { launchpad: counting, configHashCache: new Map(), cfg: shifted }), 1);
+    expect(scans).toBeGreaterThan(after);
+    expect(h.db.kvGet(`revival.configHash.1@${sb + 1n}`)).toBe("none");
+    // a FOUND hash persists too (agent with an event but no pre-image)
+    register(h, 2, `0x${"bb".repeat(32)}`, 30n * DAY);
+    requestedEvent(h, 2, `0x${"ee".repeat(32)}`);
+    await checkRevivable(deps(h, { launchpad: counting, configHashCache: new Map() }), 2);
+    expect(h.db.kvGet(`revival.configHash.2@${sb}`)).toBe(`0x${"ee".repeat(32)}`);
+    const after2 = scans;
+    await checkRevivable(deps(h, { launchpad: counting, configHashCache: new Map() }), 2);
+    expect(scans).toBe(after2);
+  });
+
   it("M4F §1: checkRevivable matrix — compose match via launches (recorded imageId == registered codeHash); a db written under another mount resolves the same release file by name; config order frozenJson → inbox", async () => {
     const h = makeHarness();
     // (a) recorded compose exists

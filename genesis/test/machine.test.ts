@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { redrive } from "../src/machine.js";
+import { abandon, redrive } from "../src/machine.js";
 import { usdToWei } from "../src/seeder.js";
 import { initParam } from "./helpers/fakeOyster.js";
 import { eventKinds, FUNDING, makeHarness, type Harness } from "./helpers/harness.js";
@@ -151,6 +151,19 @@ describe("crash-resume mid-DEPLOYING (no duplicate deploys)", () => {
     expect(h.oyster.jobs).toHaveLength(1);
     expect(h.flow(agentId).deployJobId).toBe(h.oyster.jobs[0]!.id);
     expect(eventKinds(h, `genesis:${agentId}`)).toContain("deploy_adopted");
+  });
+
+  it("session 17 (live 2026-10-01): CLI prints the QUOTED job id then is killed while Marlin's indexer is stalled (`list` shows nothing) ⇒ the job is taken from the output — one job total, no second paid deploy", async () => {
+    const h = makeHarness(); // harness deployOrphanGraceSec = 0 ⇒ a list-only path would retry immediately
+    h.oyster.script.deployKilledAfterQuotedId = 1;
+    h.oyster.script.listStale = 50;
+    const { agentId } = h.createAgent();
+    await h.settle();
+    expect(h.flow(agentId).state).toBe("LIVE");
+    expect(h.oyster.count("deploy")).toBe(1);
+    expect(h.oyster.jobs).toHaveLength(1);
+    expect(h.flow(agentId).deployJobId).toBe(h.oyster.jobs[0]!.id);
+    expect(eventKinds(h, `genesis:${agentId}`)).toContain("deployed");
   });
 
   it("orchestrator process dies while oyster-cvm deploy runs: resume adopts, one job total", async () => {
@@ -529,6 +542,39 @@ describe("operator redrive (ruling 2)", () => {
     await h.settle();
     expect(h.flow(agentId).state).toBe("LIVE");
     expect(h.world.finalizeCalls).toEqual([BigInt(agentId)]);
+  });
+
+  // Session 17: an operator abandon before any deploy job was recorded is reversible while the on-chain
+  // genesis window is open (live case: agents 101–103 abandoned during a Marlin indexer outage).
+  it("session 17: FAILED(abandoned) before any deploy job ⇒ redrive reopens to REQUESTED (deploy bookkeeping cleared) ⇒ drives to LIVE", async () => {
+    const h = makeHarness();
+    h.oyster.script.deployFail = 1; // the first attempt creates no job (outcome-unknown path)
+    const { agentId } = h.createAgent();
+    await h.settle(1);
+    const stuck = h.flow(agentId);
+    expect(stuck.state).toBe("DEPLOYING");
+    expect(stuck.deployJobId).toBeNull();
+    abandon(h.db, agentId, "premature operator abandon", h.world.timestamp, h.log);
+    expect(h.flow(agentId)).toMatchObject({ state: "FAILED", failReason: "abandoned" });
+
+    const r = redrive(h.db, agentId, h.world.timestamp, h.log);
+    expect(r).toMatchObject({ state: "REQUESTED", failReason: null, failStep: null, lastError: null, deployInFlight: 0, deployAttempts: 0, preDeployJobs: null, deployStartedAt: null });
+    expect(eventKinds(h, `genesis:${agentId}`)).toContain("redrive");
+    await h.settle();
+    expect(h.flow(agentId).state).toBe("LIVE");
+    expect(h.world.finalizeCalls).toEqual([BigInt(agentId)]);
+  });
+
+  it("session 17: FAILED(abandoned) with a recorded deploy job ⇒ redrive refuses (an enclave with the agent's keys may exist)", async () => {
+    const h = makeHarness();
+    h.oyster.onDeploy = () => undefined; // enclave never registers ⇒ AWAITING_REGISTER with a job recorded
+    const { agentId } = h.createAgent();
+    await h.settle(5);
+    expect(h.flow(agentId).state).toBe("AWAITING_REGISTER");
+    expect(h.flow(agentId).deployJobId).not.toBeNull();
+    abandon(h.db, agentId, "operator decision", h.world.timestamp, h.log);
+    expect(() => redrive(h.db, agentId, h.world.timestamp, h.log)).toThrow(/may exist; refusing to reopen/);
+    expect(h.flow(agentId).state).toBe("FAILED");
   });
 
   it("refuses pre-registration failures, LIVE launches and unknown agents", async () => {

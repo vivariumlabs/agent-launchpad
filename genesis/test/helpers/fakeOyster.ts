@@ -29,6 +29,10 @@ export interface FakeScript {
   deployThrowAfterCreate?: number;
   /** Next N `list` calls fail (Oyster outage). */
   listOutage?: number;
+  /** Next N `list` calls succeed but show NO jobs (Marlin indexer stalled — live 2026-10-01). */
+  listStale?: number;
+  /** Next N deploys print the QUOTED job id (oyster-cvm 5.0.1 shape) and are then killed (code null). */
+  deployKilledAfterQuotedId?: number;
   /** verify: "always" invalid, or next N invalid. */
   verifyInvalid?: number | "always";
   /** Deploy output omits the IP (forces the control-plane lookup path). */
@@ -78,6 +82,10 @@ export class FakeOyster implements Exec {
           this.script.listOutage! -= 1;
           return bad("Error: indexer unavailable (503)");
         }
+        if ((this.script.listStale ?? 0) > 0) {
+          this.script.listStale! -= 1;
+          return ok("INFO oyster_cvm::commands::list: No active jobs with positive balance found for address");
+        }
         const owner = this.flag(args, "--address")!.toLowerCase();
         const rows = this.jobs.filter((j) => j.owner === owner).map((j) => `| ${j.id} | 0.0512 | 1.00 USDC | AWS |`);
         return ok(["+----+", "| ID | RATE (USDC/hour) | BALANCE | PROVIDER |", "+----+", ...rows, "+----+"].join("\n"));
@@ -109,6 +117,17 @@ export class FakeOyster implements Exec {
         if ((this.script.deployCrashAfterCreate ?? 0) > 0) {
           this.script.deployCrashAfterCreate! -= 1;
           return bad("[ERROR] connection reset while waiting for job initialization", "[INFO] Job creation transaction: 0x38b…008\n");
+        }
+        if ((this.script.deployKilledAfterQuotedId ?? 0) > 0) {
+          // The live oyster-cvm 5.0.1 shape: id printed QUOTED right after JobOpened, then the process is
+          // killed (signal ⇒ code null) while it waits for the enclave IP.
+          this.script.deployKilledAfterQuotedId! -= 1;
+          return {
+            code: null,
+            stdout: "",
+            stderr: `2026-10-01T11:01:06.265930Z  INFO oyster_cvm::deployment::evm: Found JobOpened event\n2026-10-01T11:01:06.265967Z  INFO oyster_cvm::commands::deploy: Job created with ID: "${job.id}"\n`,
+            timedOut: false,
+          };
         }
         const ipLine = this.script.deployNoIp === true ? "" : `[INFO] Found IP address: ${job.ip}\n[INFO] Enclave is ready! IP address: ${job.ip}\n`;
         return ok(`[INFO] Starting deployment...\n[INFO] Job created with ID: ${job.id}\n${ipLine}`);

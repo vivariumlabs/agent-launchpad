@@ -161,9 +161,31 @@ export type Revivability =
     }
   | { revivable: false; agentId: number; reason: RefusalReason; detail: string; gate: GateView };
 
+/**
+ * kv key for the persisted AgentRequested scan result ("none" = scanned to head, no event). Keyed by
+ * the scan's start block too: a "none" is only final for the range actually scanned, so lowering
+ * `contracts.startBlock` in the config must trigger a fresh scan rather than reuse a stale miss.
+ */
+const configHashKvKey = (agentId: number, startBlock: bigint): string => `revival.configHash.${agentId}@${startBlock}`;
+
+/**
+ * Session-17 latency fix: the full [startBlock, head] scan took ~105 s live (agent 1, ~2.7 M
+ * blocks) and ran on EVERY quote for an agent with no launch record — the web quote call times
+ * out. The result is FINAL for any REGISTERED agent (checkRevivable only reaches this after the
+ * never_registered gate): its AgentRequested, if inside [startBlock, head], is in the past, so
+ * one scan is definitive (found or permanently absent). Persist it in the genesis db kv so the
+ * cost is paid once per agent per db, not once per process (the in-memory map stays as L1).
+ */
 async function findConfigHash(deps: RevivalDeps, agentId: number): Promise<string | null> {
   const cached = deps.configHashCache?.get(agentId);
   if (cached !== undefined) return cached;
+  const kvKey = configHashKvKey(agentId, deps.cfg.contracts.startBlock);
+  const persisted = deps.db.kvGet(kvKey);
+  if (persisted !== undefined) {
+    const v = persisted === "none" ? null : persisted;
+    deps.configHashCache?.set(agentId, v);
+    return v;
+  }
   const latest = (await deps.launchpad.latestBlock()).number;
   const step = BigInt(deps.cfg.timing.maxBlockRange);
   let found: string | null = null;
@@ -176,6 +198,7 @@ async function findConfigHash(deps: RevivalDeps, agentId: number): Promise<strin
       break;
     }
   }
+  deps.db.kvSet(kvKey, found ?? "none");
   deps.configHashCache?.set(agentId, found);
   return found;
 }
@@ -272,7 +295,10 @@ export async function checkRevivable(deps: RevivalDeps, agentId: number): Promis
   const launch = deps.db.getLaunch(agentId);
   const configHash = launch?.configHash ?? (await findConfigHash(deps, agentId));
   if (configHash === null) {
-    return no("config_unavailable", `no launch record and no AgentRequested(${agentId}) event since block ${deps.cfg.contracts.startBlock} — configHash unknown, no pre-image can exist here`);
+    return no(
+      "config_unavailable",
+      `no launch record and no AgentRequested(${agentId}) event in the scanned range (block ${deps.cfg.contracts.startBlock} → head) — the event may predate this config's startBlock; configHash unknown here, so no pre-image can be resolved`,
+    );
   }
   const conf = await resolveConfig(deps, agentId, configHash, launch);
   if (!conf.ok) return no("config_unavailable", conf.detail);

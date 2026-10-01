@@ -455,7 +455,8 @@ describe.skipIf(bins === undefined)("SPEC-M2C §4 chain integration (anvil 46630
     const ref = castCalldata(
       bins!,
       "depositV3(address,address,address,address,uint256,uint256,uint256,address,uint32,uint32,uint32,bytes)",
-      [cfg.treasury, cfg.treasury, cfg.usdg.rh, cfg.usdc.base, "100000000", "99000000", "8453", "0x0000000000000000000000000000000000000000", now.toString(), (now + 14_400n).toString(), "0", "0x"],
+      // quoteTimestamp = now − ACROSS_QUOTE_SAFETY_SEC (SPEC-M3D §1c); fillDeadline stays anchored on now.
+      [cfg.treasury, cfg.treasury, cfg.usdg.rh, cfg.usdc.base, "100000000", "99000000", "8453", "0x0000000000000000000000000000000000000000", (now - 60n).toString(), (now + 14_400n).toString(), "0", "0x"],
     );
     expect(built.data.toLowerCase()).toBe(ref);
     expect(built.data.slice(0, 10)).toBe("0x7b939232");
@@ -471,7 +472,13 @@ describe.skipIf(bins === undefined)("SPEC-M2C §4 chain integration (anvil 46630
     expect(await ensureRegistered(cfg, Number(MY_AGENT_ID), chain, deps, log, await blockNow())).toBe("alreadyRegistered");
     expect(BigInt((await readInst()).generation)).toBe(1n);
     await increaseTime(anvil!.url, 7 * 86_400 + 60);
-    expect(await ensureRegistered(cfg, Number(MY_AGENT_ID), chain, deps, log, await blockNow())).toBe("revived");
+    // Session 17: run the revival execute on CHAIN time, not wall time. registerInstance is an
+    // unsalted action, so K1's single-use key is actionHash:issuedAt — on a fast machine the
+    // suite's genesis registerInstance and this revival land in the same wall-clock second and
+    // K1 (correctly) refuses the duplicate. In production these are separate boots (fresh
+    // consumed map); here the warped chain clock is both unique and the semantically right "now".
+    const tNow = await blockNow();
+    expect(await ensureRegistered(cfg, Number(MY_AGENT_ID), chain, { ...deps, clock: () => tNow }, log, tNow)).toBe("revived");
     const after = await readInst();
     expect(BigInt(after.generation)).toBe(2n);
     expect(after.attestationRef).toBe(ATTESTATION);

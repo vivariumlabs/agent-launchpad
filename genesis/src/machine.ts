@@ -37,7 +37,7 @@
 // the next resume — bounded by the timeout before registration, unbounded after it). Capped steps
 // count their definitive failures.
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Address, Hex } from "viem";
 import { finalizeCalldata, ZERO_ADDRESS, type ChainClient, type ChainKey, type Launchpad } from "./chain.js";
@@ -87,6 +87,9 @@ export function redrive(db: GenesisDb, agentId: number, now: bigint, log: Logger
   const ref: FlowRef = { kind: "genesis", id: agentId };
   const f = db.getFlow(ref);
   if (f === undefined) throw new Error(`no launch for agent ${agentId}`);
+  if (f.state === "FAILED" && f.failReason === "abandoned" && f.failStep !== null && (PRE_REGISTRATION_STATES as readonly string[]).includes(f.failStep)) {
+    return reopenAbandoned(db, f, now, log);
+  }
   const step = f.state === "FAILED" ? f.failStep : f.state;
   if (f.state === "LIVE" || step === null || !(REDRIVABLE_STEPS as readonly string[]).includes(step) || f.treasury === null) {
     throw new Error(
@@ -99,6 +102,49 @@ export function redrive(db: GenesisDb, agentId: number, now: bigint, log: Logger
     db.event(flowKey(ref), f.agentId, now, "redrive", detail);
   });
   log.info(`[${flowKey(ref)}] redrive → SEEDING: ${detail}`);
+  return db.getFlow(ref)!;
+}
+
+/**
+ * Session-17 `redrive` extension: reopen a launch the OPERATOR abandoned before registration
+ * (FAILED(abandoned) @ REQUESTED / DEPLOYING / AWAITING_REGISTER) back to REQUESTED, so a premature
+ * abandon is reversible while the on-chain genesis window is still open. Only when NO deploy job was
+ * ever recorded for the launch (deployJobId null) — an adopted job means an enclave with this agent's
+ * keys may exist, and a second deploy would run two instances on one identity. Deploy bookkeeping is
+ * cleared; the REQUESTED step re-validates everything on-chain (pending record, configHash) and the
+ * AWAITING_REGISTER step enforces the registry genesis deadline. OPERATOR PRECONDITION (a pure db op
+ * cannot check it): any Oyster job opened by an earlier, never-adopted attempt for this agent must be
+ * CLOSED first (same rule as `abandon` — a running CVM job is the operator's to stop).
+ */
+function reopenAbandoned(db: GenesisDb, f: FlowRow, now: bigint, log: Logger): FlowRow {
+  const ref: FlowRef = { kind: "genesis", id: f.agentId };
+  if (f.deployJobId !== null) {
+    throw new Error(
+      `agent ${f.agentId} was abandoned with deploy job ${f.deployJobId} recorded — an enclave with its keys may exist; refusing to reopen (stop/close that job and launch fresh instead)`,
+    );
+  }
+  const detail = `from FAILED(abandoned @ ${f.failStep ?? "?"}); deploy bookkeeping cleared (attempts ${f.deployAttempts} → 0)`;
+  db.tx(() => {
+    db.patchFlow(
+      ref,
+      {
+        state: "REQUESTED",
+        failReason: null,
+        failStep: null,
+        lastError: null,
+        deployInFlight: 0,
+        deployAttempts: 0,
+        deployStartedAt: null,
+        preDeployJobs: null,
+        cvmIp: null,
+        attestationOk: 0,
+        verifyAttempts: 0,
+      },
+      now,
+    );
+    db.event(flowKey(ref), f.agentId, now, "redrive", detail);
+  });
+  log.info(`[${flowKey(ref)}] redrive → REQUESTED: ${detail}`);
   return db.getFlow(ref)!;
 }
 
@@ -273,6 +319,14 @@ export class Machine {
   /**
    * Writes agent.json (exact delivered bytes) + runtime.json (ops template + tee + imageId). `imageIdStamp`
    * (0x-prefixed) overrides the stamped imageId — revivals stamp the REGISTERED codeHash verbatim (R3).
+   *
+   * M4F rev 2 (R9, live-proven by the agent-2 drill 2026-10-01): a revival's runtime.json must parse
+   * under the TARGET release's runtime schema — the revived agent runs the OLD runtime, and current
+   * `runtimeOps` may carry keys that release's strict() schema rejects (v0.1.1 rejected `turboTopUp`
+   * ⇒ boot crash-loop, no registerInstance, rental burned). Rule: when the ORIGINAL launch's
+   * runtime.json exists on disk it is reused verbatim (it booted that exact release at genesis) with
+   * only `tee` and `imageId` re-stamped; `cfg.runtimeOps` is the fallback for a clean machine
+   * (debt: per-release runtimeOps templates would make the fallback compatible too).
    */
   private writeInitFiles(f: FlowRow, frozenText: string, imageId: string, imageIdStamp?: string): { agentJson: string; runtimeJson: string } {
     const dir = this.workDir(f);
@@ -280,7 +334,22 @@ export class Machine {
     const agentJson = join(dir, "agent.json");
     const runtimeJson = join(dir, "runtime.json");
     writeFileSync(agentJson, frozenText);
-    writeFileSync(runtimeJson, `${JSON.stringify({ ...this.d.cfg.runtimeOps, tee: true, imageId: imageIdStamp ?? `0x${imageId}` }, null, 2)}\n`);
+    let ops: Record<string, unknown> = this.d.cfg.runtimeOps as Record<string, unknown>;
+    if (f.kind === "revival") {
+      const original = join(this.d.cfg.dataDir, "agents", String(f.agentId), "runtime.json");
+      if (existsSync(original)) {
+        try {
+          const parsed: unknown = JSON.parse(readFileSync(original, "utf8"));
+          if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not a JSON object");
+          ops = parsed as Record<string, unknown>;
+          this.d.log.info(`[${flowKey({ kind: f.kind, id: f.id })}] revival runtime.json reuses the original launch's file (R9 release-schema compatibility)`);
+        } catch {
+          this.d.log.warn(`!!! revival runtime.json: original ${original} unreadable — falling back to cfg.runtimeOps (may not parse under the target release's schema) !!!`);
+          ops = this.d.cfg.runtimeOps as Record<string, unknown>;
+        }
+      }
+    }
+    writeFileSync(runtimeJson, `${JSON.stringify({ ...ops, tee: true, imageId: imageIdStamp ?? `0x${imageId}` }, null, 2)}\n`);
     return { agentJson, runtimeJson };
   }
 

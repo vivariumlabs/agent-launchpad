@@ -106,6 +106,21 @@
    web tracker) runs NEXT session, on/after 2026-10-01, against agent 2 or 3. Recorded as the
    M4 exit-gate's final item.
 
+## 3a. Rev 2 (session 17, 2026-10-01): changes after the live drill
+
+- **R9 (revival runtime.json compatibility).** The revived agent runs the release matching its
+  registered codeHash (R3), and that release's runtime config schema is top-level `.strict()`. The
+  machine had written the revival `runtime.json` from today's `cfg.runtimeOps`; v0.1.1 rejected the
+  newer `turboTopUp` key and crash-looped (live, job `0x…31e4`). Rule: a revival reuses the ORIGINAL
+  launch's `runtime.json` (it booted that exact release), re-stamping only `tee` and `imageId`.
+  `cfg.runtimeOps` remains only as the clean-machine fallback. Debt: per-release runtimeOps templates.
+- **Quote latency.** The AgentRequested scan result for an agent with no launch record is persisted in
+  the genesis db kv as `revival.configHash.<id>@<startBlock>` (a hash, or `none`). It's final for a
+  registered agent within the scanned range, so the ~105 s scan runs once per agent per range. The
+  refusal says "in the scanned range (block <startBlock> → head)".
+- **Acceptance item 4: DONE.** Agent 2: quote → USDC payment → signed intent → queue → redeploy →
+  generation 2 with identical EOAs → tracker/mausoleum (BUILD-STATE session 17).
+
 ## 4. Out of scope
 
 On-chain revival-fee contract (M6); runtime wake-entry reviver credit (R7 note); automated

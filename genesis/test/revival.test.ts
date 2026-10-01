@@ -133,4 +133,45 @@ describe("revival flow", () => {
     await revive(deps(h), agentId, { address: FUNDING }, h.world.timestamp);
     await expect(revive(deps(h), agentId, { address: FUNDING }, h.world.timestamp)).rejects.toMatchObject({ reason: "revival_in_progress" });
   });
+
+  // M4F rev 2 (R9), live-proven by the agent-2 drill 2026-10-01: the revived agent runs the OLD
+  // runtime release, whose strict() runtime schema may reject keys that today's cfg.runtimeOps
+  // carries (v0.1.1 rejected `turboTopUp` ⇒ boot crash-loop, no registerInstance). The revival
+  // must therefore reuse the ORIGINAL launch's runtime.json (which booted that release), with only
+  // tee + imageId re-stamped.
+  it("M4F rev 2 (R9): revival runtime.json reuses the original launch's file, re-stamping only tee + imageId", async () => {
+    const { h, agentId } = await liveAgent();
+    const { readFileSync, writeFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const original = join(h.cfg.dataDir, "agents", String(agentId), "runtime.json");
+    // Simulate an old-release ops file: a shape the current runtimeOps does NOT produce.
+    const oldOps = { rpc: { rh: "https://old-release.example/rpc" }, legacyKnob: true, imageId: "0xstale", tee: false };
+    writeFileSync(original, `${JSON.stringify(oldOps, null, 2)}\n`);
+    h.world.mine(8n * 86_400n);
+    const rid = await revive(deps(h), agentId, { address: FUNDING }, h.world.timestamp);
+    await h.settle();
+    expect(h.db.getFlow({ kind: "revival", id: rid })!.state).toBe("LIVE");
+    const written = JSON.parse(readFileSync(join(h.cfg.dataDir, "agents", String(agentId), `revival-${rid}`, "runtime.json"), "utf8"));
+    const codeHash = h.world.instances.get(BigInt(agentId))!.codeHash;
+    expect(written.rpc).toEqual(oldOps.rpc); // original ops preserved…
+    expect(written.legacyKnob).toBe(true);
+    expect(written.imageDigest).toBeUndefined(); // …and NOT today's runtimeOps
+    expect(written.tee).toBe(true); // re-stamped
+    expect(written.imageId).toBe(codeHash); // re-stamped to the REGISTERED codeHash (R3)
+  });
+
+  it("M4F rev 2 (R9): original runtime.json missing ⇒ falls back to cfg.runtimeOps (clean-machine case)", async () => {
+    const { h, agentId } = await liveAgent();
+    const { readFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    rmSync(join(h.cfg.dataDir, "agents", String(agentId), "runtime.json"));
+    h.world.mine(8n * 86_400n);
+    const rid = await revive(deps(h), agentId, { address: FUNDING }, h.world.timestamp);
+    await h.settle();
+    expect(h.db.getFlow({ kind: "revival", id: rid })!.state).toBe("LIVE");
+    const written = JSON.parse(readFileSync(join(h.cfg.dataDir, "agents", String(agentId), `revival-${rid}`, "runtime.json"), "utf8"));
+    expect(written.rpc).toEqual({ rh: "https://rpc.testnet.chain.robinhood.com" }); // today's runtimeOps
+    expect(written.tee).toBe(true);
+    expect(written.imageId).toBe(h.world.instances.get(BigInt(agentId))!.codeHash);
+  });
 });

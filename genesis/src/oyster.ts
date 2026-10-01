@@ -139,10 +139,18 @@ export function deployArgs(s: OysterSettings, p: DeployParams): string[] {
   return args;
 }
 
+/**
+ * Session-17 fix: oyster-cvm 5.0.1 prints the id QUOTED (`Job created with ID: "0x…31e6"` — every live
+ * deploy since 2026-09-24), which the old unquoted-only regex never matched. The job id was therefore
+ * never taken from the CLI output; adoption always fell back to `oyster-cvm list`, which reads Marlin's
+ * indexer — and when that indexer stalled (2026-10-01 ~10:18 → 11:30+ UTC) opened jobs were invisible,
+ * so the orchestrator would count the attempt as "created no job" and open another paid job. Optional
+ * quotes are accepted for both the id and the IP.
+ */
 export function parseDeployOutput(out: string): { jobId: string | null; ip: string | null } {
   const text = stripAnsi(out);
-  const jobs = [...text.matchAll(/Job created with ID:\s*(0x[0-9a-fA-F]+)/g)];
-  const ips = [...text.matchAll(/IP address:\s*(\d{1,3}(?:\.\d{1,3}){3})/g)];
+  const jobs = [...text.matchAll(/Job created with ID:\s*"?(0x[0-9a-fA-F]+)"?/g)];
+  const ips = [...text.matchAll(/IP address:\s*"?(\d{1,3}(?:\.\d{1,3}){3})"?/g)];
   const jobId = jobs.length > 0 ? jobs[jobs.length - 1]![1]!.toLowerCase() : null;
   const ipRaw = ips.length > 0 ? ips[ips.length - 1]![1]! : null;
   return { jobId, ip: ipRaw !== null && IPV4_RE.test(ipRaw) ? ipRaw : null };

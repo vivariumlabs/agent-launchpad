@@ -3,4 +3,5 @@ dist/
 *.timestamp-*.mjs
 # orchestrator state (sqlite + per-agent init files) and any local key files
 data/
+data-v2/
 *.key

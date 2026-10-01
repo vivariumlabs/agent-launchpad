@@ -139,6 +139,13 @@ describe("deploy", () => {
     expect((await bad.deploy(p)).ok).toBe(false);
   });
 
+  it("session 17: parses the QUOTED job id of oyster-cvm 5.0.1 (golden: live line from the 2026-10-01 agent-101 deploy)", () => {
+    const live =
+      '2026-10-01T11:01:06.265930Z  INFO oyster_cvm::deployment::evm: Found JobOpened event | 2026-10-01T11:01:06.265967Z  INFO oyster_cvm::commands::deploy: Job created with ID: "0x00000000000000000000000000000000000000000000000000000000000031e6" | 2026-1';
+    expect(parseDeployOutput(live)).toEqual({ jobId: `0x${"0".repeat(60)}31e6`, ip: null });
+    expect(parseDeployOutput('[INFO] Job created with ID: "0xABC"\n[INFO] Enclave is ready! IP address: "13.232.1.2"\n')).toEqual({ jobId: "0xabc", ip: "13.232.1.2" });
+  });
+
   it("list parses the job table", () => {
     const t = "+---+\n| ID | RATE |\n+---+\n| 0xABC1 | 0.05 | 1.00 USDC | AWS |\n| 0xdef2 | 0.05 | 2.00 USDC | AWS |\n+---+";
     expect(parseListOutput(t)).toEqual(["0xabc1", "0xdef2"]);
